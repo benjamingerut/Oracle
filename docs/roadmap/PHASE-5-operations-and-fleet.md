@@ -6,7 +6,7 @@ summarization-based context instead of blunt eviction, real per-user identity
 the admin actually receives, and a complete secrets/backup lifecycle. This is
 the phase that turns a working agent into operable infrastructure.
 
-Read first: `docs/ROADMAP.md`, Phase 1 (upgrade/backup plumbing, config
+Read first: `docs/roadmap/ROADMAP.md`, Phase 1 (upgrade/backup plumbing, config
 versioning), Phase 4 (adapter identity).
 
 Depends on: Phase 1, Phase 4 (identity + delivery surfaces).
@@ -97,13 +97,24 @@ oracle backup schedule [--cadence ...]   # register a backup as a serve-driven j
   summary call uses the session client+ceiling; model-error → clean evict
   fallback. *Tests:* `test_summary.py` via testkit. *Deps:* P1-T2.
 
+- **P5-T2a — kernel write-verb `--role` support (upstream).** Add `--role`
+  flag to the kernel write verbs that currently only accept `--actor`:
+  specifically `session_memory.py capture` and `capture.py` (feedback/value/
+  failure sub-commands). Other kernel write verbs (`source_record`, `actions`,
+  `truth_map`, `ingest_pipeline`) already accept `--role`. Lands in the Oracle
+  Spawn kit; re-vendored via P1-T5. *Acceptance:* each affected verb accepts
+  `--role` without error; unknown/missing role falls back to a safe default
+  (e.g. "unknown") rather than failing. *Tests (kernel):* extend
+  `test_session_memory.py`, `test_capture.py`. *Deps:* P1-T5.
+
 - **P5-T2 — identity model.** `identity.py`; extend allowlist schema
   (display+role) with a P1 migration; thread `Principal` → `--actor/--role` on
-  every write verb in `verbtools` and the gateway. Assert role NEVER changes
-  the model's tool schema. *Acceptance:* a gateway write ledgers the resolving
+  every write verb in `verbtools` and the gateway (depends on P5-T2a for the
+  verbs that did not previously accept `--role`). Assert role NEVER changes the
+  model's tool schema. *Acceptance:* a gateway write ledgers the resolving
   user's actor string; an admin principal still gets the user tool set; unknown
   user denied. *Tests:* `test_identity.py`, extend `test_verbtools`/gateway.
-  *Deps:* P1-T3, P4-T1.
+  *Deps:* P5-T2a, P1-T3, P4-T1.
 
 - **P5-T3 — fleet commands.** `oracle fleet status|doctor|tick|upgrade`.
   *Acceptance:* with 2+ instances, `fleet status` lists both with live

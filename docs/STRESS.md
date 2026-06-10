@@ -14,17 +14,24 @@ as `local_deterministic` (it can't see the LLM's environment); the shell then
 shipped that text to an external model. **Resolution (S4):** every read verb's
 *output* is filtered against the ceiling before it enters context. Verbs whose
 output sensitivity can't be self-attested are dropped from the schema when
-`environment == external`. `answer`/`brief` route through the kernel's own
-`sensitivity_ceiling` (the envelope already carries it) and are refused to the
-model when above ceiling. `review` uses `summary` (counts by kind, no titles)
-on the gateway/external surface; `list` (titles) only at `local_agent`.
+`environment == external` — this includes `oracle_brief`, `oracle_checkpoint`,
+and `oracle_loops_due` (dispatcher denies hallucinated calls fail-closed).
+`answer` routes through the kernel's own `sensitivity_ceiling` (the envelope
+already carries it) and is refused to the model when above ceiling. `review`
+uses `summary` (counts by kind, no titles) on the gateway/external surface;
+`list` (titles) only at `local_agent`. **Brief availability gate:** `brief` is
+only offered when ceiling ≥ `internal` AND environment ≠ external. Per-line
+sensitivity scan is NOT yet implemented (BLOCKER: `briefing.py` emits only a
+document-level ceiling, no per-line markers; upstream kernel work required).
 
 ### C2 — loopback ≠ data-confinement; urllib follows redirects ✅ CRITICAL
 A loopback listener can forward off-box; urllib re-sends body + Authorization on
-3xx. **Resolution (S2):** redirects disabled (raise on any 3xx). **(S3):**
-classification resolves the host and requires *all* resolved addresses loopback;
-adds `provider.local_is_confined` (default **false**) — until the operator
-opts in, even `local_agent` is capped at `internal` (no confidential unlock).
+3xx. **Resolution (S2):** redirects disabled (raise on any 3xx); per-request
+guard added to `LLMClient` so a `local_agent` client refuses to send to any
+non-loopback host at request time (TOCTOU close). **(S3):** classification uses
+literal loopback only — DNS is NOT consulted (`0.0.0.0` is NOT loopback).
+`local_is_confined` was removed (dead knob); `local_agent` is capped at
+`internal` in v1; confidential-tier unlock is roadmap Phase 2.
 
 ### C3 — importing the root's `policy.py` = arbitrary code execution ✅ CRITICAL
 `spec_from_file_location` executes module-level code from an
@@ -46,8 +53,9 @@ due-loop titles, never object names — regardless of surface.
 confidential/restricted/secret are `allow-minimized` there), but no minimizer
 exists. **Resolution (S3):** ceiling = highest label whose verdict is exactly
 `allow`. `allow-minimized` is never auto-released. Net: `external`→`public`,
-`local_agent`→`internal` (→`confidential` only with `local_is_confined` AND a
-future minimizer; deferred). This also corrects DESIGN D3's overclaim.
+`local_agent`→`internal` (confidential unlock deferred to Phase 2 with a real
+confinement mechanism; `local_is_confined` removed as a dead knob). This also
+corrects DESIGN D3's overclaim.
 
 ### H3 — gateway authorized a user but replied to a chat (group leak) ✅ HIGH
 **Resolution (S7):** gateway serves **private chats only** —
@@ -74,17 +82,29 @@ atomic tmp+rename preserving 0o600. Never post-hoc chmod.
 bearer).
 
 ### M4 — gateway `capture`/`remember` = stored injection / poisoning ✅
-**(S7):** gateway-written memory tagged provenance `gateway_user:<id>`, lower
-trust tier, excluded from authority-bearing retrieval by default; per-user
-write rate limit.
+**(S7):** gateway-written memory tagged with `--actor gateway_user:<id>`
+provenance on every `remember`/`capture` call (attribution, not access
+filtering). Kernel review gating applies as for all captures — the data lands
+in session memory files with `answer_authority: never`, which structurally
+excludes it from authority-bearing retrieval (a property of the data type, not
+the actor tag). Per-user write rate limit enforced by the dispatcher
+(`gateway.per_user_writes_per_hour`). **Advisory:** a dedicated low-trust tier
+that restricts gateway-sourced memory from propagating into the truth-map or
+review inbox is roadmap Phase 2 work; the current `--actor` tag provides
+attribution and audit trail only.
 
 ### M5 — `--max-sensitivity` last-wins smuggling ✅
-**(S4):** dispatcher strips any sensitivity token from model args and appends
-exactly one `--max-sensitivity <ceiling>` last.
+**(S4):** two-layer defense. Primary: search terms ride inside a single
+`--q=<value>` argv element so they are never parsed as flags. Secondary:
+`_strip_sensitivity_tokens()` strips any residual `--max-sensitivity` / `-S=`
+token from model-supplied string values before argv composition; dispatcher
+then appends exactly one `--max-sensitivity <ceiling>` last. Enforcer:
+`test_smuggled_sensitivity_flag_stripped_from_search_terms`.
 
-### L1/L2/L3 ✅ — `localhost` resolved+checked (C2 fix); classification uses
-`.hostname` lowercased, drop dead `[::1]` set entry; cap/idle-evict per-(user,
-instance) loops.
+### L1/L2/L3 ✅ — `localhost` exact-match only (no DNS, C2 fix); classification
+uses `.hostname` lowercased; `[::1]` set entry removed (literal IP check via
+`ipaddress`); per-(user, instance) loop cache is LRU-capped at 64 entries
+(capacity eviction; idle-time eviction not implemented).
 
 ## Architecture findings
 
@@ -106,9 +126,12 @@ local surface; `["review","summary","--json"]` for gateway/external.
 `loops.record` does an unlocked read-modify-write of the loop note; `chat`
 running `checkpoint` can race a `serve` tick on the same root → lost updates +
 sqlite "database is locked". **Resolution (S4/S6):** one `fcntl.flock` per root
-at `~/.oracle/locks/<instance>.lock`, held around every `run_verb` and every
-`tick_instance`. `serve.lock` only prevents double daemons; the per-root lock
-prevents chat/serve overlap.
+at `~/.oracle/locks/<instance>.lock`, held around every `run_verb` AND every
+gateway turn AND every `tick_instance`. `serve.lock` only prevents double
+daemons; the per-root lock prevents chat/serve overlap. Scheduler uses
+`LOCK_NB` with bounded retry and skips the tick rather than stalling the daemon
+when a lock is busy (`test_flock_serializes_two_concurrent_run_verbs`,
+`test_tick_skips_when_root_locked_nb`).
 
 ### A5 — "autonomy off ⇒ no-op" still appends deny rows ✅ P1
 `harness` logs an intended `action_event` per blocked loop each tick → ledger

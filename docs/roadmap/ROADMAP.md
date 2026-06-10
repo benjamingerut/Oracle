@@ -111,10 +111,10 @@ v1.0 ──► P1 Foundation Hardening ──► P2 Confidential Tier ──► 
 
 | Phase | Title | Closes | Headline deliverable |
 |---|---|---|---|
-| **1** | Foundation Hardening | #6, #7 (partial); enables all | SECURITY.md enforcer map, eval-harness skeleton, `oracle upgrade`, config versioning + migration, backup/restore from shell |
+| **1** | Foundation Hardening | #6, #7 (partial); enables all | SECURITY.md enforcer map, `testkit.py` eval substrate, `oracle upgrade`, config versioning + migration, backup/restore from shell |
 | **2** | Confidential Tier | #1 | a real, audited minimizer + verified local confinement so a local model can reason over confidential material |
 | **3** | Forced Grounding | #2 | claim-gating: material assertions structurally require an answer-protocol envelope, on every surface |
-| **4** | Gateway Platform | #3 | adapter abstraction; Slack, email, and a local HTTP/MCP surface alongside Telegram; per-surface ceilings; streaming |
+| **4** | Gateway Platform | #3 | adapter abstraction; Slack, email, and a local HTTP/MCP surface alongside Telegram; per-surface ceilings; optional typing indicators |
 | **5** | Operations & Fleet | #4, #5, #7 | summarization context, real per-user identity, multi-instance fleet ops, scheduled briefing delivery, secrets/backup lifecycle |
 | **6** | Trust & Evaluation | measures all | continuous eval harness: grounded-rate, refusal correctness, leak-attempt blocking, policy conformance, gated in CI |
 

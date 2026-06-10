@@ -8,8 +8,8 @@ confidential material with redaction enforced in code and recorded in the
 ledger. **No path in this phase ever raises the external-model ceiling above
 `public`.** That line does not move, ever.
 
-Read first: `docs/ROADMAP.md`, `STRESS.md` (H2 — why allow-minimized was not a
-grant), the kernel's `policy.py` (`check_processing` returns
+Read first: `docs/roadmap/ROADMAP.md`, `STRESS.md` (H2 — why allow-minimized was not a
+grant), the kernel's `_tools/policy.py` (`check_processing` returns
 `allow|allow-minimized|deny`).
 
 Depends on: Phase 1 (testkit for leak-assertions, SECURITY.md map).
@@ -62,7 +62,11 @@ def ceiling_for(root, environment, local_is_confined) -> Ceiling
 @dataclass
 class Ceiling:
     plain: str                 # highest exactly-"allow" tier (unchanged logic)
-    minimized: str             # highest "allow-minimized" tier, IFF confinement verified
+    minimized: str             # capped at "confidential" for local_agent+confined, IFF
+                               # confinement verified. NOT "highest allow-minimized tier"
+                               # (which would reach "secret" per the matrix) — capping at
+                               # confidential is a deliberate conservative bound that avoids
+                               # re-opening STRESS H2 for restricted/secret material.
 def confinement_verified(cfg, root) -> bool   # local_is_confined AND endpoint loopback
                                               # AND a minimizer is present in the root
 ```
@@ -114,10 +118,12 @@ to `minimized`, only when `confinement_verified` is true. External endpoints:
   passes); WITH a receipt at/under `minimized`, it is released. *Tests:* extend
   `test_verbtools.py`; a `testkit` leak scenario. *Deps:* P2-T1, P2-T3, P1-T2.
 
-- **P2-T5 — confinement doctrine + doctor.** `provider.local_is_confined`
-  becomes a first-class, documented, doctor-checked setting: doctor explains
-  what confinement means, what it does/doesn't guarantee (loopback ≠ no
-  forwarding — STRESS C2), and shows the resulting plain/minimized ceilings.
+- **P2-T5 — confinement doctrine + doctor.** Add `provider.local_is_confined`
+  as a new, first-class, documented, doctor-checked config setting (it was
+  removed in S1 remediation as a dead security knob; this task reintroduces it
+  with real semantics backed by the minimizer): doctor explains what confinement
+  means, what it does/doesn't guarantee (loopback ≠ no forwarding — STRESS C2),
+  and shows the resulting plain/minimized ceilings.
   *Acceptance:* doctor on a confined-local config shows `confidential`
   minimized ceiling; on external shows public/public with an explanation.
   *Tests:* extend `test_cli.py`/doctor tests. *Deps:* P2-T3.

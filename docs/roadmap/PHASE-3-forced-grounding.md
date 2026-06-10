@@ -7,7 +7,7 @@ confident model can still emit an ungrounded claim in prose; only the footer
 betrays it. This phase makes grounding structurally unavoidable for material
 assertions, on every surface, enforced in code (I5).
 
-Read first: `docs/ROADMAP.md`, `docs/DESIGN.md` (D5), the kernel
+Read first: `docs/roadmap/ROADMAP.md`, `docs/DESIGN.md` (D5), the kernel
 `answer_protocol.py` (envelope shape, verdicts 0/2/3/4).
 
 Depends on: Phase 1. Composes with Phase 2 (minimized answers carry envelopes).
@@ -94,7 +94,9 @@ class AgentLoop:
 
 - **P3-T3 — repair loop in AgentLoop.** Wire `GroundingPolicy`, the repair
   turn (tools re-enabled), the `max_repair` budget, and the final
-  redact-and-notice fallback. Preserve message-pairing invariants from P1.
+  redact-and-notice fallback. Preserve the v1 message-pairing invariant (STRESS
+  I1: every tool-call message must remain paired with its tool-reply; repair
+  turns are appended as new user/assistant groups, never spliced mid-pair).
   *Acceptance:* a scripted model that asserts ungrounded → repair turn → calls
   `oracle_answer` → grounded release; a stubborn model that never grounds →
   offending sentences redacted, notice + fix shown, no unbacked claim in the
@@ -139,7 +141,7 @@ terminate (interaction with the iteration cap)? Append findings.
 
 - [ ] Deterministic extractor + checker with a labeled corpus (recall ≥ 0.95).
 - [ ] Repair loop with redaction fallback; no unbacked material claim ever
-      released; pairing invariants preserved.
+      released; STRESS I1 message-pairing invariant preserved.
 - [ ] ENFORCE default; gateway non-overridable; local OBSERVE opt-down logged.
 - [ ] Negligible added latency (benchmarked).
 - [ ] SECURITY.md guarantee added and backed.

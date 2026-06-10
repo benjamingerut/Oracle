@@ -8,7 +8,7 @@ mapping, all sharing the same agent loop, policy bridge, and (from Phase 3)
 forced grounding. This is the single highest-leverage *reach* feature: "ask the
 company oracle from Slack."
 
-Read first: `docs/ROADMAP.md`, `SPEC.md` S7 (current Telegram contract),
+Read first: `docs/roadmap/ROADMAP.md`, `SPEC.md` S7 (current Telegram contract),
 `STRESS.md` H3/M4 (private-chat-only, write provenance/rate limit).
 
 Depends on: Phase 1 (config versioning). Composes with Phase 3 (grounding) and
@@ -58,7 +58,8 @@ feeding `GatewayCore`.
 ### Adapters (each new, each stdlib-only)
 ```python
 gateway/telegram_adapter.py   # refactor of today's gateway, long-poll
-gateway/slack_adapter.py      # Slack Events API over the local HTTP server (Phase 4 http core), or Socket Mode via urllib ws-less long-poll fallback
+gateway/slack_adapter.py      # See P4-T2 feasibility note — delivery mechanism decided at
+                               # phase opening; implemented under whichever option is chosen.
 gateway/email_adapter.py      # IMAP poll + SMTP send, stdlib imaplib/smtplib
 gateway/http_adapter.py       # a localhost-only http.server surface + minimal MCP-shaped endpoint
 ```
@@ -100,10 +101,38 @@ adapters (http) run their own listener thread; poll-capable adapters
 
 - **P4-T2 — Slack adapter.** `slack_adapter.py`: verify Slack request
   signatures (HMAC, stdlib `hmac`), resolve the user, DM-only `is_private`,
-  send via `chat.postMessage` (urllib). *Acceptance:* a signed DM from an
-  allowlisted user round-trips through GatewayCore; an unsigned/!DM/unknown
-  request is refused; signature mismatch rejected. *Tests:*
-  `test_slack_adapter.py` (fake HTTP). *Deps:* P4-T1, P4-T4 (shares http core).
+  send via `chat.postMessage` (urllib).
+
+  **Phase-opening feasibility checkpoint (decide before coding):** Slack event
+  delivery requires one of two approaches, each with trade-offs:
+
+  - **Option A — Socket Mode (preferred if an optional websocket dependency is
+    acceptable).** Slack's Socket Mode delivers events over a persistent
+    WebSocket without requiring a public-facing HTTP endpoint. Implement using
+    an OPTIONAL third-party `websockets` library; per I1 (graceful-degradation
+    clause), the Slack adapter is disabled/skipped when the library is absent
+    and degrades cleanly (no hard import at the module level). This is the
+    approach that fits I1's "optional lib" pattern.
+
+  - **Option B — Events API via documented tunnel/reverse-proxy.** The Slack
+    Events API posts to a public HTTPS URL. The local oracle does not have one
+    by default. This option is viable only if the operator deploys a
+    reverse-proxy or tunnel (e.g. ngrok) and the requirement is explicitly
+    documented. The adapter's `poll()` becomes a no-op (Slack pushes to the
+    http_adapter endpoint via P4-T4); the HTTP adapter must then route
+    Slack-signed payloads to `slack_adapter`.
+
+  The "Events API over the local HTTP server via urllib ws-less long-poll" is
+  not a viable approach: Slack's Events API is push-only (no long-poll), and
+  urllib does not provide WebSocket support. This framing must not appear in
+  the implementation. Record the chosen option and any dependency decision in
+  the phase-opening stress-pass notes before coding begins.
+
+  *Acceptance:* a signed DM from an allowlisted user round-trips through
+  GatewayCore; an unsigned/!DM/unknown request is refused; signature mismatch
+  rejected; if Option A, adapter is cleanly disabled when the optional dep is
+  absent. *Tests:* `test_slack_adapter.py` (fake HTTP / fake socket).
+  *Deps:* P4-T1; Option A also requires choosing the optional dep before P4-T5.
 
 - **P4-T3 — email adapter.** `email_adapter.py`: IMAP poll (stdlib `imaplib`),
   parse From, allowlist-resolve, reply via SMTP to the single sender only;

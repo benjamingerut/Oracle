@@ -11,7 +11,7 @@ A **sovereign company oracle you can install like a product**. Two layers:
 
 | Layer | Origin | Role |
 |---|---|---|
-| **Kernel** (`src/oracle_agent/assets/oracle-kernel`) | Oracle Spawn (vendored verbatim) | The deterministic, stdlib-only epistemic substrate: graduated answer authority, truth map, immutable source records + ledgers, sensitivity×environment policy matrix, review inbox, loops, earned autonomy, doctrine→enforcer lint. 39 tools, 525 tests. |
+| **Kernel** (`src/oracle_agent/assets/oracle-kernel`) | Oracle Spawn (vendored verbatim) | The deterministic, stdlib-only epistemic substrate: graduated answer authority, truth map, immutable source records + ledgers, sensitivity×environment policy matrix, review inbox, loops, earned autonomy, doctrine→enforcer lint. 40 tool modules (38 CLI groups via `oracle_cli.py`), 594 kernel tests. |
 | **Shell** (`src/oracle_agent/*`) | New code, Hermes-patterned | The installable system-agent layer: global `oracle` command, setup wizard, model-agnostic LLM agent loop whose *only tools are kernel verbs*, scheduler daemon, Telegram gateway, doctor, installer. |
 
 The kernel is never modified by the shell. Spawned oracle roots remain fully
@@ -60,16 +60,18 @@ governance property the kernel enforces (containment, immutability, policy,
 review-gating) therefore survives the new runtime unmodified.
 
 **D3 — The model picker is policy-gated.** The shell classifies the provider
-endpoint as `local_agent` (provably loopback — every resolved address checked)
-or `external` (everything else, fail-closed) and asks the **root's own**
-policy gate (via its CLI, never by importing root code) for the sensitivity
-ceiling: the highest label whose verdict is exactly `allow` —
+endpoint as `local_agent` (provably loopback — literal `localhost` or an IPv4/
+IPv6 address whose `is_loopback` is true; DNS is NOT consulted; `0.0.0.0` is
+external) or `external` (everything else, fail-closed) and asks the **root's
+own** policy gate (via its CLI, never by importing root code) for the
+sensitivity ceiling: the highest label whose verdict is exactly `allow` —
 `allow-minimized` is not a grant. The ceiling is enforced in code on the
 *output of every tool and on the system prompt*, not just on search input. Net
 effect: an external API model sees `public` only; a local model sees up to
 `internal`; confidential+ stays out of every model context until a real
-minimizer exists (see STRESS H2). This is the matrix Oracle always had, now
-wired to model selection — something Hermes cannot offer.
+minimizer exists (see STRESS H2). Confidential-tier unlock is roadmap Phase 2
+work. This is the matrix Oracle always had, now wired to model selection —
+something Hermes cannot offer.
 
 **D4 — Surfaces have different blast radii.** Local `oracle chat` (operator's
 own machine) exposes the full user-role verb set. Gateway sessions (remote
@@ -86,9 +88,11 @@ and appends a deterministic authority footer (grounded/supported/caveated, or
 can't fake the label.
 
 **D6 — Headless = kernel harness, nothing else.** `oracle serve` never invents
-its own background actions; it ticks `harness.py --once` per instance, so the
-kill-switch, autonomy level, allowlist and blast caps decide everything.
-Autonomy ships OFF; `serve` with autonomy off is a safe no-op plus gateway.
+its own background actions; it ticks `harness.py --once` per instance under
+the per-root flock, so the kill-switch, autonomy level, allowlist and blast
+caps decide everything. Every gateway turn also holds the per-root flock,
+serializing chat and serve writes across processes (STRESS A4). Autonomy ships
+OFF; `serve` with autonomy off is a safe no-op plus gateway.
 
 **D7 — Identity.** The kernel's `--actor/--role` flags are advisory-by-design.
 The gateway upgrades this: Telegram user IDs are verified by the platform, the

@@ -35,7 +35,7 @@ def locks_dir() -> Path                    # profile_dir()/locks, 0o700
   "provider": {"name":"anthropic|openai|openrouter|ollama|custom",
     "base_url":"https://api.openai.com/v1","model":"...",
     "fallback_model":null, "api_key_env":"ORACLE_LLM_API_KEY",
-    "max_tokens":4096, "local_is_confined":false},
+    "max_tokens":4096, "local_is_confined":false},  // DEAD KNOB — see S3 note
   "chat": {"max_iterations":20, "tool_result_max_chars":20000,
             "history_max_chars":400000},
   "serve": {"tick_seconds":300},
@@ -99,19 +99,22 @@ def chat_with_retry(client, messages, *, tools=None, max_attempts=5,
 ## S3. `agentloop/policy_bridge.py` — environment + ceiling
 
 ```python
-LOOPBACK = {"localhost","127.0.0.1","::1","0.0.0.0"}
+_LOOPBACK_NAMES = {"localhost"}   # only exact name; 0.0.0.0 is NOT loopback
 def environment_for(base_url: str) -> str
-def max_sensitivity_for(root: Path, environment: str,
-                        local_is_confined: bool) -> str
+def max_sensitivity_for(root: Path, environment: str) -> str  # local_is_confined REMOVED (S1 remediation)
 def min_sensitivity(a: str, b: str) -> str
 def sensitivity_rank(label: str, order: list[str]) -> int
 ```
 
 - **environment_for (C2/L1/L2):** parse with `urlsplit`; take `.hostname`
-  lowercased. Return `local_agent` iff the hostname is a literal loopback name
-  OR every address from `socket.getaddrinfo(host, None)` is in an
-  IPv4-loopback (`127.0.0.0/8`) / IPv6-loopback (`::1`) block. Any parse error,
-  resolution error, or non-loopback address ⇒ `external` (fail closed).
+  lowercased. Return `local_agent` iff the hostname is the exact string
+  `localhost` OR is a literal IPv4/IPv6 address whose `is_loopback` is true
+  (`127.0.0.0/8` or `::1`). DNS is deliberately NOT consulted (TOCTOU fix).
+  `0.0.0.0` is NOT loopback (it is the unspecified address); any such host
+  ⇒ `external`. Any parse error or non-loopback ⇒ `external` (fail closed).
+  The shell produces only `local_agent` or `external`; `local_deterministic`
+  is a kernel-internal environment for tool-layer operations and is never
+  produced by `environment_for`.
 - **max_sensitivity_for (C3/H2):** never imports root code. Reads
   `SENSITIVITY_ORDER` by invoking `oracle policy check` (S4 `run_verb`) for each
   label against `environment`; the ceiling is the **highest label whose verdict
@@ -120,9 +123,11 @@ def sensitivity_rank(label: str, order: list[str]) -> int
   parsed as data, falling back to the canonical
   `["public","internal","confidential","restricted","secret"]`. Any error ⇒
   `"public"`.
-- Effect: `external`→`public`, `local_deterministic`→`internal`,
-  `local_agent`→`internal` (NOT raised to confidential unless
-  `local_is_confined` AND a future minimizer — deferred, so v1 = `internal`).
+- `local_is_confined` was removed in S1 remediation (dead security knob — it
+  was present in `DEFAULT_CONFIG` but never read by the bridge). A real
+  confidential-tier confinement mechanism is roadmap Phase 2 work.
+- Effect: `external`→`public`, `local_agent`→`internal` (confidential unlock
+  deferred to Phase 2).
 
 ## S4. `agentloop/verbtools.py` — kernel verbs as tools
 
@@ -158,8 +163,10 @@ by the dispatcher — model args fill value slots only, A9):
 - `gateway`: `oracle_status, oracle_search, oracle_answer, oracle_review,
   oracle_capture, oracle_remember` (6) — no `ingest`, no `brief`, no
   `checkpoint`.
-- When `environment == external`, `oracle_brief` and `review list` are dropped
-  (output sensitivity not self-attestable / carries titles).
+- When `environment == external`, `oracle_brief`, `oracle_checkpoint`, and
+  `oracle_loops_due` are dropped from the schema entirely (structural exclusion;
+  dispatcher denies hallucinated calls fail-closed). `review list` (titles) is
+  also dropped; `review summary` (counts only) is used instead.
 - No control-plane (`admin`, `truth`, `policy` mutate, `upgrade`, `actions`,
   `connector`, `backup`) verb is EVER in any schema.
 
@@ -173,8 +180,11 @@ by the dispatcher — model args fill value slots only, A9):
 - `oracle_search`: ceiling passed as `--max-sensitivity`; the dispatcher also
   strips any model-supplied sensitivity token (M5).
 - `oracle_brief`: only offered when ceiling ≥ `internal` AND environment ≠
-  external; its output is scanned and any line whose envelope marker exceeds
-  ceiling is dropped (briefing already labels per claim).
+  external (availability gate). **Per-line sensitivity scan: NOT IMPLEMENTED.**
+  `briefing.py` emits only a document-level `sensitivity_ceiling`; it has no
+  per-line/per-section markers, so line-level filtering cannot be done without
+  kernel changes. This is upstream-kernel work (advisory, not enforced). The
+  availability gate is the current enforcer.
 - `oracle_status`: replaced by the minimized snapshot (S5).
 - All text capped at `tool_result_max_chars` with a truncation marker.
 
@@ -194,7 +204,7 @@ instance root, or matching `(?i)(\.env|id_rsa|\.pem|secret|credential)`.
 ## S5. `agentloop/loop.py` — the agent loop
 
 ```python
-def minimized_status(root: Path) -> str         # rung + bare counts only
+def minimized_status(root: Path) -> dict        # rung + bare counts only
 def build_system_prompt(root, surface, environment, max_sensitivity) -> str
 @dataclass
 class TurnResult: text: str; envelopes: list[dict]; iterations: int
@@ -247,9 +257,10 @@ def serve(cfg: dict, *, once=False) -> int
 - **root_lock (A4):** `fcntl.flock(LOCK_EX)` on `locks/<name>.lock`. Held around
   every `tick_instance` AND every `run_verb` (chat/gateway), serializing all
   writers to one root across processes. `serve.lock` only prevents two daemons.
-- `serve`: read config at startup (A11 — registry changes need restart/SIGHUP);
-  loop ticking every `tick_seconds`, polling the gateway between ticks when
-  enabled; clean SIGTERM/SIGINT release. `once=True`: one tick + one poll.
+- `serve`: read config at startup (A11 — registry changes need a daemon
+  restart); loop ticking every `tick_seconds`, polling the gateway between
+  ticks when enabled; clean SIGTERM/SIGINT release (SIGHUP is not wired —
+  restart-only for config reload). `once=True`: one tick + one poll.
 - Logs to `~/.oracle/logs/serve.log`, line-oriented, no secrets, no message
   bodies.
 
@@ -273,14 +284,15 @@ class TelegramGateway:
   surface). Control-plane never crosses the gateway.
 - Each (user, instance) gets a cached `AgentLoop` (surface `gateway`, ceiling
   `min(provider ceiling, gateway.max_sensitivity)`) retained for the daemon
-  lifetime (A7); cache is LRU-capped and idle-evicted (L3).
+  lifetime (A7); cache is LRU-capped at 64 entries (capacity eviction only;
+  idle-time eviction is NOT implemented).
 - **Write provenance (M4):** `capture`/`remember` from the gateway are tagged
-  (the dispatcher injects a `--source-system gateway_user:<id>`-style marker
-  where the verb supports it) and rate-limited to
-  `gateway.per_user_writes_per_hour`; over limit → polite refusal, no verb run.
-- **Ledger (S7):** every handled turn appends to the instance's
-  `Meta.nosync/ledgers/gateway_event.jsonl` via the root's `ledger.py` (loaded
-  by the same subprocess-CLI discipline, not import):
+  (the dispatcher injects `--actor gateway_user:<id>` where the verb supports
+  it) and rate-limited to `gateway.per_user_writes_per_hour`; over limit →
+  polite refusal, no verb run.
+- **Ledger (S7):** every handled turn is recorded DIRECTLY by the shell process
+  to `Meta.nosync/ledgers/gateway_event.jsonl` via an in-process locked
+  `_append_jsonl` helper (not via a ledger.py subprocess):
   `{kind:"gateway_turn", platform, user_id, chat_id, chars_in, chars_out,
   verdicts:[...], ts}` — metadata only, never bodies.
 - Replies sent as plain text (no markdown parsing of model output), chunked at
@@ -316,11 +328,14 @@ allowlist seed) → final `doctor`.
 
 **S8.2 doctor** (`[ok]/[warn]/[fail]` + one-line fix): python ≥3.10; profile
 perms (`~/.oracle` 0700, `.env` 0600); config parses + secret-guard passes;
+`ingest_roots` non-empty (warn if empty); optional `NAME` argument scopes
+checks to one instance (honored, enforcer: `test_doctor_named_instance_only`);
 each instance: root exists, `oracle check` rc, manifest stamped, **kernel
-`tools_version` vs vendored (warn on skew, A6)**; provider: key resolvable,
-`environment_for` result + resulting ceiling shown, `GET {base}/models`
-reachable (warn-only); gateway: token resolvable + allowlist non-empty when
-enabled; serve lock freshness. Exit 0 iff no `[fail]`.
+`tools_version` vs vendored (warn on skew, A6)**, zero-sources warn; provider:
+key resolvable, `environment_for` result + resulting ceiling shown, non-https
+non-loopback endpoint → `[fail]`, `GET {base}/models` reachable (warn-only);
+gateway: token resolvable + allowlist non-empty when enabled. Exit 0 iff no
+`[fail]`. (Serve lock freshness check is NOT implemented.)
 
 ## S9. Installer (`installer/install.sh`)
 
@@ -332,33 +347,53 @@ POSIX sh, no sudo, nothing system-wide. Detect `python3` ≥3.10 → obtain sour
 ## S10. Test plan (tests/shell/)
 
 - `test_config.py` — defaults; atomic save; secret-in-config refusal (key,
-  userinfo, bearer); `.env` round-trip + 0600 perms (stat the fd); resolve
-  order; `set_env_secret` never world-readable mid-write.
+  userinfo, bearer, `sk-ant-` keys, Telegram bot tokens); `.env` round-trip +
+  0600 perms (stat the fd); resolve order; `set_env_secret` never
+  world-readable mid-write.
 - `test_llm_client.py` — in-process `http.server`: happy path, tool-call parse,
-  each error class, retry/backoff schedule (injected sleep), Retry-After,
-  **3xx redirect raises (not followed)**, key never in error text.
+  each error class, retry/backoff schedule (injected sleep), Retry-After
+  (capped 30 s / budget 120 s), **3xx redirect raises (not followed)**,
+  per-request local_agent host guard, http-with-key-to-nonloopback refusal,
+  key never in error text.
 - `test_policy_bridge.py` — loopback table (`127.0.0.1`, `localhost`, `::1`,
-  ports; `127.0.0.2`→external, `127.0.0.1@evil.com`→external,
-  `localhost.evil.com`→external, garbage→external); ceiling vs a spawned root's
-  `policy check` CLI (external→public, local_agent→internal); fail-closed to
-  public on broken root.
+  ports; `127.0.0.2`→external, `0.0.0.0`→external,
+  `127.0.0.1@evil.com`→external, `localhost.evil.com`→external,
+  garbage→external; NO DNS consulted); ceiling vs a spawned root's `policy
+  check` CLI (external→public, local_agent→internal); fail-closed to public on
+  broken root; `validate_sensitivity_label` unknown raises.
 - `test_verbtools.py` — spawned root: schema surface per (surface,
-  environment); search ceiling forced + smuggled sensitivity stripped; answer
-  envelope parsed from stdout, rc-verdict not error; answer-above-ceiling
-  withheld; ingest path-allowlist (deny `~/.oracle/.env`, sibling root, `..`);
-  env scrub incl. custom key-env; truncation.
+  environment); external drops `oracle_brief`, `oracle_checkpoint`,
+  `oracle_loops_due` (`test_external_drops_checkpoint_and_loops_due`); dropped
+  verb denied fail-closed (`test_dropped_verb_denied_on_external`); search
+  ceiling forced + smuggled sensitivity stripped
+  (`test_smuggled_sensitivity_flag_stripped_from_search_terms` — M5 enforcer);
+  answer envelope parsed from stdout, rc-verdict not error;
+  answer-above-ceiling withheld; ingest path-allowlist (deny `~/.oracle/.env`,
+  sibling root, `..`); ingest denied when `ingest_roots` empty;
+  env scrub incl. custom key-env; truncation (`test_tool_result_truncation_respected`).
 - `test_agentloop.py` — scripted fake client: multi-step loop; footer for
   grounded/supported/refused/no-protocol; iteration cap forced answer;
-  context-overflow eviction; injection-in-tool-output stays data; system prompt
-  byte-stable across turns + carries no `most_urgent`.
-- `test_scheduler.py` — autonomy-off tick = `skipped, rc 0, no harness spawn,
-  no new ledger rows`; autonomy-on tick runs; per-root flock serializes two
-  concurrent run_verbs; serve lock exclusivity.
+  context-overflow eviction preserving tool-call pairing (I1); forced eviction
+  (`test_force_eviction_drops_a_group`); injection-in-tool-output stays data
+  (`test_injection_in_tool_output_stays_data` — system-prompt injection
+  guard); system prompt byte-stable across turns + carries no `most_urgent`.
+- `test_scheduler.py` — autonomy-off tick = `skipped, rc 0, no harness spawn`;
+  autonomy-on tick runs; `LOCK_NB` skip-if-busy
+  (`test_tick_skips_when_root_locked_nb`); per-root flock serializes two
+  concurrent run_verbs (`test_flock_serializes_two_concurrent_run_verbs` —
+  A4 enforcer); serve lock exclusivity; serve.log rotation.
 - `test_telegram.py` — fake API: private allowed flow end-to-end (scripted
   loop) with ledger row; unknown sender ignored (no reply); group chat ignored;
-  `from`-less ignored; write rate-limit; chunking; access-change refusal.
-- `test_cli.py` — instance resolution matrix; spawn+register; `chat -m`
-  one-shot (stubbed loop); `--max-sensitivity` can only lower; doctor on a
-  healthy spawn exits 0; version skew warns.
+  `from`-less ignored; write rate-limit; chunking; access-change refusal;
+  offset persisted/loaded across instances; backoff on consecutive poll
+  failures (capped 60 s); LRU cache eviction; no-redirect opener; gateway
+  turn holds root lock.
+- `test_cli.py` — instance resolution matrix; spawn+register; spawn collision
+  refusal; `chat -m` one-shot (stubbed loop); `--max-sensitivity` can only
+  lower; doctor on a healthy spawn exits 0; doctor named instance arg honored
+  (`test_doctor_named_instance_only`); doctor empty `ingest_roots` warns;
+  doctor zero-sources warns; doctor non-https non-loopback fails; version skew
+  warns (`test_version_skew_warns`); wizard validates `ingest_roots` + Telegram
+  IDs.
 - `test_stdlib_only.py` — walk `src/oracle_agent` (excluding `assets/`) and
   assert every import is stdlib or package-local.

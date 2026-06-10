@@ -8,7 +8,7 @@ adversarial and behavioral scenarios on every change and gates CI on the
 results. "Trustworthy" becomes a number with a trend, in the same spirit as the
 kernel's value-scorecard.
 
-Read first: `docs/ROADMAP.md`, Phase 1 (`testkit.py`, `security_map.py`),
+Read first: `docs/roadmap/ROADMAP.md`, Phase 1 (`testkit.py`, `security_map.py`),
 `STRESS.md` (the attack classes to encode as scenarios).
 
 Depends on: all prior phases (it scores their guarantees). Built last.

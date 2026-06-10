@@ -106,7 +106,7 @@ the root's `Meta.nosync/Autonomy/autonomy.yml`.
 ```
 
 Design rationale: `docs/DESIGN.md`. Binding interfaces: `docs/SPEC.md`.
-Adversarial review record (22 spec findings + 4 implementation findings, all
+Adversarial review record (23 spec findings + 4 implementation findings, all
 resolved or accepted-and-documented): `docs/STRESS.md`.
 
 ## Roadmap
@@ -121,7 +121,7 @@ written to drive agentic team development.
 ## Verify
 
 ```sh
-make check    # manifest → spawn → audit → lint → secret scans → 626 tests
+make check    # manifest → spawn → audit → lint → secret scans → 753 tests
 ```
 
 ## Honest limits (v1)

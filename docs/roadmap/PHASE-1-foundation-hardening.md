@@ -6,7 +6,7 @@ harness skeleton, a real kernel-upgrade path, and config versioning/migration +
 shell-driven backup. No new user-facing capability ships here; what ships is
 the ability to evolve safely.
 
-Read first: `docs/ROADMAP.md` (invariants I1–I6), `docs/DESIGN.md`,
+Read first: `docs/roadmap/ROADMAP.md` (invariants I1–I6), `docs/DESIGN.md`,
 `docs/SPEC.md`, `docs/STRESS.md`.
 
 ## Goals
@@ -64,8 +64,10 @@ oracle upgrade kernel NAME          # apply `admin upgrade apply` to instance NA
 oracle upgrade self                 # re-vendor: copy a newer kernel tree into the
                                     # package (dev/maintainer path; --from-dir)
 ```
-- `upgrade kernel` runs the root's own `_tools/upgrade.py` under the per-root
-  lock; never headless; prints the kernel's verdict; rolls back on its failure.
+- `upgrade kernel` runs the root's own `_tools/upgrade.py apply --from-kernel
+  <vendored-asset-dir> --approve <admin>` under the per-root lock (source dir
+  is the shell package's vendored `assets/oracle-kernel/`); never headless;
+  prints the kernel's verdict; rolls back on its failure.
 - `upgrade self` is maintainer tooling: re-vendor + re-render the manifest +
   run `make check`; refuses if the resulting tree fails lint/tests.
 
@@ -78,8 +80,11 @@ MIGRATIONS: dict[int, callable]  # n -> (cfg) -> cfg
 
 ### backup (cli.py + service or a new `oracle_agent/backup_shell.py`)
 ```
-oracle backup [NAME] [--out DIR]   # wraps root _tools/backup.py per instance
-oracle restore NAME --from PATH    # restore-verify via the kernel; refuses on hash mismatch
+oracle backup [NAME] [--out DIR]   # wraps root _tools/backup.py run per instance
+oracle restore NAME --from PATH    # shell-implemented restore: copy backup tree back to root,
+                                   # then run _tools/backup.py verify-restore to prove integrity;
+                                   # refuses on hash mismatch (I4). No kernel "restore" subcommand
+                                   # exists — the kernel provides only "run" and "verify-restore".
 ```
 
 ## Tasks
@@ -107,11 +112,19 @@ oracle restore NAME --from PATH    # restore-verify via the kernel; refuses on h
   `test_config.py`. *Deps:* none.
 
 - **P1-T4 — `oracle upgrade kernel`.** Wire the CLI to the root's
-  `_tools/upgrade.py` under the per-root lock, scrubbed env, printing the
-  kernel verdict; `--check` reports version skew (reuse doctor's comparison).
+  `_tools/upgrade.py --from-kernel SRC` under the per-root lock, scrubbed env,
+  printing the kernel verdict; `--check` reports version skew (reuse doctor's
+  comparison). `SRC` is the shell package's own vendored
+  `src/oracle_agent/assets/oracle-kernel/` tree of the *newer* installed
+  package version — not a user-supplied arbitrary path. The upgrade.py
+  `check`/`apply` subcommands require a `--from-kernel <dir>` that contains a
+  `_tools/` subtree and a `.kernel-manifest.json`; the shell resolves this from
+  the vendored asset tree and passes it. `apply` additionally requires
+  `--approve <admin>` (upgrade.py guarantee 1: never headless).
   *Acceptance:* against a spawned root, `upgrade --check` reports matching
-  versions; a simulated older root reports skew; apply is a clean no-op when
-  already current. *Tests:* `test_upgrade.py`. *Deps:* P1-T3 (version surface).
+  versions; a simulated older root (older `.kernel-manifest.json`) reports skew;
+  apply is a clean no-op when already current. *Tests:* `test_upgrade.py`.
+  *Deps:* P1-T3 (version surface).
 
 - **P1-T5 — `oracle upgrade self` (maintainer re-vendor).** A documented
   script/command that copies a kernel tree from `--from-dir`, re-renders the
@@ -121,13 +134,18 @@ oracle restore NAME --from PATH    # restore-verify via the kernel; refuses on h
   rejected. *Tests:* `test_revendor.py` (guarded/skipped if no source dir).
   *Deps:* none.
 
-- **P1-T6 — shell backup/restore.** `oracle backup`/`oracle restore` wrapping
-  `_tools/backup.py` per instance under the per-root lock; restore is
-  hash-verified by the kernel and refuses on mismatch (I4). Document that
-  secrets in `.env` are backed up only if the operator opts in (default:
-  config + instance data, NOT `.env`). *Acceptance:* backup then restore of a
-  spawned root reproduces its ledgers/notes; a tampered archive is refused.
-  *Tests:* `test_backup_shell.py`. *Deps:* P1-T3.
+- **P1-T6 — shell backup/restore.** `oracle backup` wraps `_tools/backup.py
+  run` per instance under the per-root lock. `oracle restore` is a
+  shell-implemented operation: it copies the backup tree back to the instance
+  root file-by-file (hash-verifying each copy), then calls `_tools/backup.py
+  verify-restore` to prove the round-trip integrity; refuses on mismatch (I4).
+  The kernel provides only the `run` and `verify-restore` subcommands — there
+  is no kernel `restore` subcommand; the shell owns the restore logic.
+  Document that secrets in `.env` are backed up only if the operator opts in
+  (default: config + instance data, NOT `.env`). *Acceptance:* backup then
+  restore of a spawned root reproduces its ledgers/notes; a tampered archive
+  is refused by the verify-restore check. *Tests:* `test_backup_shell.py`.
+  *Deps:* P1-T3.
 
 ## Security invariants for this phase
 
