@@ -109,6 +109,15 @@ Design rationale: `docs/DESIGN.md`. Binding interfaces: `docs/SPEC.md`.
 Adversarial review record (22 spec findings + 4 implementation findings, all
 resolved or accepted-and-documented): `docs/STRESS.md`.
 
+## Roadmap
+
+The forward arc from v1.0 to the final best state — confidential-tier
+minimization, forced grounding, a multi-surface gateway, fleet operations, and
+continuous evaluation — is in `docs/roadmap/`. `ROADMAP.md` is the index and
+rationale; each `PHASE-N-*.md` is a standalone spec (frozen interfaces, task
+breakdown with IDs, acceptance criteria, test plans, definition of done)
+written to drive agentic team development.
+
 ## Verify
 
 ```sh
