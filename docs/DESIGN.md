@@ -60,13 +60,16 @@ governance property the kernel enforces (containment, immutability, policy,
 review-gating) therefore survives the new runtime unmodified.
 
 **D3 — The model picker is policy-gated.** The shell classifies the provider
-endpoint as `local_agent` (provably loopback) or `external` (everything else,
-fail-closed) and asks the **root's own** `policy.py` for the sensitivity
-ceiling that environment allows. Retrieval (`oracle search`) is capped at that
-ceiling *in code at dispatch* — an external API model can never be handed
-confidential chunks, regardless of what the model asks for. A local model
-(Ollama etc.) unlocks confidential work. This is the matrix Oracle always had,
-now wired to model selection — something Hermes cannot offer.
+endpoint as `local_agent` (provably loopback — every resolved address checked)
+or `external` (everything else, fail-closed) and asks the **root's own**
+policy gate (via its CLI, never by importing root code) for the sensitivity
+ceiling: the highest label whose verdict is exactly `allow` —
+`allow-minimized` is not a grant. The ceiling is enforced in code on the
+*output of every tool and on the system prompt*, not just on search input. Net
+effect: an external API model sees `public` only; a local model sees up to
+`internal`; confidential+ stays out of every model context until a real
+minimizer exists (see STRESS H2). This is the matrix Oracle always had, now
+wired to model selection — something Hermes cannot offer.
 
 **D4 — Surfaces have different blast radii.** Local `oracle chat` (operator's
 own machine) exposes the full user-role verb set. Gateway sessions (remote
