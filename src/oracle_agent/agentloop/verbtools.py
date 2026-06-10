@@ -187,6 +187,7 @@ class Dispatcher:
     scrub_env: list[str] = field(default_factory=list)
     tool_result_max_chars: int = 20000
     write_actor: str | None = None   # e.g. "gateway_user:123" (M4 provenance)
+    write_gate: object = None        # optional callable() -> bool (M4 rate limit)
     timeout: float = 120.0
 
     def _allowed(self, name: str) -> bool:
@@ -338,7 +339,18 @@ class Dispatcher:
                 return "path is not within a configured ingest root"
         return None
 
+    def _write_allowed(self) -> bool:
+        gate = self.write_gate
+        if gate is None:
+            return True
+        try:
+            return bool(gate())
+        except Exception:
+            return False
+
     def _do_oracle_remember(self, args: dict) -> ToolOutcome:
+        if not self._write_allowed():
+            return ToolOutcome("[denied: write rate limit reached for this user]", rc=2)
         ur = str(args.get("user_request", "")).strip()
         ans = str(args.get("answer_summary", "")).strip()
         if not ur or not ans:
@@ -355,6 +367,8 @@ class Dispatcher:
         return ToolOutcome(self._cap(out.strip() or "[remembered]"), rc=rc)
 
     def _do_oracle_capture(self, args: dict) -> ToolOutcome:
+        if not self._write_allowed():
+            return ToolOutcome("[denied: write rate limit reached for this user]", rc=2)
         kind = str(args.get("kind", "")).strip()
         target = str(args.get("target", "")).strip()
         if kind not in ("feedback", "value", "failure") or not target:

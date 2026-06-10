@@ -147,3 +147,12 @@ def test_env_is_scrubbed(spawned_root, monkeypatch):
     env = vt._scrubbed_env(["ORACLE_LLM_API_KEY"])
     assert "SOME_API_KEY" not in env
     assert "ORACLE_LLM_API_KEY" not in env
+
+
+def test_write_gate_blocks_remember(spawned_root):
+    d = _disp(spawned_root, write_gate=lambda: False)
+    out = d.dispatch("oracle_remember", {"user_request": "x", "answer_summary": "y"})
+    assert "rate limit" in out.text
+    d2 = _disp(spawned_root, write_gate=lambda: False)
+    out2 = d2.dispatch("oracle_capture", {"kind": "feedback", "target": "t"})
+    assert "rate limit" in out2.text
