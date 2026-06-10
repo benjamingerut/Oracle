@@ -1,6 +1,10 @@
 # Pre-Roadmap Remediation — Master Spec
 
-**Status: executing.** This spec tree remediates the findings of the 2026-06-10
+**Status: COMPLETE (2026-06-10).** All five phases executed and committed;
+gate green at 753 tests. One adjudicated architectural exception
+(backup.py manifest write, see SUB-3) and one stamped-not-implemented claim
+(SPEC S4 brief line-scan — kernel briefing output has no per-line markers;
+re-stamped in docs, upstream kernel work if ever needed). This spec tree remediates the findings of the 2026-06-10
 four-track review (shell security, kernel, docs consistency, goal alignment)
 so the forward roadmap (`docs/roadmap/`) starts from a sound, honest baseline.
 
