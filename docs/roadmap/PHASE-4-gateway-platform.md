@@ -8,6 +8,13 @@ mapping, all sharing the same agent loop, policy bridge, and (from Phase 3)
 forced grounding. This is the single highest-leverage *reach* feature: "ask the
 company oracle from Slack."
 
+**Scope addition (SUB-5 D3): scheduled briefing delivery moves INTO this
+phase** (it previously lived in Phase 5 as G4 / task P5-T4). A gateway that
+can *push*, not just reply, is the leverage feature: the kernel's
+`leadership-briefing` loop already produces briefs, and this phase's adapters
+are exactly the delivery surfaces. PHASE-5 now points here for briefing
+delivery; Phase 5's dependency on this phase is otherwise unchanged.
+
 Read first: `docs/roadmap/ROADMAP.md`, `SPEC.md` S7 (current Telegram contract),
 `STRESS.md` H3/M4 (private-chat-only, write provenance/rate limit).
 
@@ -84,11 +91,24 @@ gateway/http_adapter.py       # a localhost-only http.server surface + minimal M
 }
 ```
 
+### Briefing delivery — `service/briefer.py` (new; moved here from Phase 5)
+```python
+def due_briefings(cfg, instances) -> list[Delivery]   # reads each root's leadership-briefing cadence
+def deliver(cfg, delivery, gateways) -> None          # send the latest brief to the admin surface
+```
+- Driven by `serve`: when an instance's `leadership-briefing` loop has produced
+  a new dated brief, deliver it via an adapter's `send()` to the admin-chosen
+  channel(s) — every claim already passed the kernel's
+  `standing_deliverables` claim-gate, and delivery re-checks the ceiling for
+  the target surface (delivery is an *export*).
+
 ### serve.py
 `_build_gateway` becomes `_build_gateways` returning a list of (adapter, core)
 pairs; the serve loop polls each enabled adapter between ticks. Push-capable
 adapters (http) run their own listener thread; poll-capable adapters
-(telegram/email) are polled. One `GatewayCore` per (surface, instance).
+(telegram/email) are polled. One `GatewayCore` per (surface, instance). The
+serve loop also drives the briefer (P4-T8) between ticks: outbound scheduled
+sends ride the same adapters and the same ceiling checks as replies.
 
 ## Tasks
 
@@ -168,6 +188,19 @@ adapters (http) run their own listener thread; poll-capable adapters
   `verify_enforcers()` empty; doctor flags a misconfigured surface. *Deps:*
   P4-T1..T5, P1-T1.
 
+- **P4-T8 — scheduled briefing delivery (moved from Phase 5 / P5-T4).**
+  `service/briefer.py`; `serve` delivers new briefs from the kernel's
+  `leadership-briefing` loop output to the admin-chosen surface(s) on cadence,
+  through the adapters' `send()` path; re-checks the ceiling for each delivery
+  surface; ledgers a metadata-only delivery row. Admin chooses the surface(s)
+  in config; deny-by-default (no configured surface ⇒ no delivery).
+  *Acceptance:* a root with a fresh brief and a configured admin surface
+  delivers exactly once per new brief; nothing delivered when no new brief;
+  above-ceiling content for the surface withheld (a confidential brief never
+  reaches a public-ceiling channel); delivery to a non-private channel capped
+  at `public` like any reply. *Tests:* `test_briefer.py`. *Deps:* P4-T1,
+  P4-T5, P1.
+
 ## Security invariants for this phase
 
 - `GatewayCore` is the ONLY decision point; adapters never decide
@@ -181,6 +214,9 @@ adapters (http) run their own listener thread; poll-capable adapters
   adapter subprocesses (none expected) would scrub env if added.
 - Access-change refusal and metadata-only ledger are enforced in core, so every
   surface inherits them.
+- Briefing delivery is an *export*: it re-runs the ceiling check for the
+  destination surface on every send; scheduled push gets no privilege that an
+  interactive reply would not have.
 
 ## Stress pass (before coding)
 
@@ -198,5 +234,7 @@ them.
 - [ ] `serve` drives all enabled surfaces; clean shutdown.
 - [ ] Above-public replies impossible on non-private channels (tested per
       surface).
+- [ ] Scheduled briefing delivery (P4-T8): exactly-once per new brief,
+      ceiling re-checked per delivery surface, ledgered.
 - [ ] SECURITY.md guarantees added; doctor validates each surface.
 - [ ] `make check` green; CI green.

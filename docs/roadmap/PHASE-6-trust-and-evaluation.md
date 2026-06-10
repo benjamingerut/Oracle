@@ -8,10 +8,20 @@ adversarial and behavioral scenarios on every change and gates CI on the
 results. "Trustworthy" becomes a number with a trend, in the same spirit as the
 kernel's value-scorecard.
 
-Read first: `docs/roadmap/ROADMAP.md`, Phase 1 (`testkit.py`, `security_map.py`),
-`STRESS.md` (the attack classes to encode as scenarios).
+This phase also absorbs **usefulness metrics** alongside the safety floors
+(SUB-5 D5): a perfectly safe oracle nobody can get a grounded answer out of is
+still a failure. Retrieval hit-rate, time-to-first-grounded-answer, and intake
+throughput are scored here as tracked quality dimensions, on the gold fixture
+set built in `PHASE-8-retrieval-quality.md` and the content paths built in
+`PHASE-7-knowledge-connectors.md`.
 
-Depends on: all prior phases (it scores their guarantees). Built last.
+Read first: `docs/roadmap/ROADMAP.md`, Phase 1 (`testkit.py`, `security_map.py`),
+`STRESS.md` (the attack classes to encode as scenarios),
+`PHASE-7-knowledge-connectors.md` and `PHASE-8-retrieval-quality.md` (the
+corpus and fixtures the usefulness dimension scores against).
+
+Depends on: all prior phases (it scores their guarantees), including P7/P8 for
+the usefulness fixtures. Built last.
 
 ## The core idea
 
@@ -33,7 +43,7 @@ still exercising the real dispatch/ceiling/grounding/gateway code paths.
 @dataclass
 class Scenario:
     id: str                    # "EVAL-LEAK-001"
-    dimension: str             # "leak" | "grounding" | "policy" | "gateway" | "behavior"
+    dimension: str             # "leak" | "grounding" | "policy" | "gateway" | "behavior" | "usefulness"
     severity: str              # "safety" (hard gate) | "quality" (tracked)
     setup: callable            # (Harness) -> context (ingest, promote authority, ...)
     run: callable              # (context) -> Observation
@@ -69,6 +79,14 @@ is a regression guard for a real guarantee from a prior phase):
 - **behavior/** (quality, tracked not gated) — grounded-rate on a fixed Q&A
   set, refusal-correctness (refuses when it should, answers when it should),
   repair-loop convergence rate, latency budget.
+- **usefulness/** (quality, tracked not gated) — retrieval hit-rate and
+  time-to-first-grounded-answer on the gold fixture set from
+  `PHASE-8-retrieval-quality.md` (which also adds these as kernel
+  `scorecard.py` KPIs — the eval and the scorecard must agree on
+  definitions), plus intake throughput across the connector content paths
+  from `PHASE-7-knowledge-connectors.md` (corpus-in to answerable-from, on a
+  fixed fixture corpus). Offline like everything else: fixtures, not live
+  connectors.
 
 ### CLI + CI
 ```
@@ -120,6 +138,20 @@ regression past a configured delta opens a warning, not a failure.
   *Acceptance:* `oracle eval --ci` green on main; a deliberately reverted fix
   turns it red in CI. *Tests:* `test_eval_cli.py`. *Deps:* P6-T2..T5, P1-T1.
 
+- **P6-T7 — usefulness (quality) catalog.** Encode the usefulness dimension:
+  retrieval hit-rate and time-to-first-grounded-answer scored on the gold
+  fixture set authored in `PHASE-8-retrieval-quality.md`; intake throughput
+  scored on a fixed connector fixture corpus from
+  `PHASE-7-knowledge-connectors.md` (those specs are authored concurrently —
+  reference their fixture artifacts, not their task IDs). Definitions must
+  match the kernel `scorecard.py` KPIs that PHASE-8 adds, so the shell eval
+  and the kernel scorecard never report two different numbers for the same
+  name. Tracked + trend-charted like behavior/, never a CI gate.
+  *Acceptance:* all three metrics computed, dated, and trended on the shared
+  fixtures; metric definitions cross-referenced against the kernel KPIs in
+  one place. *Tests:* `test_usefulness_eval.py`. *Deps:* P6-T1, P6-T5
+  (shares the trend renderer), P7/P8 fixtures.
+
 ## Invariants for this phase
 
 - The eval runs fully offline (scripted model, fake gateways); it exercises
@@ -146,6 +178,9 @@ findings — this phase's credibility rests on the scenarios being real.
 - [ ] Leak, grounding, policy, gateway safety catalogs — each with mutation
       proof that it catches a planted regression.
 - [ ] Behavior quality catalog with trend tracking.
+- [ ] Usefulness quality catalog (retrieval hit-rate, time-to-first-grounded-
+      answer, intake throughput) on the P7/P8 fixtures, definitions aligned
+      with the kernel scorecard KPIs; tracked, not gated.
 - [ ] `oracle eval [--ci|--dimension]`; CI gate at 100% on safety dimensions.
 - [ ] `docs/SECURITY.md` references eval scenarios as enforcers (loop closed).
 - [ ] `make check` green; CI green; `oracle eval --ci` green.

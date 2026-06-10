@@ -70,12 +70,37 @@ class AgentLoop:
   claim.
 - `GroundingPolicy.OBSERVE` (footer-only, the v1 behavior) remains available
   for local-operator chat where the admin explicitly wants raw model output;
-  `ENFORCE` is the default and the only mode on the gateway.
+  `ENFORCE` is the only mode on the gateway. Which mode is the *default* per
+  surface is governed by the budget gate below (gateway: ENFORCE always;
+  local: per P3-T7).
 
 ### Surface defaults
-- gateway / external: `ENFORCE`, no override.
-- local chat: `ENFORCE` by default; `oracle chat --grounding observe` lets the
-  operator opt down (logged).
+- gateway / external: `ENFORCE`, no override — from day one. **Rollout is
+  gateway-first**: the gateway is where unbacked claims reach other people, so
+  it never waits on the budget gate below.
+- local chat: `ENFORCE` becomes the default **only after the P3-T7 budget gate
+  passes**; until then local chat defaults to `OBSERVE` (the v1 footer-only
+  behavior) with `oracle chat --grounding enforce` available as opt-up. Once
+  the gate passes, the default flips to `ENFORCE` and
+  `oracle chat --grounding observe` remains the logged operator opt-down.
+
+### Scope/budget note — when ENFORCE may become a default
+
+ENFORCE costs more than the extractor's milliseconds: every repair turn is an
+**extra model round-trip**, with its tokens and its seconds, and a
+false-positive claim flag buys that cost for nothing. So ENFORCE may become a
+default on any surface beyond the gateway only after both budgets are
+*measured on real traffic* (not synthetic fixtures):
+
+- **False-positive budget:** the rate at which `extract_claims` flags
+  sentences that a human reviewer judges non-material (each one triggers a
+  pointless repair turn).
+- **Added-latency budget:** end-to-end added cost per turn, counting the
+  repair loop's extra model round-trips in **tokens and wall-clock seconds**
+  — not just the extractor/checker milliseconds that P3-T5 benchmarks.
+
+Concrete budget numbers are set at the phase-opening stress pass and recorded
+here; P3-T7 measures against them.
 
 ## Tasks
 
@@ -102,11 +127,14 @@ class AgentLoop:
   offending sentences redacted, notice + fix shown, no unbacked claim in the
   output. *Tests:* `test_grounding_loop.py` via testkit. *Deps:* P3-T2, P1-T2.
 
-- **P3-T4 — surface wiring + override.** Default `ENFORCE`; gateway forces it
-  (no override path); `oracle chat --grounding observe` opt-down on local only,
-  logged. *Acceptance:* gateway loop ignores any attempt to set OBSERVE; local
-  `--grounding observe` produces the v1 footer-only behavior. *Tests:* extend
-  `test_telegram.py`, `test_cli.py`. *Deps:* P3-T3.
+- **P3-T4 — surface wiring + override.** Gateway forces `ENFORCE` (no override
+  path) — gateway-first rollout. Local chat: default per the budget gate
+  (`OBSERVE` until P3-T7 passes, then `ENFORCE`); `--grounding enforce` /
+  `--grounding observe` flags on local only, both logged. *Acceptance:*
+  gateway loop ignores any attempt to set OBSERVE; local `--grounding observe`
+  produces the v1 footer-only behavior; the local default is a single config
+  point that P3-T7's outcome flips. *Tests:* extend `test_telegram.py`,
+  `test_cli.py`. *Deps:* P3-T3.
 
 - **P3-T5 — performance guard.** The extractor + checker run on every turn;
   ensure they add negligible latency (pure-Python, no model call). Add a
@@ -118,6 +146,19 @@ class AgentLoop:
   any user without a covering answer-protocol envelope whose obligations the
   text honors (gateway: no override)." Wire to P3 tests. *Acceptance:*
   `verify_enforcers()` empty. *Deps:* P3-T3, P1-T1.
+
+- **P3-T7 — ENFORCE-default budget measurement (gates the default flip).**
+  Run ENFORCE in shadow/logged mode on real local-operator traffic for a
+  defined observation window; measure (a) the false-positive rate of
+  `extract_claims` against human judgment of flagged sentences, and (b) the
+  added cost per turn including repair-loop model round-trips in tokens and
+  wall-clock seconds. *Acceptance:* both measurements within the budgets
+  recorded in the scope note above → local default flips to ENFORCE (one
+  config change, P3-T4); either budget exceeded → default stays OBSERVE and
+  the extractor is retuned before re-measuring. The measurement report is
+  checked in under `docs/eval/`. The gateway is NOT gated by this task — it
+  runs ENFORCE regardless. *Tests:* none (measurement task); the report is
+  the deliverable. *Deps:* P3-T4, P3-T5.
 
 ## Security / correctness invariants
 
@@ -142,7 +183,9 @@ terminate (interaction with the iteration cap)? Append findings.
 - [ ] Deterministic extractor + checker with a labeled corpus (recall ≥ 0.95).
 - [ ] Repair loop with redaction fallback; no unbacked material claim ever
       released; STRESS I1 message-pairing invariant preserved.
-- [ ] ENFORCE default; gateway non-overridable; local OBSERVE opt-down logged.
-- [ ] Negligible added latency (benchmarked).
+- [ ] Gateway ENFORCE non-overridable (gateway-first); local default governed
+      by the P3-T7 budget gate; grounding-mode flags logged.
+- [ ] Negligible extractor/checker latency (benchmarked, P3-T5) AND real-traffic
+      budgets measured incl. repair-loop tokens/seconds (P3-T7).
 - [ ] SECURITY.md guarantee added and backed.
 - [ ] `make check` green; CI green.
