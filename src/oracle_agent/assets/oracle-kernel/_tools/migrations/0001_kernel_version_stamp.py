@@ -170,5 +170,5 @@ def apply(root: Path) -> dict:
 
     # Constant internal path (<root>/oracle.yml), not user-derived. Written like
     # the other constant-internal renders in the kernel.
-    cfg.write_text(new_text, encoding="utf-8")
+    cfg.write_text(new_text, encoding="utf-8")  # safe_paths-internal: root-confined constant path (oracle.yml)
     return {"changed": True, "notes": f"stamped kernel.tools_version={_DEFAULT_TOOLS_VERSION}"}

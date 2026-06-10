@@ -269,7 +269,7 @@ def _write_candidate(
 
     dest = _destination(root, kind, fm["id"], fm["title"])
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(note_text, encoding="utf-8")  # contained generated write
+    dest.write_text(note_text, encoding="utf-8")  # safe_paths-internal: dest from _destination() → safe_paths.contain()
 
     row = {
         "candidate_id": fm["id"],

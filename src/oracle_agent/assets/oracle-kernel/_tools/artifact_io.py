@@ -193,7 +193,7 @@ def render(root: Path) -> None:
         # user-named). Written via Path.write_text -- not an open(...) write and
         # not a user-influenced destination -- so the no-bypass guard does not
         # flag it. The constant-path REGISTRY render is the documented exception.
-        md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        md.write_text("\n".join(lines) + "\n", encoding="utf-8")  # safe_paths-internal: root-confined constant path (_WP/<queue>/REGISTRY.md)
 
 
 # --------------------------------------------------------------------------- #

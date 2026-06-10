@@ -1049,7 +1049,7 @@ def publish(root, *, out_name: str = DEFAULT_HTML_NAME, now: Optional[datetime] 
     d = build(root, now)
     dst = safe_paths.contain(root, out_name, base=DASH_BASE)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(render_html(d), encoding="utf-8")  # contained path (safe_paths)
+    dst.write_text(render_html(d), encoding="utf-8")  # safe_paths-internal: dst from safe_paths.contain()
     return {"published": str(dst), "panels": len(d["panels"]), "generated": d["generated"]}
 
 

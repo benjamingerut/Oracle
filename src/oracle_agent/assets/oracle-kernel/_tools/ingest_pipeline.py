@@ -856,7 +856,7 @@ def stage_external(root, src) -> Path:
         if dest.exists() and _sha256_file(dest) == digest:
             return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(src.read_bytes())  # contained, non-destructive copy
+    dest.write_bytes(src.read_bytes())  # safe_paths-internal: dest from safe_paths.contain()
     if _sha256_file(dest) != digest:
         raise ValueError(f"stage_external: copy verification failed for {src}")
     return dest

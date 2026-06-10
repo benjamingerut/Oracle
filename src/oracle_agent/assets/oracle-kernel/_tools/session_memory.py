@@ -142,7 +142,7 @@ def _render_note(fm: dict, body: str) -> str:
 def _write_note(root: Path, *, base: str, rel: str, fm: dict, body: str) -> str:
     dst = safe_paths.contain(root, rel, base=base)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(_render_note(fm, body), encoding="utf-8")
+    dst.write_text(_render_note(fm, body), encoding="utf-8")  # safe_paths-internal: dst from contain()
     return _rel(root, dst)
 
 
@@ -706,18 +706,18 @@ def export_derived(
     ]
     for row in sessions:
         md_lines.extend([f"## {row.get('drop_id')}", "", str(row.get("text", "")).strip(), ""])
-    mem_md.write_text("\n".join(md_lines).rstrip() + "\n", encoding="utf-8")
-    mem_jsonl.write_text(
+    mem_md.write_text("\n".join(md_lines).rstrip() + "\n", encoding="utf-8")  # safe_paths-internal: _derived_file → contain()
+    mem_jsonl.write_text(  # safe_paths-internal: _derived_file → contain()
         "\n".join(json.dumps(r, ensure_ascii=False, sort_keys=True) for r in sessions)
         + ("\n" if sessions else ""),
         encoding="utf-8",
     )
-    graph_nodes.write_text(
+    graph_nodes.write_text(  # safe_paths-internal: _derived_file → contain()
         "\n".join(json.dumps(n, ensure_ascii=False, sort_keys=True) for n in unique_nodes)
         + ("\n" if unique_nodes else ""),
         encoding="utf-8",
     )
-    graph_edges.write_text(
+    graph_edges.write_text(  # safe_paths-internal: _derived_file → contain()
         "\n".join(json.dumps(e, ensure_ascii=False, sort_keys=True) for e in edges)
         + ("\n" if edges else ""),
         encoding="utf-8",
@@ -742,7 +742,7 @@ def export_derived(
             _rel(root, graph_edges),
         ],
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")  # safe_paths-internal: _derived_file → contain()
     drop_id = ledger.append(
         _ledger_path(root),
         {"action": "export-derived", "kind": "session_memory_export", **manifest},

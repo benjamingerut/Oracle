@@ -93,7 +93,7 @@ def _write_contained(dst: Path, text: str) -> None:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, str(dst))
+        os.replace(tmp, str(dst))  # safe_paths-internal: atomic swap, dst from safe_paths.contain() callers
     except BaseException:
         try:
             os.unlink(tmp)
@@ -386,7 +386,7 @@ def archive_skill(root: Path, name: str, *, actor: str = "", reason: str = "") -
     archive_base = _archive_dir(root)
     archive_base.mkdir(parents=True, exist_ok=True)
     dst = safe_paths.contain(root, f"{ARCHIVE_REL}/{slug}-{_now_compact()}", base=AGENT_BASE)
-    os.replace(str(src), str(dst))
+    os.replace(str(src), str(dst))  # safe_paths-internal: both src and dst from safe_paths.contain()
     drop_id = _append_event(
         root,
         action="archive",

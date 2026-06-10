@@ -154,7 +154,7 @@ def apply(root: Path) -> dict:
             return {"changed": False, "notes": f"refused: edit broke yaml: {exc}"}
         if not _has_session_interfaces(new_data):  # pragma: no cover - defensive
             return {"changed": False, "notes": "refused: session_interfaces did not parse"}
-        cfg.write_text(new_text, encoding="utf-8")
+        cfg.write_text(new_text, encoding="utf-8")  # safe_paths-internal: root-confined constant path (oracle.yml)
         return {"changed": True, "notes": "updated legacy session_interfaces prompt contract"}
 
     new_text = _insert_before_top_key(text, "ontology", _SESSION_BLOCK)
@@ -166,5 +166,5 @@ def apply(root: Path) -> dict:
     if not _has_session_interfaces(new_data):  # pragma: no cover - defensive
         return {"changed": False, "notes": "refused: session_interfaces did not parse"}
 
-    cfg.write_text(new_text, encoding="utf-8")
+    cfg.write_text(new_text, encoding="utf-8")  # safe_paths-internal: root-confined constant path (oracle.yml)
     return {"changed": True, "notes": "inserted session_interfaces default contract"}

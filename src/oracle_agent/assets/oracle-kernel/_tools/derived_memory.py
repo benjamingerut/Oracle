@@ -410,11 +410,11 @@ def prepare_engine(
     jsonl_path = raw_dir / "oracle-index-chunks.jsonl"
     manifest_path = out_dir / "manifest.json"
 
-    md_path.write_text(
+    md_path.write_text(  # safe_paths-internal: raw_dir from _engine_output_dir() → safe_paths.contain()
         _render_markdown(chunks, engine=engine, max_sensitivity=ceiling),
         encoding="utf-8",
     )
-    jsonl_path.write_text(
+    jsonl_path.write_text(  # safe_paths-internal: raw_dir from _engine_output_dir() → safe_paths.contain()
         "\n".join(json.dumps(c, ensure_ascii=False, sort_keys=True) for c in chunks) + ("\n" if chunks else ""),
         encoding="utf-8",
     )
@@ -436,7 +436,7 @@ def prepare_engine(
         "suggested_command": _suggestion(engine, raw_dir),
     }
     manifest["ledger_id"] = _append_run_ledger(root, manifest)
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")  # safe_paths-internal: out_dir from _engine_output_dir() → safe_paths.contain()
     return manifest
 
 

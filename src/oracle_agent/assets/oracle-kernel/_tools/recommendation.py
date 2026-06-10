@@ -239,7 +239,7 @@ def _write_contained(dst: Path, text: str) -> None:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, str(dst))  # atomic note swap on contained path
+        os.replace(tmp, str(dst))  # safe_paths-internal: atomic swap, dst from safe_paths.contain()
     except BaseException:
         try:
             os.unlink(tmp)

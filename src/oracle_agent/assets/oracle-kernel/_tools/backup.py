@@ -256,9 +256,12 @@ def run(root: Path, dest: Path, *, tier: str = "all") -> dict:
         "secrets_excluded": secrets_excluded,
         "files": files_meta,
     }
-    # Manifest is a constant-named internal artifact under the backup root we
-    # control -- written like other constant-internal renders.
-    (dest / _MANIFEST_NAME).write_text(
+    # Architectural exception, adjudicated 2026-06-10 (SUB-3 G1): backup MUST
+    # write outside the oracle root -- ``dest`` is the admin-supplied ``--dest``
+    # directory from the control-plane CLI. Backup is not one of the model's
+    # verbs on any surface, so this path is never model-influenced; the
+    # constant manifest filename is joined to that admin-chosen directory.
+    (dest / _MANIFEST_NAME).write_text(  # safe_paths-internal
         json.dumps(manifest, indent=2), encoding="utf-8"
     )
     return manifest
@@ -372,7 +375,7 @@ def _stamp_last_verified_restore(root: Path, when: str, file_count: int) -> bool
             "Restore verification is proven by `_tools/backup.py verify-restore`.\n\n"
             f"last_verified_restore: {line_val}\n"
         )
-        doc.write_text(body, encoding="utf-8")
+        doc.write_text(body, encoding="utf-8")  # safe_paths-internal: root-confined constant path (BACKUP-RECOVERY.md)
         return True
 
     text = doc.read_text(encoding="utf-8")
@@ -393,7 +396,7 @@ def _stamp_last_verified_restore(root: Path, when: str, file_count: int) -> bool
     new_text = "\n".join(lines) + "\n"
     if new_text == text:
         return False
-    doc.write_text(new_text, encoding="utf-8")
+    doc.write_text(new_text, encoding="utf-8")  # safe_paths-internal: root-confined constant path (BACKUP-RECOVERY.md)
     return True
 
 

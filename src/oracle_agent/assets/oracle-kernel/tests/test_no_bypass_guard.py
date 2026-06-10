@@ -4,16 +4,24 @@
 Every filesystem write that touches a user-/config-influenced path MUST go
 through ``safe_paths`` (contain / safe_copy_verify_delete). This guard greps
 every kernel ``_tools/**/*.py`` file -- EXCEPT ``safe_paths.py`` itself, which is
-where the raw primitives legitimately live -- for two bypass shapes:
+where the raw primitives legitimately live -- for seven bypass shapes:
 
-  1. ``shutil.move`` / ``shutil.copy`` / ``shutil.copy2`` (raw file movement)
-  2. ``open(<expr>, 'w'|'a'|...)`` where the first argument is NOT a string
+  1. ``shutil.move`` / ``shutil.copy`` / ``shutil.copy2`` / ``shutil.copyfile``
+     (raw file movement)
+  2. ``shutil.copytree`` (raw directory tree copy)
+  3. ``open(<expr>, 'w'|'a'|...)`` where the first argument is NOT a string
      literal (i.e. a variable/expression path that could be user-influenced)
+  4. ``<expr>.write_text(...)`` where ``<expr>`` is not a plain string constant
+  5. ``<expr>.write_bytes(...)`` where ``<expr>`` is not a plain string constant
+  6. ``os.replace(<non-literal>, ...)``  (atomic overwrite via non-literal path)
+  7. ``os.rename(<non-literal>, ...)``   (rename/move via non-literal path)
 
 A line may opt out only by carrying the documented marker ``# safe_paths-internal``
 (used inside the floor durability primitive ``ledger.py``, which is itself a
-single chokepoint analogous to ``safe_paths``). Any other hit FAILS the build,
-so reintroducing a raw ``shutil.move`` anywhere in the tool layer turns CI red.
+single chokepoint analogous to ``safe_paths``, and at legitimate write sites
+whose path provably came through ``safe_paths.contain()`` or a root-confined
+constant helper). Any other hit FAILS the build, so reintroducing a raw write
+anywhere in the tool layer turns CI red.
 
 This guard runs meaningfully at full-verify, when the whole tool layer exists.
 During the floor-first build it tolerates a partial ``_tools`` tree (it scans
@@ -70,7 +78,17 @@ def _allowlisted_lines(source: str) -> set[int]:
 
 
 class _BypassVisitor(ast.NodeVisitor):
-    """Collect raw shutil.move/copy/copy2 and open(non-literal, write-mode)."""
+    """Collect raw filesystem-write bypass patterns.
+
+    Flagged patterns (all on non-literal / non-contained targets):
+      1. shutil.move / shutil.copy / shutil.copy2 / shutil.copyfile
+      2. shutil.copytree
+      3. open(<non-literal>, write-mode)
+      4. <expr>.write_text(...)  where <expr> is not a plain string constant
+      5. <expr>.write_bytes(...)  where <expr> is not a plain string constant
+      6. os.replace(<non-literal>, ...)
+      7. os.rename(<non-literal>, ...)
+    """
 
     def __init__(self) -> None:
         self.hits: list[tuple[int, str]] = []  # (lineno, description)
@@ -78,26 +96,75 @@ class _BypassVisitor(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
         func = node.func
 
-        # shutil.move / shutil.copy / shutil.copy2
+        # shutil.move / shutil.copy / shutil.copy2 / shutil.copyfile / shutil.copytree
         if isinstance(func, ast.Attribute) and func.attr in (
             "move",
             "copy",
             "copy2",
             "copyfile",
+            "copytree",
         ):
             base = func.value
             if isinstance(base, ast.Name) and base.id == "shutil":
                 self.hits.append((node.lineno, f"shutil.{func.attr}(...)"))
 
-        # bare move/copy/copy2 imported via "from shutil import move"
-        if isinstance(func, ast.Name) and func.id in ("move", "copy", "copy2", "copyfile"):
+        # bare move/copy/copy2/copyfile/copytree imported via "from shutil import ..."
+        if isinstance(func, ast.Name) and func.id in (
+            "move",
+            "copy",
+            "copy2",
+            "copyfile",
+            "copytree",
+        ):
             self.hits.append((node.lineno, f"{func.id}(...) [from shutil import]"))
 
         # open(path, mode) with a write mode and a NON-literal path argument
         if isinstance(func, ast.Name) and func.id == "open":
             self._check_open(node)
 
+        # <expr>.write_text(...) and <expr>.write_bytes(...) on a non-literal target
+        if isinstance(func, ast.Attribute) and func.attr in ("write_text", "write_bytes"):
+            self._check_write_method(node, func)
+
+        # os.replace(<non-literal>, ...) and os.rename(<non-literal>, ...)
+        if isinstance(func, ast.Attribute) and func.attr in ("replace", "rename"):
+            base = func.value
+            if isinstance(base, ast.Name) and base.id == "os":
+                self._check_os_move(node, func.attr)
+
+        # bare replace/rename imported via "from os import replace"
+        if isinstance(func, ast.Name) and func.id in ("replace", "rename"):
+            self._check_os_move(node, func.id)
+
         self.generic_visit(node)
+
+    def _check_write_method(self, node: ast.Call, func: ast.Attribute) -> None:
+        """Flag <expr>.write_text/write_bytes(...) when <expr> is not a string literal."""
+        target = func.value
+        # A bare string constant target is a fixed, non-user-influenced path.
+        if isinstance(target, ast.Constant) and isinstance(target.value, str):
+            return
+        self.hits.append((node.lineno, f"<expr>.{func.attr}(...)"))
+
+    @staticmethod
+    def _first_arg_is_literal(node: ast.Call) -> bool:
+        """Return True when the first positional argument is a plain string constant."""
+        if not node.args:
+            return False
+        return isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)
+
+    def _check_os_move(self, node: ast.Call, name: str) -> None:
+        """Flag os.replace/os.rename when either path argument is not a string literal."""
+        # Flag if there is at least one argument that is non-literal.
+        # A call with zero args will parse-error at runtime; skip.
+        if not node.args:
+            return
+        has_non_literal = any(
+            not (isinstance(a, ast.Constant) and isinstance(a.value, str))
+            for a in node.args[:2]
+        )
+        if has_non_literal:
+            self.hits.append((node.lineno, f"os.{name}(<non-literal>, ...)"))
 
     def _check_open(self, node: ast.Call) -> None:
         if not node.args:
@@ -136,6 +203,23 @@ class _BypassVisitor(ast.NodeVisitor):
         if mode == "?":
             return True  # unknown mode: be conservative, count as a write
         return any(c in mode for c in ("w", "a", "x", "+"))
+
+
+def _scan_source(source: str, *, name: str = "<inline>") -> list[str]:
+    """Scan a source string directly (used by synthetic fixture tests)."""
+    try:
+        tree = ast.parse(source, filename=name)
+    except SyntaxError as exc:
+        return [f"{name}: could not parse ({exc})"]
+    allowed = _allowlisted_lines(source)
+    visitor = _BypassVisitor()
+    visitor.visit(tree)
+    violations: list[str] = []
+    for lineno, desc in visitor.hits:
+        if lineno in allowed:
+            continue
+        violations.append(f"{name}:{lineno}: {desc}")
+    return violations
 
 
 def _scan_file(path: Path) -> list[str]:
@@ -203,3 +287,115 @@ def test_guard_allows_marker_and_literal(tmp_path: Path):
     )
     violations = _scan_file(ok)
     assert violations == [], violations
+
+
+# ---------------------------------------------------------------------------
+# Synthetic fixture tests — each new pattern MUST be caught (test-the-test).
+# ---------------------------------------------------------------------------
+
+def test_guard_detects_write_text_non_literal():
+    """write_text on a non-literal expression is flagged."""
+    source = (
+        "from pathlib import Path\n"
+        "def go(p, text):\n"
+        "    p.write_text(text, encoding='utf-8')\n"
+    )
+    violations = _scan_source(source)
+    assert any("write_text" in v for v in violations), (
+        f"Expected write_text hit, got: {violations}"
+    )
+
+
+def test_guard_detects_write_bytes_non_literal():
+    """write_bytes on a non-literal expression is flagged."""
+    source = (
+        "from pathlib import Path\n"
+        "def go(p, data):\n"
+        "    p.write_bytes(data)\n"
+    )
+    violations = _scan_source(source)
+    assert any("write_bytes" in v for v in violations), (
+        f"Expected write_bytes hit, got: {violations}"
+    )
+
+
+def test_guard_detects_os_replace():
+    """os.replace with a non-literal source is flagged."""
+    source = (
+        "import os\n"
+        "def go(tmp, dst):\n"
+        "    os.replace(tmp, dst)\n"
+    )
+    violations = _scan_source(source)
+    assert any("os.replace" in v for v in violations), (
+        f"Expected os.replace hit, got: {violations}"
+    )
+
+
+def test_guard_detects_os_rename():
+    """os.rename with a non-literal path is flagged."""
+    source = (
+        "import os\n"
+        "def go(src, dst):\n"
+        "    os.rename(src, dst)\n"
+    )
+    violations = _scan_source(source)
+    assert any("os.rename" in v for v in violations), (
+        f"Expected os.rename hit, got: {violations}"
+    )
+
+
+def test_guard_detects_shutil_copytree():
+    """shutil.copytree is flagged."""
+    source = (
+        "import shutil\n"
+        "def go(src, dst):\n"
+        "    shutil.copytree(src, dst)\n"
+    )
+    violations = _scan_source(source)
+    assert any("shutil.copytree" in v for v in violations), (
+        f"Expected shutil.copytree hit, got: {violations}"
+    )
+
+
+def test_guard_allows_marker_on_write_text():
+    """write_text tagged with safe_paths-internal is NOT flagged."""
+    source = (
+        "def go(p, text):\n"
+        "    p.write_text(text)  # safe_paths-internal\n"
+    )
+    violations = _scan_source(source)
+    assert violations == [], f"Unexpected violations: {violations}"
+
+
+def test_guard_allows_marker_on_os_replace():
+    """os.replace tagged with safe_paths-internal is NOT flagged."""
+    source = (
+        "import os\n"
+        "def go(tmp, dst):\n"
+        "    os.replace(tmp, dst)  # safe_paths-internal\n"
+    )
+    violations = _scan_source(source)
+    assert violations == [], f"Unexpected violations: {violations}"
+
+
+def test_guard_allows_marker_on_os_rename():
+    """os.rename tagged with safe_paths-internal is NOT flagged."""
+    source = (
+        "import os\n"
+        "def go(src, dst):\n"
+        "    os.rename(src, dst)  # safe_paths-internal\n"
+    )
+    violations = _scan_source(source)
+    assert violations == [], f"Unexpected violations: {violations}"
+
+
+def test_guard_allows_marker_on_shutil_copytree():
+    """shutil.copytree tagged with safe_paths-internal is NOT flagged."""
+    source = (
+        "import shutil\n"
+        "def go(src, dst):\n"
+        "    shutil.copytree(src, dst)  # safe_paths-internal\n"
+    )
+    violations = _scan_source(source)
+    assert violations == [], f"Unexpected violations: {violations}"

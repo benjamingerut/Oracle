@@ -408,7 +408,7 @@ def create(
         raise ValueError(f"source_record.create: destination already exists: {_relpath(dest, root)}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     # Contained, generated-content write (documented no-bypass exception).
-    dest.write_text(note_text, encoding="utf-8")
+    dest.write_text(note_text, encoding="utf-8")  # safe_paths-internal: dest from _destination() → safe_paths.contain()
 
     row = {
         "source_id": source_id,
@@ -522,7 +522,7 @@ def _stamp_superseded(path: Path, root: Path, new_id: str, actor: str, role: str
     sp = _safe_paths()
     rel_to_base = Path(path).resolve().relative_to((Path(root) / _BASE).resolve())
     safe_dest = sp.contain(root, str(rel_to_base), base=_BASE)
-    safe_dest.write_text(note_text, encoding="utf-8")  # contained generated write
+    safe_dest.write_text(note_text, encoding="utf-8")  # safe_paths-internal: safe_dest from safe_paths.contain()
     # The ledger path field is ROOT-relative (matches create()), so verify can
     # locate the note via ``root / path``.
     root_rel = _relpath(safe_dest, root)
