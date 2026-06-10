@@ -245,10 +245,11 @@ def _cmd_kernel(rest: list[str]) -> int:
     cfg = config.load_config()
     name, root = resolve_instance(cfg, name)
     import subprocess
+    from .agentloop.verbtools import _scrubbed_env
     from .service.scheduler import root_lock
     with root_lock(name):
         proc = subprocess.run([sys.executable, str(root / "oracle"), *tail],
-                              cwd=str(root))
+                              cwd=str(root), env=_scrubbed_env())
     return proc.returncode
 
 

@@ -166,20 +166,36 @@ class AgentLoop:
         }
 
     def _evict_if_needed(self, *, force: bool = False) -> None:
-        """Drop oldest non-system turns when over the history budget."""
+        """Drop oldest whole TURN GROUPS when over the history budget.
+
+        A turn group runs from a ``user`` message up to (not including) the
+        next ``user`` message. Evicting whole groups preserves the OpenAI
+        pairing invariant: an assistant ``tool_calls`` message and its
+        ``tool`` replies are never separated (a dangling tool_call_id would
+        fail every subsequent API call). The system prompt (index 0) and the
+        current (final) group are never evicted. ``force=True`` evicts at
+        least one group when possible (context-overflow recovery).
+        """
         def size() -> int:
             return sum(len(json.dumps(m)) for m in self.messages)
 
-        if not force and size() <= self.history_max_chars:
-            return
-        # Keep system (index 0) and the most recent user turn; evict from the
-        # front of the middle.
-        i = 1
-        while size() > self.history_max_chars and len(self.messages) > 2:
-            if i >= len(self.messages) - 1:
+        def evict_one_group() -> bool:
+            if len(self.messages) < 2:
+                return False
+            start = 1  # first message after the system prompt
+            end = next((j for j in range(start + 1, len(self.messages))
+                        if self.messages[j].get("role") == "user"),
+                       len(self.messages))
+            if end >= len(self.messages):
+                return False  # only the current group remains -- keep it
+            del self.messages[start:end]
+            return True
+
+        evicted = False
+        while (force and not evicted) or size() > self.history_max_chars:
+            if not evict_one_group():
                 break
-            # never evict the system prompt; never evict the final message
-            self.messages.pop(i)
+            evicted = True
 
     def _with_footer(self, text: str, envelopes: list[dict]) -> str:
         return text.rstrip() + "\n\n" + authority_footer(envelopes)

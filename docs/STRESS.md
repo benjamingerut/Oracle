@@ -151,3 +151,38 @@ Folded into S4 as the canonical dispatch table.
 - ⏸ **Wizard Telegram allowlist seeding kept** (cheap, idempotent) but config is
   hand-editable as the real path.
 - ⏸ **Telegram-only gateway**; adapter interface is the extension seam.
+
+## Implementation-phase hardening (post-code review)
+
+Reviewing the written code surfaced four more issues, all fixed:
+
+### I1 — context eviction could split a tool-call/tool-reply pair ✅ HIGH
+`_evict_if_needed` popped individual messages, which could leave an assistant
+`tool_calls` message without its `tool` replies (or vice versa) — a dangling
+`tool_call_id` makes EVERY subsequent OpenAI-format call fail mid-session.
+**Fix (loop.py):** evict whole turn groups (user → next user), never splitting
+a pair; system prompt and current group always retained. Regression tests
+added.
+
+### I2 — model-driven ingest was not fail-closed ✅ HIGH
+With the default empty `ingest_roots`, the allowlist check was skipped, so a
+prompt-injection could make the local model ingest any non-secret-named path.
+**Fix (verbtools._ingest_denied):** empty `ingest_roots` now DENIES all
+model-driven ingest (operator can still ingest directly via the kernel CLI).
+Symlink escapes are already closed (`resolve()` precedes the containment check;
+test added).
+
+### I3 — two subprocess paths didn't scrub secrets ✅ MEDIUM
+`scheduler.tick_instance` (harness) and `cli kernel` passthrough inherited the
+full environment — including the LLM/Telegram key vars — into the kernel
+process, which never needs them. **Fix:** both now pass `_scrubbed_env()`, as
+does `policy_bridge._cli_policy_check`.
+
+### I4 — access-refusal keywords were over-broad ✅ LOW
+"approve"/"grant me" would refuse legitimate questions containing those words.
+**Fix (telegram):** narrowed to access-specific phrases.
+
+Confirmed correct as implemented: redirect blocking (urllib opener raises on
+3xx), IPv4-mapped IPv6 loopback classification (`::ffff:8.8.8.8` → external),
+the answer-envelope ceiling withholding, deny-by-default gateway, metadata-only
+ledger, atomic 0600 secret writes.

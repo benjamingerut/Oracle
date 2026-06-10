@@ -149,11 +149,14 @@ def _cli_policy_check(root: Path):
 
     oracle = Path(root) / "oracle"
 
+    from .verbtools import _scrubbed_env  # lazy: avoids an import cycle
+
     def check(label: str, environment: str) -> str:
         proc = subprocess.run(
             [sys.executable, str(oracle), "policy", "check",
              "--sensitivity", label, "--env", environment],
             cwd=str(root), capture_output=True, text=True, timeout=30,
+            env=_scrubbed_env(),
         )
         out = (proc.stdout or "").strip().splitlines()
         verdict = out[-1].strip() if out else ""

@@ -113,3 +113,45 @@ def test_system_prompt_byte_stable_across_turns():
     sys2 = loop.messages[0]["content"]
     assert sys1 == sys2
     assert loop.messages[0]["role"] == "system"
+
+
+def test_eviction_preserves_toolcall_pairing():
+    """Evicting old turns must never split an assistant tool_calls msg from
+    its tool replies (a dangling tool_call_id fails the next API call)."""
+    from oracle_agent.agentloop.verbtools import ToolOutcome
+    disp = FakeDispatcher(outcomes={"oracle_search": ToolOutcome("x" * 500, rc=0)})
+    # tiny budget forces eviction after a couple of tool turns
+    loop = _loop([ChatResponse(content="done")], disp, history_max_chars=800)
+    # seed several completed tool-using turns
+    for n in range(4):
+        loop.messages.append({"role": "user", "content": f"q{n}"})
+        loop.messages.append({"role": "assistant", "content": "",
+                              "tool_calls": [{"id": f"t{n}", "type": "function",
+                                              "function": {"name": "oracle_search", "arguments": "{}"}}]})
+        loop.messages.append({"role": "tool", "tool_call_id": f"t{n}",
+                              "name": "oracle_search", "content": "x" * 500})
+    loop._evict_if_needed()
+    # every assistant tool_calls id must have a matching tool reply after it
+    ids_called = []
+    ids_replied = set()
+    for m in loop.messages:
+        if m.get("role") == "assistant":
+            for tc in m.get("tool_calls", []):
+                ids_called.append(tc["id"])
+        if m.get("role") == "tool":
+            ids_replied.add(m["tool_call_id"])
+    for cid in ids_called:
+        assert cid in ids_replied, f"dangling tool_call_id {cid}"
+    assert loop.messages[0]["role"] == "system"
+
+
+def test_force_eviction_drops_a_group():
+    loop = _loop([ChatResponse(content="x")])
+    loop.messages.append({"role": "user", "content": "old"})
+    loop.messages.append({"role": "assistant", "content": "old-answer"})
+    loop.messages.append({"role": "user", "content": "current"})
+    before = len(loop.messages)
+    loop._evict_if_needed(force=True)
+    assert len(loop.messages) < before
+    assert loop.messages[0]["role"] == "system"
+    assert loop.messages[-1]["content"] == "current"

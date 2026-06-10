@@ -162,3 +162,30 @@ def test_search_real_subprocess_succeeds(spawned_root):
     """Regression: the built argv must actually parse in the kernel CLI."""
     out = _disp(spawned_root).dispatch("oracle_search", {"terms": "anything at all"})
     assert out.rc == 0, out.text
+
+
+def test_ingest_denied_when_no_ingest_roots_configured(spawned_root, tmp_path):
+    """Fail-closed: model-driven ingest is denied until ingest_roots is set."""
+    f = tmp_path / "doc.txt"
+    f.write_text("hello")
+    d = _disp(spawned_root, ingest_roots=[])  # default empty
+    out = d.dispatch("oracle_ingest", {"paths": [str(f)]})
+    assert "denied" in out.text
+    assert "ingest_roots" in out.text
+
+
+def test_ingest_symlink_escape_denied(spawned_root, tmp_path):
+    """A symlink inside an ingest root that points outside resolves out and is denied."""
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    secret = tmp_path / "outside_secret.txt"
+    secret.write_text("classified")
+    link = allowed / "innocent.txt"
+    try:
+        link.symlink_to(secret)
+    except OSError:
+        import pytest
+        pytest.skip("symlinks unsupported here")
+    d = _disp(spawned_root, ingest_roots=[allowed])
+    out = d.dispatch("oracle_ingest", {"paths": [str(link)]})
+    assert "denied" in out.text

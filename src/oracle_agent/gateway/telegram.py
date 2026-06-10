@@ -27,7 +27,8 @@ from pathlib import Path
 
 _TELEGRAM_MAX = 4000
 _ACCESS_RE = ("allowlist", "add me", "give me access", "authorize me",
-              "approve", "let me in", "grant me")
+              "approve the pairing", "approve my access", "let me in",
+              "grant me access")
 _ACCESS_REFUSAL = (
     "I can't change access from chat. Access is managed only on the host "
     "machine by the operator."

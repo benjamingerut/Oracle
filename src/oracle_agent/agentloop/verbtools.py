@@ -333,9 +333,15 @@ class Dispatcher:
         for sib in self.sibling_roots:
             if _is_within(rp, sib):
                 return "path is inside another oracle instance"
-        if self.ingest_roots:
-            if not any(_is_within(rp, ir) for ir in self.ingest_roots):
-                return "path is not within a configured ingest root"
+        # Fail closed: model-driven ingest requires an explicit allowlist.
+        # (The operator can always ingest anything directly via
+        # `oracle kernel NAME -- ingest batch ...`.)
+        if not self.ingest_roots:
+            return ("no ingest_roots configured; add allowed directories to "
+                    "ingest_roots in config.json (or ingest directly via the "
+                    "kernel CLI)")
+        if not any(_is_within(rp, ir) for ir in self.ingest_roots):
+            return "path is not within a configured ingest root"
         return None
 
     def _write_allowed(self) -> bool:

@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import config
+from ..agentloop.verbtools import _scrubbed_env
 
 
 @dataclass
@@ -104,6 +105,7 @@ def tick_instance(name: str, root: Path, timeout: float = 600.0) -> TickResult:
         proc = subprocess.run(
             [sys.executable, str(harness), "--root", str(root), "--once"],
             cwd=str(root), capture_output=True, text=True, timeout=timeout,
+            env=_scrubbed_env(),
         )
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
     return TickResult(name, proc.returncode, False, out)
