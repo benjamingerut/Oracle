@@ -66,6 +66,10 @@ _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _USERINFO_RE = re.compile(r"://[^/\s:@]+:[^/\s@]+@")
 _BEARER_RE = re.compile(r"\bBearer\s+\S")
 _SK_TOKEN_RE = re.compile(r"\bsk-[A-Za-z0-9]{16,}")
+# Hyphenated Anthropic-style keys: sk-ant-api03-... (hyphens break the plain sk- run)
+_SK_ANT_RE = re.compile(r"\bsk-ant-[A-Za-z0-9_-]{10,}")
+# Telegram bot tokens: 123456:AABBccDDee... (6+ digits colon 30+ alphanumeric/special)
+_TG_BOT_TOKEN_RE = re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{30,}")
 
 
 # --------------------------------------------------------------------------- #
@@ -154,6 +158,10 @@ def _scan_secret_leak(value, key: str = "") -> str | None:
         return f"config value for {key!r} embeds URL userinfo credentials"
     if _BEARER_RE.search(value) or _SK_TOKEN_RE.search(value):
         return f"config value for {key!r} looks like a literal token"
+    if _SK_ANT_RE.search(value):
+        return f"config value for {key!r} looks like a literal Anthropic API key (sk-ant-…)"
+    if _TG_BOT_TOKEN_RE.search(value):
+        return f"config value for {key!r} looks like a literal Telegram bot token"
     return None
 
 

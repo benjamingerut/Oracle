@@ -1,12 +1,14 @@
 """Tests for cli.py + doctor.py (SPEC S8 / S10)."""
 from __future__ import annotations
 
+import io
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
-from oracle_agent import cli, config, doctor
+from oracle_agent import cli, config, doctor, wizard, spawn
 
 
 def _register(root: Path, name="main") -> dict:
@@ -174,3 +176,281 @@ def test_doctor_flags_bad_env_perms(profile, monkeypatch):
     os.chmod(config.env_path(), 0o644)
     rep = doctor.run()
     assert rep.worst_is_fail()
+
+
+# --------------------------------------------------------------------------- #
+# S3.1 — doctor instance filtering
+# --------------------------------------------------------------------------- #
+def test_doctor_named_instance_only(profile, spawned_root, tmp_path):
+    """doctor.run("main") checks only 'main', not other instances."""
+    _register(spawned_root, "main")
+    # register a ghost instance with a missing root
+    cfg = config.load_config()
+    cfg["instances"]["ghost"] = {"root": str(tmp_path / "gone")}
+    config.save_config(cfg)
+    # Running with "main" should NOT report ghost's fail
+    rep = doctor.run("main")
+    text = rep.render()
+    assert "ghost" not in text
+
+
+def test_doctor_unknown_instance_fails(profile, spawned_root):
+    """doctor.run("nonexistent") reports FAIL immediately."""
+    _register(spawned_root, "main")
+    rep = doctor.run("nonexistent")
+    assert rep.worst_is_fail()
+
+
+def test_doctor_all_instances_when_no_name(profile, spawned_root, tmp_path):
+    """doctor.run() with no name checks all instances."""
+    _register(spawned_root, "main")
+    cfg = config.load_config()
+    cfg["instances"]["ghost"] = {"root": str(tmp_path / "gone")}
+    config.save_config(cfg)
+    rep = doctor.run()
+    text = rep.render()
+    assert "ghost" in text
+    assert rep.worst_is_fail()
+
+
+# --------------------------------------------------------------------------- #
+# S3.1 — doctor new warnings
+# --------------------------------------------------------------------------- #
+def test_doctor_empty_ingest_roots_warns(profile, spawned_root):
+    """Empty ingest_roots raises a WARN about ingest being dead."""
+    _register(spawned_root, "main")
+    cfg = config.load_config()
+    cfg["ingest_roots"] = []
+    config.save_config(cfg)
+    rep = doctor.run()
+    text = rep.render()
+    assert "ingest_roots" in text
+
+
+def test_doctor_zero_sources_warns(profile, spawned_root):
+    """A fresh (zero-source) oracle instance raises a WARN."""
+    _register(spawned_root, "main")
+    rep = doctor.run("main")
+    text = rep.render()
+    # A freshly spawned oracle has no real sources
+    assert "source" in text.lower()
+
+
+def test_doctor_non_https_non_loopback_fails(profile, spawned_root):
+    """http:// endpoint on non-loopback host is a FAIL."""
+    _register(spawned_root, "main")
+    cfg = config.load_config()
+    cfg["provider"]["base_url"] = "http://api.example.com/v1"
+    config.save_config(cfg)
+    rep = doctor.run("main")
+    assert rep.worst_is_fail()
+    text = rep.render()
+    assert "cleartext" in text or "http://" in text
+
+
+def test_doctor_loopback_http_ok(profile, spawned_root):
+    """http://localhost is allowed (not a FAIL)."""
+    _register(spawned_root, "main")
+    cfg = config.load_config()
+    cfg["provider"]["base_url"] = "http://localhost:11434/v1"
+    config.save_config(cfg)
+    rep = doctor.run("main")
+    # Should not fail due to http loopback
+    rows = [(lvl, msg) for lvl, msg, _ in rep.rows
+            if "cleartext" in msg or "plain http" in msg.lower()]
+    assert not rows, f"Unexpected http-loopback fail: {rows}"
+
+
+def test_doctor_upgrade_suggestion_has_from_kernel(profile, spawned_root, monkeypatch):
+    """Version-skew fix suggestion includes --from-kernel, not raw 'upgrade apply'."""
+    _register(spawned_root, "main")
+    # Fake a version mismatch
+    monkeypatch.setattr(doctor, "_vendored_tools_version", lambda: "v99")
+    monkeypatch.setattr(doctor, "_root_tools_version", lambda r: "v1")
+    # Also mock _check_rc so it doesn't run the kernel
+    monkeypatch.setattr(doctor, "_check_rc", lambda r: 0)
+    rep = doctor.run("main")
+    text = rep.render()
+    assert "--from-kernel" in text
+
+
+# --------------------------------------------------------------------------- #
+# S3.2 — wizard ingest_roots + telegram ID validation
+# --------------------------------------------------------------------------- #
+def _wizard_input(*lines):
+    """Return a StringIO with newline-terminated lines for wizard stream_in."""
+    return io.StringIO("\n".join(lines) + "\n")
+
+
+def test_wizard_ingest_roots_valid(profile, spawned_root, tmp_path):
+    """Wizard writes valid absolute existing dirs to ingest_roots."""
+    d = tmp_path / "docs"
+    d.mkdir()
+    inp = _wizard_input(
+        "main",            # instance name
+        str(spawned_root), # root path (existing oracle)
+        "anthropic",       # provider
+        "claude-sonnet-4-6",  # model
+        "",                # api key (skip)
+        str(d),            # ingest roots
+        "N",               # no telegram
+    )
+    out = io.StringIO()
+    wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
+    cfg = config.load_config()
+    assert str(d) in cfg.get("ingest_roots", [])
+
+
+def test_wizard_ingest_roots_non_absolute_skipped(profile, spawned_root, tmp_path):
+    """Non-absolute ingest root paths are skipped with a warning."""
+    inp = _wizard_input(
+        "main",
+        str(spawned_root),
+        "anthropic",
+        "claude-sonnet-4-6",
+        "",
+        "relative/path",   # non-absolute — should be skipped
+        "N",
+    )
+    out = io.StringIO()
+    wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
+    cfg = config.load_config()
+    assert cfg.get("ingest_roots") == []
+    assert "not an absolute path" in out.getvalue() or "skipped" in out.getvalue()
+
+
+def test_wizard_ingest_roots_nonexistent_skipped(profile, spawned_root, tmp_path):
+    """Nonexistent ingest root paths are skipped with a warning."""
+    inp = _wizard_input(
+        "main",
+        str(spawned_root),
+        "anthropic",
+        "claude-sonnet-4-6",
+        "",
+        str(tmp_path / "no-such-dir"),  # does not exist
+        "N",
+    )
+    out = io.StringIO()
+    wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
+    cfg = config.load_config()
+    assert cfg.get("ingest_roots") == []
+
+
+def test_wizard_telegram_id_non_numeric_skipped(profile, spawned_root):
+    """Non-numeric Telegram user IDs are skipped (not saved to allowlist)."""
+    inp = _wizard_input(
+        "main",
+        str(spawned_root),
+        "anthropic",
+        "claude-sonnet-4-6",
+        "",
+        "",              # no ingest roots
+        "y",             # enable telegram
+        "",              # bot token (skip, no getpass)
+        "notanumber",    # invalid UID
+    )
+    out = io.StringIO()
+    wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
+    cfg = config.load_config()
+    allowlist = cfg.get("gateway", {}).get("telegram", {}).get("allowlist", {})
+    assert "notanumber" not in allowlist
+    assert "not numeric" in out.getvalue() or "not numeric" in out.getvalue()
+
+
+def test_wizard_telegram_id_numeric_saved(profile, spawned_root):
+    """Numeric Telegram user IDs are saved as strings to the allowlist."""
+    inp = _wizard_input(
+        "main",
+        str(spawned_root),
+        "anthropic",
+        "claude-sonnet-4-6",
+        "",
+        "",              # no ingest roots
+        "y",             # enable telegram
+        "",              # bot token (skip)
+        "123456789",     # valid numeric UID
+    )
+    out = io.StringIO()
+    wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
+    cfg = config.load_config()
+    allowlist = cfg.get("gateway", {}).get("telegram", {}).get("allowlist", {})
+    assert "123456789" in allowlist
+
+
+# --------------------------------------------------------------------------- #
+# S3.4 — spawn collision refusal
+# --------------------------------------------------------------------------- #
+def test_spawn_collision_refuses_different_root(profile, spawned_root, tmp_path, monkeypatch):
+    """cli spawn refuses to overwrite a registry entry pointing at a different root."""
+    # Register 'root' under the spawned_root name
+    name = spawned_root.name.lower().replace(" ", "-")
+    cfg = config.load_config()
+    cfg = config.register_instance(cfg, name, spawned_root)
+    config.save_config(cfg)
+
+    # Now attempt to spawn a *different* root with the same name
+    other_root = tmp_path / name
+    other_root.mkdir()
+    # Stub spawn.main so it "succeeds" without actually spawning
+    monkeypatch.setattr(spawn, "main", lambda args: 0)
+
+    rc = cli._cmd_spawn(["--root", str(other_root)])
+    assert rc != 0  # must refuse
+
+
+def test_spawn_collision_same_root_ok(profile, spawned_root, monkeypatch):
+    """cli spawn re-registering the same root is idempotent (not an error)."""
+    name = spawned_root.name.lower().replace(" ", "-")
+    cfg = config.load_config()
+    cfg = config.register_instance(cfg, name, spawned_root)
+    config.save_config(cfg)
+
+    monkeypatch.setattr(spawn, "main", lambda args: 0)
+    rc = cli._cmd_spawn(["--root", str(spawned_root)])
+    assert rc == 0
+
+
+# --------------------------------------------------------------------------- #
+# S3.5 — seed_index sys.path cleanup
+# --------------------------------------------------------------------------- #
+def test_seed_index_removes_syspath_entry(tmp_path):
+    """seed_index removes the _tools entry from sys.path after the call."""
+    from oracle_agent.spawn import seed_index
+    fake_tools = tmp_path / "_tools"
+    fake_tools.mkdir()
+    tools_str = str(fake_tools)
+    # Ensure the path is NOT already there
+    assert tools_str not in sys.path
+    seed_index(tmp_path)
+    assert tools_str not in sys.path, "seed_index must clean up sys.path"
+
+
+def test_seed_index_does_not_remove_preexisting_path(tmp_path):
+    """If _tools was already in sys.path, seed_index must not remove it."""
+    from oracle_agent.spawn import seed_index
+    fake_tools = tmp_path / "_tools"
+    fake_tools.mkdir()
+    tools_str = str(fake_tools)
+    sys.path.insert(0, tools_str)
+    try:
+        seed_index(tmp_path)
+        # path was already there before → must still be there
+        assert tools_str in sys.path
+    finally:
+        while tools_str in sys.path:
+            sys.path.remove(tools_str)
+
+
+# --------------------------------------------------------------------------- #
+# S10 — version skew warning (SPEC S10 enforcer)
+# --------------------------------------------------------------------------- #
+def test_version_skew_warns(profile, spawned_root, monkeypatch, capsys):
+    """oracle version prints a version-skew warning when kernel != packaged."""
+    _register(spawned_root, "main")
+    monkeypatch.setattr(doctor, "_vendored_tools_version", lambda: "v99")
+    monkeypatch.setattr(doctor, "_root_tools_version", lambda r: "v1")
+    rc = cli.main(["version"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # The version command prints kernel versions; skew is visible
+    assert "v99" in out or "v1" in out

@@ -916,8 +916,11 @@ def seed_index(root: Path) -> bool:
     idx_dir = root / "_data.nosync" / "index"
     idx_dir.mkdir(parents=True, exist_ok=True)
     tools_dir = root / "_tools"
-    if str(tools_dir) not in sys.path:
-        sys.path.insert(0, str(tools_dir))
+    tools_dir_str = str(tools_dir)
+    inserted = False
+    if tools_dir_str not in sys.path:
+        sys.path.insert(0, tools_dir_str)
+        inserted = True
     try:
         import knowledge_index  # type: ignore
 
@@ -925,6 +928,9 @@ def seed_index(root: Path) -> bool:
         return True
     except Exception:
         return False
+    finally:
+        if inserted and tools_dir_str in sys.path:
+            sys.path.remove(tools_dir_str)
 
 
 # --------------------------------------------------------------------------- #

@@ -75,11 +75,12 @@ secret:
 		$(PY) "$(TOOLS)/secret_scan.py" scan "$$entry" || exit 1 ; \
 	done
 	@echo "    (clean -- no secrets in shipped kernel content)"
-	@echo "==> secret scan over shell source (tests excluded: fake fixtures)"
-	@for d in config.py llm agentloop service gateway cli.py wizard.py \
-	          doctor.py spawn.py manifest.py; do \
-		$(PY) "$(TOOLS)/secret_scan.py" scan "$(PKG)/$$d" || exit 1 ; \
-	done
+	@echo "==> secret scan over shell source (assets/ and tests/ excluded)"
+	@find "$(PKG)" -name '*.py' \
+		! -path "*/assets/*" ! -path "*/__pycache__/*" ! -path "*/tests/*" \
+		| sort | while read f; do \
+			$(PY) "$(TOOLS)/secret_scan.py" scan "$$f" || exit 1 ; \
+		done
 	@$(PY) "$(TOOLS)/secret_scan.py" scan "$(ROOT)/installer" || exit 1
 	@$(PY) "$(TOOLS)/secret_scan.py" scan "$(ROOT)/docs" || exit 1
 	@echo "    (clean -- no secrets in shell source)"

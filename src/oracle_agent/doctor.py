@@ -7,12 +7,14 @@ Stdlib only.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import socket
 import stat
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -58,6 +60,48 @@ def _root_tools_version(root: Path) -> str | None:
         return None
 
 
+def _is_non_loopback_http(base_url: str) -> bool:
+    """Return True iff ``base_url`` is an ``http://`` URL whose host is NOT loopback.
+
+    Self-contained: no DNS; checks literal host string only (matching S1's
+    client refusal rule).  Loopback = 127.0.0.0/8, ::1, or the literal
+    hostname ``localhost``.
+    """
+    if not base_url:
+        return False
+    try:
+        parsed = urllib.parse.urlparse(base_url)
+    except Exception:
+        return False
+    if (parsed.scheme or "").lower() != "http":
+        return False
+    host = parsed.hostname or ""
+    if host.lower() == "localhost":
+        return False
+    try:
+        addr = ipaddress.ip_address(host)
+        if addr.is_loopback:
+            return False
+    except ValueError:
+        pass  # not a bare IP — treat as non-loopback
+    return True
+
+
+def _count_real_sources(root: Path) -> int:
+    """Count non-template markdown files in ``Memory.nosync/Sources/``.
+
+    Template/context sentinel files start with ``_``; everything else is a
+    real source record.
+    """
+    sources_dir = root / "Memory.nosync" / "Sources"
+    if not sources_dir.is_dir():
+        return 0
+    return sum(
+        1 for p in sources_dir.iterdir()
+        if p.suffix.lower() == ".md" and not p.name.startswith("_")
+    )
+
+
 def run(instance: str | None = None) -> Report:
     rep = Report()
 
@@ -91,8 +135,23 @@ def run(instance: str | None = None) -> Report:
         rep.add(FAIL, f"config.json error: {exc}", "fix or delete config.json")
         return rep
 
+    # ingest_roots — global config-level check (instance-independent)
+    ingest_roots = cfg.get("ingest_roots") or []
+    if not ingest_roots:
+        rep.add(WARN, "ingest_roots is empty — your oracle cannot ingest from chat",
+                "add directories to config.json ingest_roots")
+
     # instances
     roots = config.instance_roots(cfg)
+    if instance is not None:
+        # filter to the named instance only
+        if instance in roots:
+            roots = {instance: roots[instance]}
+        else:
+            rep.add(FAIL, f"no instance named {instance!r} "
+                          f"(known: {', '.join(sorted(config.instance_roots(cfg))) or 'none'})",
+                    "run `oracle instances list` to see registered instances")
+            return rep
     if not roots:
         rep.add(WARN, "no instances registered", "run `oracle setup` or `oracle spawn`")
     vendored = _vendored_tools_version()
@@ -110,9 +169,17 @@ def run(instance: str | None = None) -> Report:
                     "re-spawn to stamp the manifest")
         elif vendored and rtv != vendored:
             rep.add(WARN, f"instance '{name}': kernel {rtv} != packaged {vendored}",
-                    "run `oracle kernel {name} -- admin upgrade apply` to align".format(name=name))
+                    "run `oracle kernel {name} -- admin upgrade apply --from-kernel {vendored}`".format(
+                        name=name, vendored=vendored))
         else:
             rep.add(OK, f"instance '{name}': kernel {rtv}")
+        # zero-sources check
+        n_sources = _count_real_sources(root)
+        if n_sources == 0:
+            rep.add(WARN, f"instance '{name}': no ingested sources (oracle knows nothing yet)",
+                    f"oracle kernel {name} -- ingest batch <path>")
+        else:
+            rep.add(OK, f"instance '{name}': {n_sources} source(s) ingested")
 
     # provider
     prov = cfg.get("provider") or {}
@@ -124,6 +191,12 @@ def run(instance: str | None = None) -> Report:
         rep.add(OK, "local model: ceiling up to internal")
     else:
         rep.add(OK, "external model: ceiling public (confidential+ withheld)")
+    # non-https non-loopback endpoint is a hard FAIL
+    if _is_non_loopback_http(base_url):
+        rep.add(FAIL,
+                "LLM endpoint is plain http:// to a non-loopback host — "
+                "API key would be sent in cleartext",
+                "set a https:// base_url (oracle model set --base-url ...)")
     key = config.resolve_secret(env_key) if env_key else None
     if env_key and not key:
         rep.add(WARN, f"provider API key env '{env_key}' is unset",

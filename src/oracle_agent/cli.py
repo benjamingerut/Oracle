@@ -87,6 +87,17 @@ def _cmd_spawn(rest: list[str]) -> int:
             return rc
         name = root.name.lower().replace(" ", "-")
         cfg = config.load_config()
+        existing_roots = config.instance_roots(cfg)
+        if name in existing_roots:
+            existing_root = Path(existing_roots[name]).resolve()
+            if existing_root != root:
+                print(
+                    f"oracle: instance '{name}' is already registered and points to a "
+                    f"different root ({existing_root}). Refusing to overwrite. "
+                    f"Use `oracle instances remove {name}` first.",
+                    file=sys.stderr,
+                )
+                return 1
         cfg = config.register_instance(cfg, name, root)
         config.save_config(cfg)
         print(f"registered instance '{name}' -> {root}")

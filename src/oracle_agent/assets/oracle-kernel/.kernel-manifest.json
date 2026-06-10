@@ -1,5 +1,5 @@
 {
-  "aggregate_sha256": "0db9265ccaa53d58e5e3b862d00f4507104b22cea32195e74238b1ec94660e23",
+  "aggregate_sha256": "7482efe046a0aaec03ea57fcceaddd638a1fea129ab211d06e8a827f817e3353",
   "files": {
     "_tools/_CONTEXT.md": "661ae48ec92ac8c7e0eda8f65fce86f0ffeae498fdde9de4d758774c4f7abd0d",
     "_tools/actions.py": "3508b8d585e1ecf185b8ce3710beca4028b6fb9404593e305c51caa4dbd6e885",
@@ -53,7 +53,7 @@
     "_tools/schemas/recommendation.schema.json": "f1723a771a0c034912877b776ce7d0937e0ad7ccaaa0ed157bf5aa14ab5216c8",
     "_tools/schemas/redaction_event.schema.json": "4e7e5337ff747b927f09f9384e13922364e6aab9be799aa9eab40bbf7bf0cdfd",
     "_tools/scorecard.py": "c1cdf32605a76f2600ce95d4ad95c18feb04f5b41da3d95213b72172a6d50684",
-    "_tools/secret_scan.py": "fd0f9f46903e50cf274639f073e35274b7f4e6c9b4b8d81eb390ce1689237520",
+    "_tools/secret_scan.py": "b70d2beb79be1c66439691de86f2e36e86e4474b97cda21cb26fad09af7a5081",
     "_tools/session_interface.py": "273be0665fb5137c67148be8eebf15863038c213234e1b1f9c9c1bc877cbd165",
     "_tools/session_memory.py": "7d73780684bb4c34cee640293eb99073cc8eec3bbaa081b3be75fa13dcb95bf7",
     "_tools/setup_audit.py": "d10ead93d55032b904a6dd71625c0481a45a80465143fa0321d6b8c6b0dc7ebf",
@@ -65,6 +65,6 @@
     "_tools/truth_map.py": "32f230610bc6764c7d46629142ad50844ead2c176f3de4027b26c31e3c7ac55f",
     "_tools/upgrade.py": "b4a0b49e7f2fa3eb8beacc2e5a6d024e95e514868b8c4b949d052b71481e2c3a"
   },
-  "generated": "2026-06-10T19:00:04",
+  "generated": "2026-06-10T19:12:29",
   "tools_version": "3.0.0"
 }

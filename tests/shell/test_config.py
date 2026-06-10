@@ -98,3 +98,37 @@ def test_profile_dir_is_0700(profile):
     d = config.profile_dir()
     mode = stat.S_IMODE(os.stat(d).st_mode)
     assert mode == 0o700
+
+
+# --------------------------------------------------------------------------- #
+# S3.3 — extended secret-guard patterns
+# --------------------------------------------------------------------------- #
+def test_save_refuses_sk_ant_key(profile):
+    """sk-ant-… hyphenated Anthropic keys must be refused."""
+    cfg = config.load_config()
+    cfg["instances"]["x"] = {"root": "/tmp/x", "note": "sk-ant-api03-abcdefghij1234567890"}
+    with pytest.raises(ValueError, match="sk-ant"):
+        config.save_config(cfg)
+
+
+def test_save_refuses_telegram_bot_token(profile):
+    """Telegram bot tokens (NNN:AA…) must be refused."""
+    cfg = config.load_config()
+    # A realistic Telegram bot token shape
+    cfg["instances"]["x"] = {"root": "/tmp/x",
+                             "note": "1234567890:AABBccDDeeffGGHHiijjKKLLmmNNooP"}
+    with pytest.raises(ValueError):
+        config.save_config(cfg)
+
+
+def test_scan_secret_leak_sk_ant_direct():
+    """_scan_secret_leak detects sk-ant- keys directly."""
+    reason = config._scan_secret_leak("sk-ant-api03-sometoken12345678")
+    assert reason is not None
+    assert "sk-ant" in reason
+
+
+def test_scan_secret_leak_telegram_token_direct():
+    """_scan_secret_leak detects Telegram bot token shape directly."""
+    reason = config._scan_secret_leak("9876543210:BBCCddEEFFggHHIIjjKKLLmmNNOOppQQ")
+    assert reason is not None

@@ -12,12 +12,19 @@ chokepoints.
 
 Ceiling enforcement (STRESS C1) happens HERE, in code:
   * search           : ``--max-sensitivity <ceiling>`` forced; model sensitivity
-                       tokens stripped (M5).
+                       tokens stripped (M5) before argv composition.
   * answer           : envelope parsed from stdout; if the answer's required
                        clearance exceeds the ceiling the grounded payload is
                        withheld (verdict + suggested_fix still returned).
-  * brief            : only offered at internal+ and non-external; lines above
-                       the ceiling dropped.
+  * brief            : only offered at internal+ and non-external; dropped from
+                       external schema entirely. Per-line sensitivity line-scan
+                       is a BLOCKER: briefing.py emits no machine-readable
+                       per-line/per-section sensitivity markers (only a single
+                       document-level sensitivity_ceiling). Line-scan cannot be
+                       implemented without kernel changes; brief remains gated by
+                       environment/ceiling check as today.
+  * checkpoint/loops_due: dropped from external schema entirely; dispatcher
+                       denies hallucinated calls fail-closed.
   * status           : replaced by the minimized snapshot (built in loop.py).
   * ingest           : path-allowlisted (H4); profile dir + sibling roots denied.
 Output is capped at ``tool_result_max_chars``.
@@ -113,11 +120,18 @@ _GATEWAY_TOOLS = [
 
 
 def tool_schemas(surface: str, environment: str) -> list[dict]:
-    """OpenAI tool schemas for a (surface, environment) combination (S4)."""
+    """OpenAI tool schemas for a (surface, environment) combination (S4).
+
+    When environment == "external", oracle_brief, oracle_checkpoint, and
+    oracle_loops_due are dropped from the schema entirely (structural exclusion,
+    not filtered text). External surfaces are public-only; these verbs serve
+    operator awareness and may embed above-ceiling metadata.
+    """
     names = list(_LOCAL_TOOLS if surface == "local" else _GATEWAY_TOOLS)
     if environment == "external":
-        # Output sensitivity not self-attestable for these -> drop on external.
-        for drop in ("oracle_brief",):
+        # Operator-awareness verbs: output sensitivity not self-attestable;
+        # drop from the schema so the model never learns they exist.
+        for drop in ("oracle_brief", "oracle_checkpoint", "oracle_loops_due"):
             if drop in names:
                 names.remove(drop)
     out = []
@@ -170,8 +184,27 @@ class ToolOutcome:
     rc: int = 0
 
 
-_SENSITIVITY_FLAG_RE = re.compile(r"^--max-sensitivity(=.*)?$")
+# Matches any token that could inject a --max-sensitivity flag into the kernel
+# CLI.  The primary injection defence is ``--q=`` packing (value never parsed
+# as a separate argv element).  This regex is the documented second layer (SPEC
+# S4 / STRESS M5): strip matching tokens from model-supplied string values
+# BEFORE they are spliced into any argv list.
+_SENSITIVITY_FLAG_RE = re.compile(
+    r"(?<!\w)--max-sensitivity(?:=[^\s]*)?"
+    r"|(?<!\w)-S(?:=[^\s]*)?"
+)
 _SECRETISH_PATH_RE = re.compile(r"(?i)(\.env|id_rsa|\.pem|secret|credential)")
+
+
+def _strip_sensitivity_tokens(value: str) -> str:
+    """Remove any --max-sensitivity / -S=… tokens from a model-supplied string.
+
+    The primary protection is argv chokepointing (values ride inside a single
+    ``--q=<value>`` element and are never split).  This is the second layer:
+    even if a value ends up in a position where the kernel could see it as a
+    flag, the token is gone before dispatch.
+    """
+    return _SENSITIVITY_FLAG_RE.sub("", value).strip()
 
 
 @dataclass
@@ -196,6 +229,24 @@ class Dispatcher:
 
     def dispatch(self, name: str, arguments: dict) -> ToolOutcome:
         if not self._allowed(name):
+            # Defense in depth (S4): a verb may have been dropped from the
+            # schema for this (surface, environment) combination. If the model
+            # hallucinates a call to a dropped verb, deny and log fail-closed.
+            # Distinguish "dropped for this environment" from "unknown verb".
+            all_local_names = {t["function"]["name"]
+                               for t in tool_schemas(self.surface, "local_agent")}
+            if name in all_local_names:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "dispatcher: denied dropped verb %r (surface=%r env=%r); "
+                    "model hallucinated a verb not in schema -- fail closed",
+                    name, self.surface, self.environment,
+                )
+                return ToolOutcome(
+                    f"[denied: tool '{name}' is not available in the current "
+                    f"environment (environment={self.environment!r})]",
+                    rc=2,
+                )
             return ToolOutcome(f"[error: tool '{name}' is not available on this surface]", rc=2)
         handler = getattr(self, f"_do_{name}", None)
         if handler is None:
@@ -240,7 +291,7 @@ class Dispatcher:
         return ToolOutcome(self._cap(json.dumps(view, indent=2)), rc=rc)
 
     def _do_oracle_search(self, args: dict) -> ToolOutcome:
-        terms = str(args.get("terms", "")).strip()
+        terms = _strip_sensitivity_tokens(str(args.get("terms", "")).strip())
         if not terms:
             return ToolOutcome("[error: search needs 'terms']", rc=2)
         k = args.get("k", 8)
@@ -250,18 +301,19 @@ class Dispatcher:
             k = 8
         # The ceiling is forced as the ONLY --max-sensitivity (M5). The model
         # cannot smuggle one: terms ride inside a single `--q=` argv element
-        # and the schema exposes no sensitivity field.
+        # (primary defence) and any residual tokens are stripped above (second
+        # layer per SPEC S4 / STRESS M5).
         argv = ["search", "query", f"--q={terms}", "--k", str(k),
                 "--max-sensitivity", self.max_sensitivity]
         rc, out, _err = self._run(argv)
         return ToolOutcome(self._cap(out.strip() or "[no results]"), rc=rc)
 
     def _do_oracle_answer(self, args: dict) -> ToolOutcome:
-        obj = str(args.get("business_object", "")).strip()
+        obj = _strip_sensitivity_tokens(str(args.get("business_object", "")).strip())
         if not obj:
             return ToolOutcome("[error: answer needs 'business_object']", rc=2)
         argv = ["answer", "--object", obj, "--format", "json"]
-        q = str(args.get("question", "")).strip()
+        q = _strip_sensitivity_tokens(str(args.get("question", "")).strip())
         if q:
             argv += ["--question", q]
         rc, out, _err = self._run(argv)  # rc is the VERDICT (0/2/3/4), not error

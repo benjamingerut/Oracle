@@ -85,6 +85,33 @@ def run(*, stream_in=None, stream_out=None, getpass_fn=getpass.getpass) -> int:
             config.set_env_secret(key_env, secret)
             out.write("  key saved.\n")
 
+    # ingest roots
+    existing_roots = cfg.get("ingest_roots") or []
+    existing_roots_str = ",".join(str(r) for r in existing_roots)
+    ingest_raw = _ask(
+        "Ingest root directories (comma-separated absolute paths, blank=none)",
+        existing_roots_str,
+        stream_in=stream_in, stream_out=stream_out,
+    )
+    new_ingest_roots = []
+    if ingest_raw.strip():
+        for part in ingest_raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            p = Path(part).expanduser()
+            if not p.is_absolute():
+                out.write(f"  warning: {part!r} is not an absolute path — skipped\n")
+                continue
+            if not p.exists():
+                out.write(f"  warning: {part!r} does not exist — skipped\n")
+                continue
+            new_ingest_roots.append(str(p))
+    cfg["ingest_roots"] = new_ingest_roots
+    if not new_ingest_roots:
+        out.write("  note: ingest_roots is empty — the chat agent cannot ingest from disk.\n")
+        out.write("        Add directories to config.json ingest_roots later.\n")
+
     # optional telegram
     want_tg = _ask("Enable Telegram gateway? (y/N)", "N",
                    stream_in=stream_in, stream_out=stream_out).lower()
@@ -98,12 +125,18 @@ def run(*, stream_in=None, stream_out=None, getpass_fn=getpass.getpass) -> int:
             tok = ""
         if tok:
             config.set_env_secret(token_env, tok)
-        uid = _ask("Your Telegram numeric user ID (to allowlist)", "",
-                   stream_in=stream_in, stream_out=stream_out)
+        uid_raw = _ask("Your Telegram numeric user ID (to allowlist)", "",
+                       stream_in=stream_in, stream_out=stream_out)
         cfg["gateway"]["telegram"]["enabled"] = True
-        if uid:
-            cfg["gateway"]["telegram"].setdefault("allowlist", {})[uid] = {
-                "role": "user", "instance": name}
+        if uid_raw:
+            uid_raw = uid_raw.strip()
+            if not uid_raw.lstrip("-").isdigit():
+                out.write(f"  warning: Telegram user ID {uid_raw!r} is not numeric — "
+                          "skipped (non-numeric IDs never match)\n")
+            else:
+                # store as string (the shape that matches str(from.id))
+                cfg["gateway"]["telegram"].setdefault("allowlist", {})[uid_raw] = {
+                    "role": "user", "instance": name}
 
     config.save_config(cfg)
     out.write("\nConfig saved. Running doctor ...\n\n")

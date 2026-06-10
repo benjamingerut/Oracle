@@ -313,6 +313,10 @@ def scan_text(text: str) -> list[dict]:
             if not quote:
                 if _is_wordy(value):
                     continue
+                # Self-assignment kwarg idiom (api_key=api_key,) is source
+                # code passing a variable through, never a literal secret.
+                if value.rstrip(",;").strip() == key_name:
+                    continue
                 # For highly sensitive key names: flag digit-free values ≥ 8
                 # chars; for all others keep the original digit requirement.
                 has_digit = any(ch.isdigit() for ch in value)

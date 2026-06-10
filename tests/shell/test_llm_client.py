@@ -1,4 +1,4 @@
-"""Tests for llm/client.py (SPEC S2 / S10)."""
+"""Tests for llm/client.py (SPEC S2 / S10, S1 remediation)."""
 from __future__ import annotations
 
 import json
@@ -157,3 +157,108 @@ def test_retry_succeeds_after_transient(server):
 class _FixedRng:
     def uniform(self, a, b):
         return b  # deterministic: full-jitter upper bound
+
+
+# ---------------------------------------------------------------------------
+# S1 remediation: new security tests
+# ---------------------------------------------------------------------------
+
+def test_retry_after_capped_at_30s():
+    """A Retry-After value larger than 30 s is capped to 30 s.
+
+    Tests the cap via injectable chat function that raises LLMError(retry_after=9999)
+    on the first two calls then returns success.
+    """
+    import oracle_agent.llm.client as mod
+
+    call_count = {"n": 0}
+
+    class _FakeClient:
+        environment = "external"
+
+        def chat(self, messages, tools=None, **kw):
+            call_count["n"] += 1
+            if call_count["n"] <= 2:
+                raise LLMError("rate_limit", "slow down", status=429,
+                               retryable=True, retry_after=9999.0)
+            return mod.ChatResponse(content="ok")
+
+    delays = []
+    fake = _FakeClient()
+    resp = chat_with_retry(fake, [{"role": "user", "content": "x"}],  # type: ignore
+                           max_attempts=5, sleep=delays.append, rng=_FixedRng())
+    assert resp.content == "ok"
+    # Every Retry-After delay must be at most 30 s (the cap)
+    assert all(d <= 30.0 for d in delays), f"Delays exceeded cap: {delays}"
+    assert len(delays) == 2  # two rate-limit retries before success
+
+
+def test_retry_total_budget_enforced(server):
+    """Total sleep across all retries must not exceed 120 s."""
+    base, H = server
+    H.script = {"status": 503, "body": "unavailable"}
+    # Set up enough retries that naive scheduling would exceed 120 s.
+    # Use a large base_delay with FixedRng (always returns upper bound).
+    delays = []
+    with pytest.raises(LLMError):
+        chat_with_retry(
+            LLMClient(base, "m"), [{"role": "user", "content": "x"}],
+            max_attempts=20, base_delay=50.0, sleep=delays.append,
+            rng=_FixedRng(),
+        )
+    total = sum(delays)
+    assert total <= 120.0, f"Total sleep {total} s exceeded 120 s budget"
+
+
+def test_http_plaintext_with_api_key_to_nonloopback_refused():
+    """LLMClient must refuse construction when api_key + http:// + non-loopback."""
+    with pytest.raises(LLMError) as ei:
+        LLMClient("http://api.example.com/v1", "m", api_key="sk-secret")
+    assert ei.value.kind == "bad_request"
+    assert ei.value.retryable is False
+    # Message should be actionable
+    assert "http" in str(ei.value).lower() or "plaintext" in str(ei.value).lower()
+
+
+def test_http_plaintext_loopback_with_api_key_allowed(server):
+    """LLMClient must ALLOW http:// to loopback even with an api_key."""
+    base, H = server   # base is already http://127.0.0.1:PORT/v1
+    H.script = {"status": 200, "body": _ok_body("loopback ok")}
+    # Should not raise
+    client = LLMClient(base, "m", api_key="sk-localtoken")
+    resp = client.chat([{"role": "user", "content": "x"}])
+    assert resp.content == "loopback ok"
+
+
+def test_http_plaintext_without_api_key_to_nonloopback_allowed():
+    """No api_key means no credential risk — http:// to non-loopback is allowed."""
+    # Just construction; we can't connect but it should not raise at construction.
+    client = LLMClient("http://api.example.com/v1", "m", api_key=None)
+    assert client.base_url == "http://api.example.com/v1"
+
+
+def test_per_request_guard_local_agent_blocks_swapped_url(server):
+    """A local_agent client must refuse to send if the endpoint resolves outside loopback.
+
+    Simulates a DNS-rebind / config-swap by building a local_agent client
+    and then patching base_url to an external address before the call.
+    """
+    base, H = server
+    H.script = {"status": 200, "body": _ok_body("should not reach")}
+    client = LLMClient(base, "m", environment="local_agent")
+    # Swap to a non-loopback URL post-construction (simulates rebinding)
+    client.base_url = "http://api.example.com/v1"
+    with pytest.raises(LLMError) as ei:
+        client.chat([{"role": "user", "content": "x"}])
+    assert ei.value.kind == "bad_request"
+    assert "local_agent" in str(ei.value) or "non-loopback" in str(ei.value)
+
+
+def test_per_request_guard_external_client_has_no_constraint(server):
+    """An external client is not constrained — it may talk to any host."""
+    base, H = server
+    H.script = {"status": 200, "body": _ok_body("fine")}
+    client = LLMClient(base, "m", environment="external")
+    # No per-request guard for external clients — must succeed.
+    resp = client.chat([{"role": "user", "content": "x"}])
+    assert resp.content == "fine"

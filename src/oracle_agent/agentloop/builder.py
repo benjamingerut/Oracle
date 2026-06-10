@@ -23,15 +23,20 @@ def build_loop(cfg: dict, root: Path, *, surface: str,
     """Construct a ready AgentLoop for ``root`` on ``surface``.
 
     ``ceiling_override`` may only LOWER the computed ceiling (SPEC S8 chat
-    ``--max-sensitivity``; gateway ``max_sensitivity``).
+    ``--max-sensitivity``; gateway ``max_sensitivity``).  Unknown/mis-cased
+    labels raise ``ValueError`` so the caller can surface a clear error (CLI
+    exits non-zero; gateway refuses to start).
     """
     prov = cfg.get("provider") or {}
     base_url = prov.get("base_url", "")
     environment = pb.environment_for(base_url)
     order = pb.sensitivity_order(root)
-    ceiling = pb.max_sensitivity_for(root, environment,
-                                     bool(prov.get("local_is_confined", False)))
+    # NOTE: local_is_confined was removed (S1 remediation — dead security knob).
+    # A real confidential-tier confinement mechanism lands in roadmap Phase 2.
+    ceiling = pb.max_sensitivity_for(root, environment)
     if ceiling_override:
+        # Validate before applying; unknown labels are a configuration error.
+        pb.validate_sensitivity_label(ceiling_override, order)
         ceiling = pb.min_sensitivity(ceiling, ceiling_override, order)
 
     api_key_env = prov.get("api_key_env") or ""
@@ -42,7 +47,8 @@ def build_loop(cfg: dict, root: Path, *, surface: str,
     if tg.get("token_env"):
         scrub.append(tg["token_env"])
 
-    client = LLMClient(base_url, prov.get("model", ""), api_key=api_key)
+    client = LLMClient(base_url, prov.get("model", ""), api_key=api_key,
+                       environment=environment)
 
     instance_roots = config.instance_roots(cfg)
     sibling_roots = [r for r in instance_roots.values()

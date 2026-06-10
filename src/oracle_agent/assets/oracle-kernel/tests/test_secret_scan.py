@@ -452,3 +452,10 @@ def test_env_lookup_not_flagged():
     """References to env lookups should not flag as leaks."""
     assert not _has("password = os.environ['DB_PASS']", "generic_assignment")
     assert not _has("token = getenv('API_TOKEN')", "generic_assignment")
+
+
+def test_self_assignment_kwarg_not_flagged():
+    """Passing a variable through a same-named kwarg is code, not a secret."""
+    assert not _has("client = LLMClient(url, api_key=api_key,", "generic_assignment")
+    assert not _has("connect(password=password)", "generic_assignment")
+    assert not _has("token = token", "generic_assignment")

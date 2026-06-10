@@ -3,11 +3,15 @@
 The bridge answers two questions for a given provider endpoint and oracle root:
 
   1. environment_for(base_url)  -> "local_agent" | "external"
-     Is the LLM endpoint provably loopback? Every resolved address must be a
-     loopback address; any parse/resolution failure or non-loopback address is
-     fail-closed to "external" (STRESS C2/L1/L2).
+     Is the LLM endpoint provably loopback? Only literal loopback addresses
+     and the exact hostname ``localhost`` classify as ``local_agent``; DNS
+     resolution is intentionally NOT performed (STRESS C2/L1/L2 TOCTOU fix).
+     Accepted loopback forms:
+       - exact hostname "localhost"
+       - any literal IPv4 address in 127.0.0.0/8
+       - literal IPv6 "::1" or bracketed "[::1]"
 
-  2. max_sensitivity_for(root, environment, local_is_confined) -> label
+  2. max_sensitivity_for(root, environment) -> label
      The highest sensitivity label the root's OWN policy gate marks exactly
      ``allow`` for that environment. The bridge NEVER imports the root's code
      (STRESS C3); it shells out to ``oracle policy check`` and treats anything
@@ -19,7 +23,6 @@ Stdlib only.
 from __future__ import annotations
 
 import ipaddress
-import socket
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -34,11 +37,29 @@ def _is_loopback_addr(addr: str) -> bool:
         return False
 
 
+def _is_literal_loopback_host(host: str) -> bool:
+    """Return True iff ``host`` is a provably-loopback literal (no DNS needed).
+
+    Accepts:
+      - exact name "localhost"
+      - any literal IPv4 in 127.0.0.0/8
+      - literal "::1" (and bracketed form "[::1]" is already stripped by
+        urlsplit, but guard it anyway)
+    """
+    h = host.lower().strip()
+    if h in _LOOPBACK_NAMES:
+        return True
+    # urlsplit strips brackets from IPv6, but handle the bare form too.
+    h_stripped = h.strip("[]")
+    return _is_loopback_addr(h_stripped)
+
+
 def environment_for(base_url: str) -> str:
     """Classify the provider endpoint as ``local_agent`` (loopback) or ``external``.
 
-    Fail-closed: unparseable URL, unresolved host, or ANY non-loopback resolved
-    address yields ``external``.
+    Fail-closed: unparseable URL, missing host, or any hostname that is not a
+    literal loopback address / the exact string ``localhost`` yields
+    ``external``.  DNS is deliberately NOT consulted (TOCTOU fix, STRESS C2).
     """
     try:
         host = urlsplit(base_url).hostname
@@ -46,29 +67,23 @@ def environment_for(base_url: str) -> str:
         return "external"
     if not host:
         return "external"
-    host = host.lower()
-    if host in _LOOPBACK_NAMES:
-        return "local_agent"
-    # Literal IP?
-    try:
-        if ipaddress.ip_address(host).is_loopback:
-            return "local_agent"
-        return "external"  # a literal, non-loopback IP
-    except ValueError:
-        pass
-    # A name: resolve and require EVERY address to be loopback.
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except (socket.gaierror, UnicodeError, OSError):
-        return "external"
-    if not infos:
-        return "external"
-    for info in infos:
-        sockaddr = info[4]
-        addr = sockaddr[0] if sockaddr else ""
-        if not _is_loopback_addr(addr):
-            return "external"
-    return "local_agent"
+    return "local_agent" if _is_literal_loopback_host(host) else "external"
+
+
+def validate_sensitivity_label(label: str, order: list[str] | None = None) -> str:
+    """Validate that ``label`` is in the known sensitivity order.
+
+    Returns the label unchanged if valid.  Raises ``ValueError`` with an
+    actionable message if the label is unknown or mis-cased — the caller must
+    surface this as a hard error (CLI exits non-zero; gateway refuses to start).
+    """
+    eff_order = order if order is not None else CANONICAL_ORDER
+    if label in eff_order:
+        return label
+    raise ValueError(
+        f"Unknown sensitivity label {label!r}. "
+        f"Valid labels (case-sensitive): {eff_order}"
+    )
 
 
 def sensitivity_order(root: Path) -> list[str]:
@@ -114,7 +129,6 @@ def min_sensitivity(a: str, b: str, order: list[str] | None = None) -> str:
 
 
 def max_sensitivity_for(root: Path, environment: str,
-                        local_is_confined: bool = False,
                         *, policy_check=None) -> str:
     """Highest label the root's policy marks exactly ``allow`` for ``environment``.
 
@@ -122,6 +136,10 @@ def max_sensitivity_for(root: Path, environment: str,
     v1. ``policy_check`` is injectable for tests; it must return the verdict
     string ("allow"|"allow-minimized"|"deny") for (label, environment), or
     raise on error.
+
+    NOTE: the ``local_is_confined`` parameter was removed (S1 remediation).
+    It was a dead security knob that was never read.  A real confidential-tier
+    confinement mechanism will be re-introduced in roadmap Phase 2.
     """
     order = sensitivity_order(root)
     if policy_check is None:

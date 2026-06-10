@@ -189,3 +189,105 @@ def test_ingest_symlink_escape_denied(spawned_root, tmp_path):
     d = _disp(spawned_root, ingest_roots=[allowed])
     out = d.dispatch("oracle_ingest", {"paths": [str(link)]})
     assert "denied" in out.text
+
+
+# ---------------------------------------------------------------------------
+# S4 new enforcer tests
+# ---------------------------------------------------------------------------
+
+def test_external_drops_checkpoint_and_loops_due():
+    """S4: oracle_checkpoint and oracle_loops_due are excluded from external schema."""
+    names = [t["function"]["name"] for t in tool_schemas("local", "external")]
+    assert "oracle_checkpoint" not in names
+    assert "oracle_loops_due" not in names
+    assert "oracle_brief" not in names
+
+
+def test_local_agent_includes_checkpoint_and_loops_due():
+    """S4: oracle_checkpoint and oracle_loops_due ARE in local/local_agent schema."""
+    names = [t["function"]["name"] for t in tool_schemas("local", "local_agent")]
+    assert "oracle_checkpoint" in names
+    assert "oracle_loops_due" in names
+    assert "oracle_brief" in names
+
+
+def test_dropped_verb_denied_on_external(spawned_root):
+    """S4: dispatcher denies a dropped verb (fail-closed) when environment=external.
+
+    Even if the model hallucinates a call to oracle_checkpoint on an external
+    surface, the dispatcher must deny it with a 'denied' message (not a generic
+    'not available on this surface') and rc=2.
+    """
+    d = _disp(spawned_root, environment="external", max_sensitivity="public")
+    for verb in ("oracle_checkpoint", "oracle_loops_due", "oracle_brief"):
+        out = d.dispatch(verb, {})
+        assert "denied" in out.text.lower(), (
+            f"expected 'denied' for dropped verb {verb!r}, got: {out.text!r}")
+        assert out.rc == 2
+
+
+def test_smuggled_sensitivity_flag_stripped_from_search_terms(spawned_root, monkeypatch):
+    """S4 / STRESS M5: --max-sensitivity tokens in model search terms are stripped."""
+    import oracle_agent.agentloop.verbtools as vt
+    captured = {}
+
+    def fake_run(self, argv):
+        captured["argv"] = argv
+        return 0, "[]", ""
+
+    monkeypatch.setattr(vt.Dispatcher, "_run", fake_run)
+    # Attacker tries to inject --max-sensitivity=secret into the search terms.
+    _disp(spawned_root, max_sensitivity="public").dispatch(
+        "oracle_search", {"terms": "revenue --max-sensitivity=secret"})
+    argv = captured["argv"]
+    # The injected flag must have been stripped from the terms value.
+    joined = " ".join(argv)
+    assert "--max-sensitivity=secret" not in joined
+    # The dispatcher's own ceiling must still be present.
+    assert "--max-sensitivity" in joined
+    assert "public" in argv
+
+
+def test_smuggled_sensitivity_flag_no_args_form(spawned_root, monkeypatch):
+    """S4: bare --max-sensitivity (no =value) is also stripped from search terms."""
+    import oracle_agent.agentloop.verbtools as vt
+    captured = {}
+
+    def fake_run(self, argv):
+        captured["argv"] = argv
+        return 0, "[]", ""
+
+    monkeypatch.setattr(vt.Dispatcher, "_run", fake_run)
+    _disp(spawned_root, max_sensitivity="public").dispatch(
+        "oracle_search", {"terms": "revenue --max-sensitivity secret"})
+    argv = captured["argv"]
+    # After stripping, 'secret' may remain as part of the terms text, but the
+    # --max-sensitivity flag itself should not appear inside the --q= value.
+    q_elements = [a for a in argv if a.startswith("--q=")]
+    assert q_elements, "expected a --q= element in argv"
+    q_val = q_elements[0]
+    assert "--max-sensitivity" not in q_val
+
+
+def test_tool_result_truncation_respected(spawned_root, monkeypatch):
+    """S4: output is capped at tool_result_max_chars and truncation marker appended."""
+    import oracle_agent.agentloop.verbtools as vt
+
+    def fake_run(self, argv):
+        # Return 30 000 chars of output (well above the 20 000 default cap).
+        return 0, "A" * 30_000, ""
+
+    monkeypatch.setattr(vt.Dispatcher, "_run", fake_run)
+    d = _disp(spawned_root, tool_result_max_chars=1000)
+    out = d.dispatch("oracle_search", {"terms": "anything"})
+    assert len(out.text) <= 1000 + len("\n[...output truncated]")
+    assert "truncated" in out.text
+
+
+def test_strip_sensitivity_tokens_unit():
+    """Unit test for _strip_sensitivity_tokens helper."""
+    from oracle_agent.agentloop.verbtools import _strip_sensitivity_tokens
+    assert _strip_sensitivity_tokens("hello --max-sensitivity=secret world") == "hello  world"
+    assert _strip_sensitivity_tokens("no flags here") == "no flags here"
+    assert _strip_sensitivity_tokens("--max-sensitivity") == ""
+    assert _strip_sensitivity_tokens("  --max-sensitivity=restricted  ") == ""

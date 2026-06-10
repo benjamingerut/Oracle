@@ -8,6 +8,13 @@ Security-relevant behavior (STRESS C2):
   * Redirects are NEVER followed. A 3xx is raised as an error -- a loopback
     endpoint cannot 302 the confidential prompt + Authorization header off-box.
   * The API key is never placed in any exception message, repr, or log.
+  * Non-loopback ``http://`` with an API key is refused at construction time --
+    the key must not travel over plaintext to any off-box host.
+  * Per-request guard: a client classified ``local_agent`` refuses to send to
+    any URL whose host is not a literal loopback (no DNS re-check); this closes
+    the TOCTOU window where classification happens at build time but the
+    endpoint could have changed by request time.
+  * ``Retry-After`` is honored but capped at 30 s; total retry sleep ≤ 120 s.
 
 Errors are classified into a small, action-oriented taxonomy so the retry
 layer can decide retry/backoff/fail without provider-specific branching.
@@ -18,8 +25,30 @@ import json
 import random
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+
+# ---------------------------------------------------------------------------
+# loopback literals (mirrors policy_bridge._is_literal_loopback_host)
+# ---------------------------------------------------------------------------
+import ipaddress as _ipaddress
+
+
+def _is_literal_loopback_host(host: str) -> bool:
+    """Return True iff ``host`` is a provably-loopback literal (no DNS)."""
+    h = (host or "").lower().strip()
+    if h == "localhost":
+        return True
+    h_stripped = h.strip("[]")
+    try:
+        return _ipaddress.ip_address(h_stripped).is_loopback
+    except ValueError:
+        return False
+
+
+_RETRY_AFTER_CAP = 30.0       # seconds
+_RETRY_BUDGET    = 120.0      # max total sleep across all retries
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -99,13 +128,30 @@ def _retry_after_seconds(headers) -> float | None:
 
 class LLMClient:
     def __init__(self, base_url: str, model: str, api_key: str | None = None,
-                 timeout: float = 120.0, extra_headers: dict | None = None):
+                 timeout: float = 120.0, extra_headers: dict | None = None,
+                 environment: str | None = None):
         self.base_url = (base_url or "").rstrip("/")
         self.model = model
         self._api_key = api_key  # never logged
         self.timeout = timeout
         self.extra_headers = dict(extra_headers or {})
+        self.environment = environment or "external"
         self._opener = urllib.request.build_opener(_NoRedirect())
+
+        # Security check: refuse non-loopback http:// when an API key is present.
+        # Plaintext transport must not carry bearer tokens off-box.
+        if api_key and self.base_url:
+            parsed = urllib.parse.urlsplit(self.base_url)
+            if parsed.scheme == "http":
+                host = (parsed.hostname or "").lower()
+                if not _is_literal_loopback_host(host):
+                    raise LLMError(
+                        "bad_request",
+                        "Refusing to send API key over plaintext http:// to "
+                        f"non-loopback host {host!r}. Use https:// or a "
+                        "loopback address.",
+                        retryable=False,
+                    )
 
     def _endpoint(self) -> str:
         return f"{self.base_url}/chat/completions"
@@ -116,6 +162,27 @@ class LLMClient:
             h["Authorization"] = f"Bearer {self._api_key}"
         h.update(self.extra_headers)
         return h
+
+    def _check_request_host(self, url: str) -> None:
+        """Per-request guard for local_agent clients (TOCTOU close, STRESS C2).
+
+        If this client was classified ``local_agent``, the target URL's host
+        must be a literal loopback address.  Any deviation (DNS rebinding,
+        config swap) is refused here at send time, not just at build time.
+        """
+        if self.environment != "local_agent":
+            return
+        try:
+            host = urllib.parse.urlsplit(url).hostname or ""
+        except Exception:
+            host = ""
+        if not _is_literal_loopback_host(host):
+            raise LLMError(
+                "bad_request",
+                f"local_agent client refused to send to non-loopback host "
+                f"{host!r}. Possible DNS rebinding or endpoint swap.",
+                retryable=False,
+            )
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              temperature: float | None = None,
@@ -129,8 +196,11 @@ class LLMClient:
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
 
+        endpoint = self._endpoint()
+        self._check_request_host(endpoint)
+
         data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(self._endpoint(), data=data,
+        req = urllib.request.Request(endpoint, data=data,
                                      headers=self._headers(), method="POST")
         try:
             with self._opener.open(req, timeout=self.timeout) as resp:
@@ -186,9 +256,13 @@ def chat_with_retry(client: LLMClient, messages: list[dict], *,
 
     Non-retryable errors (auth/bad_request/context_overflow) raise immediately.
     ``sleep`` and ``rng`` are injectable for deterministic tests.
+
+    ``Retry-After`` is honored but capped at ``_RETRY_AFTER_CAP`` (30 s).
+    Total sleep budget across all retries is capped at ``_RETRY_BUDGET`` (120 s).
     """
     rng = rng or random.Random()
     last: LLMError | None = None
+    total_slept = 0.0
     for attempt in range(max_attempts):
         try:
             return client.chat(messages, tools=tools, **kw)
@@ -197,10 +271,16 @@ def chat_with_retry(client: LLMClient, messages: list[dict], *,
             if not exc.retryable or attempt == max_attempts - 1:
                 raise
             if exc.retry_after is not None:
-                delay = exc.retry_after
+                delay = min(exc.retry_after, _RETRY_AFTER_CAP)
             else:
                 delay = base_delay * (2 ** attempt)
                 delay = rng.uniform(0, delay)  # full jitter
+            # Enforce total budget.
+            remaining = _RETRY_BUDGET - total_slept
+            if remaining <= 0:
+                raise
+            delay = min(delay, remaining)
+            total_slept += delay
             sleep(delay)
     assert last is not None
     raise last

@@ -11,6 +11,7 @@ Stdlib only.
 """
 from __future__ import annotations
 
+import os
 import signal
 import time
 from pathlib import Path
@@ -18,10 +19,26 @@ from pathlib import Path
 from .. import config
 from . import scheduler
 
+# Rotate serve.log at 5 MiB; keep one backup (.1).
+_LOG_MAX_BYTES = 5 * 1024 * 1024
+_LOG_BACKUP = 1
+
+
+def _rotate_log(path: Path) -> None:
+    """Rotate ``path`` to ``path.1`` when it exceeds ``_LOG_MAX_BYTES``."""
+    try:
+        if path.exists() and path.stat().st_size >= _LOG_MAX_BYTES:
+            backup = Path(str(path) + ".1")
+            # Atomic on POSIX; backup is silently overwritten if present.
+            os.replace(str(path), str(backup))
+    except OSError:
+        pass
+
 
 def _log(line: str) -> None:
     try:
         path = config.logs_dir() / "serve.log"
+        _rotate_log(path)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(line.rstrip() + "\n")
     except OSError:
@@ -38,7 +55,7 @@ def _build_gateway(cfg: dict):
         _log("gateway: telegram enabled but token unresolved; skipping")
         return None
     from ..agentloop.builder import build_loop
-    from ..gateway.telegram import TelegramAPI, TelegramGateway
+    from ..gateway.telegram import TelegramGateway, TelegramAPI
 
     instances = config.instance_roots(cfg)
     gw_ceiling = tg.get("max_sensitivity", "internal")
@@ -82,7 +99,7 @@ def serve(cfg: dict, *, once: bool = False) -> int:
 
     try:
         if once:
-            for r in scheduler.tick_all(instances):
+            for r in scheduler.tick_all(instances, logger=_log):
                 _log(f"tick {r.instance}: rc={r.rc} skipped={r.skipped} {r.output[:200]}")
             if gateway is not None:
                 n = gateway.poll_once()
@@ -93,7 +110,7 @@ def serve(cfg: dict, *, once: bool = False) -> int:
         while not stop["flag"]:
             now = time.time()
             if now - last_tick >= tick_seconds:
-                for r in scheduler.tick_all(instances):
+                for r in scheduler.tick_all(instances, logger=_log):
                     _log(f"tick {r.instance}: rc={r.rc} skipped={r.skipped} {r.output[:200]}")
                 last_tick = now
             if gateway is not None:
