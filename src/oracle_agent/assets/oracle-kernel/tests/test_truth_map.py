@@ -8,6 +8,8 @@ inline tables, and depend only on this module plus the floor (conftest puts
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 import truth_map
@@ -169,3 +171,215 @@ def test_cli_resolve_unknown_exits_nonzero(kernel_dir, capsys):
         ["--root", str(kernel_dir), "resolve", "--object", "no-such-object-xyz"]
     )
     assert rc == 1
+
+
+# --------------------------------------------------------------------------- #
+# K1 acceptance tests: pipe-injection fix + atomic write
+# --------------------------------------------------------------------------- #
+
+# A minimal TRUTH-MAP.md used by propose_row tests (no ledger or policy deps).
+_PROPOSE_MAP = """\
+# Truth Map
+
+| Business object | Primary source | Freshness budget | Status |
+|---|---|---|---|
+| Revenue | accounting/ERP | 7d | confirmed |
+| Cash | TBD | 24h | draft |
+"""
+
+
+def _make_propose_root(tmp_path):
+    """Return a tmp oracle root with a minimal TRUTH-MAP.md."""
+    root = tmp_path / "oracle_root"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "TRUTH-MAP.md").write_text(_PROPOSE_MAP, encoding="utf-8")
+    (root / "Meta.nosync" / "ledgers").mkdir(parents=True, exist_ok=True)
+    return root
+
+
+# -- cell-value helpers -------------------------------------------------------
+
+def test_escape_cell_pipe_becomes_backslash_pipe():
+    """A literal | in a cell value is escaped to \\| by _escape_cell.
+
+    Every bare ``|`` is escaped, including one that already follows a ``\\``.
+    The parser's ``_split_row`` restores ``\\|`` → ``|`` on read, so the
+    original value survives the round-trip.
+    """
+    assert truth_map._escape_cell("a|b") == r"a\|b"
+    assert truth_map._escape_cell("no pipe") == "no pipe"
+    # r"already\|escaped" is the 15-char string: already\|escaped
+    # _escape_cell replaces the | → \|, giving: already\\|escaped (r"already\\|escaped")
+    assert truth_map._escape_cell(r"already\|escaped") == r"already\\|escaped"
+
+
+def test_escape_cell_newline_raises():
+    """A cell containing a newline must raise CellValueError."""
+    with pytest.raises(truth_map.CellValueError):
+        truth_map._escape_cell("line1\nline2")
+    with pytest.raises(truth_map.CellValueError):
+        truth_map._escape_cell("line1\rline2")
+
+
+def test_compose_row_escapes_pipes():
+    """_compose_row produces a valid markdown row with escaped pipes."""
+    row = truth_map._compose_row(["Revenue | Q1", "accounting/ERP", "7d", "confirmed"])
+    # The composed line must parse back to the original cell values.
+    cells = truth_map._split_row(row)
+    assert cells is not None
+    assert cells[0] == "Revenue | Q1"
+    assert cells[1] == "accounting/ERP"
+
+
+def test_compose_row_rejects_newline_in_cell():
+    """_compose_row raises CellValueError when any cell contains a newline."""
+    with pytest.raises(truth_map.CellValueError):
+        truth_map._compose_row(["good cell", "bad\ncell", "7d", "draft"])
+
+
+# -- round-trip property ------------------------------------------------------
+
+def test_propose_row_pipe_in_metadata_round_trips(tmp_path):
+    """K1 core acceptance: a business object name containing | survives
+    propose → write → parse unchanged (the previous corruption case).
+
+    The raw ``|`` is stored as ``\\|`` in the file and restored by the parser,
+    so the resolved row carries the original value intact.
+    """
+    root = _make_propose_root(tmp_path)
+    tricky_object = "Customers | Prospects"
+    result = truth_map.propose_row(root, tricky_object)
+    assert result["action"] == "created"
+
+    # Re-parse the written file and verify the round-trip.
+    rows = truth_map.load_rows(root)
+    resolved = truth_map.resolve(tricky_object, rows=rows)
+    assert resolved is not None, "object with pipe must be resolvable after propose"
+    assert resolved["business_object"] == tricky_object
+
+
+def test_propose_row_pipe_in_source_round_trips(tmp_path):
+    """A primary_source value containing | is escaped and round-trips."""
+    root = _make_propose_root(tmp_path)
+    bo = "Vendors"
+    src = "accounting/ERP | payables module"
+    truth_map.propose_row(root, bo, primary_source=src)
+
+    rows = truth_map.load_rows(root)
+    resolved = truth_map.resolve(bo, rows=rows)
+    assert resolved is not None
+    assert resolved["primary source"] == src
+
+
+def test_propose_row_escaped_pipe_in_value_round_trips(tmp_path):
+    r"""A value already containing \| (escaped pipe) survives the round-trip."""
+    root = _make_propose_root(tmp_path)
+    bo = r"Orders\|Returns"
+    truth_map.propose_row(root, bo)
+    rows = truth_map.load_rows(root)
+    resolved = truth_map.resolve(bo, rows=rows)
+    assert resolved is not None
+    assert resolved["business_object"] == bo
+
+
+def test_propose_row_leading_trailing_spaces_round_trip(tmp_path):
+    """Cell values with leading/trailing spaces survive propose → parse.
+
+    The parser strips cells, so stored values are the stripped form; the
+    round-trip is still correct — the cell value is preserved as stripped.
+    """
+    root = _make_propose_root(tmp_path)
+    bo = "  Payroll  "
+    bo_stripped = bo.strip()
+    truth_map.propose_row(root, bo)
+    rows = truth_map.load_rows(root)
+    resolved = truth_map.resolve(bo_stripped, rows=rows)
+    assert resolved is not None
+    assert resolved["business_object"] == bo_stripped
+
+
+# -- newline rejection --------------------------------------------------------
+
+def test_propose_row_newline_in_business_object_refused(tmp_path):
+    """propose_row must raise CellValueError when the business object contains
+    a newline (the injection prevention path).
+    """
+    root = _make_propose_root(tmp_path)
+    with pytest.raises(truth_map.CellValueError):
+        truth_map.propose_row(root, "Bad\nObject")
+
+
+def test_propose_row_newline_in_source_refused(tmp_path):
+    """propose_row must raise CellValueError when primary_source contains a newline."""
+    root = _make_propose_root(tmp_path)
+    with pytest.raises(truth_map.CellValueError):
+        truth_map.propose_row(root, "GoodObject", primary_source="bad\nsource")
+
+
+# -- atomic write: temp+replace pattern ---------------------------------------
+
+def test_write_truth_map_uses_temp_and_replace(tmp_path, monkeypatch):
+    """Atomic write discipline: _write_truth_map must use a temp file +
+    os.replace rather than direct path.write_text.
+
+    Verify by intercepting os.replace: if it is not called, the file was
+    written directly. Also verify that on an injected failure between the
+    temp-write and the replace, the original file is not corrupted (the temp
+    is cleaned up and the original is intact).
+    """
+    root = tmp_path / "oracle_root"
+    root.mkdir(parents=True, exist_ok=True)
+    original_text = _PROPOSE_MAP
+    (root / "TRUTH-MAP.md").write_text(original_text, encoding="utf-8")
+
+    replace_calls = []
+    real_replace = os.replace
+
+    def tracking_replace(src, dst):
+        replace_calls.append((src, dst))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", tracking_replace)
+
+    truth_map._write_truth_map(root, original_text + "\n# extra\n")
+
+    assert replace_calls, "_write_truth_map must call os.replace (atomic swap)"
+    src, dst = replace_calls[0]
+    # temp file is in the same directory as the destination
+    assert str(root) in str(dst), "replace target must be inside root"
+    assert "TRUTH-MAP" in str(dst), "replace target must be the TRUTH-MAP.md path"
+    # The original should now contain the new content.
+    written = (root / "TRUTH-MAP.md").read_text(encoding="utf-8")
+    assert "# extra" in written
+
+
+def test_write_truth_map_no_partial_on_failure(tmp_path, monkeypatch):
+    """On an injected failure between the temp write and os.replace, the
+    original TRUTH-MAP.md must remain intact (no partial write).
+    """
+    root = tmp_path / "oracle_root"
+    root.mkdir(parents=True, exist_ok=True)
+    sentinel = "ORIGINAL SENTINEL CONTENT\n"
+    (root / "TRUTH-MAP.md").write_text(
+        _PROPOSE_MAP + sentinel, encoding="utf-8"
+    )
+
+    def failing_replace(src, dst):
+        # Simulate a crash after temp file written but before replace.
+        # Remove the temp so there is no stale artifact, then raise.
+        try:
+            os.unlink(src)
+        except OSError:
+            pass
+        raise OSError("simulated crash during replace")
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+    with pytest.raises(OSError, match="simulated crash"):
+        truth_map._write_truth_map(root, "NEW CONTENT\n")
+
+    # The original file must still contain its pre-crash content.
+    surviving = (root / "TRUTH-MAP.md").read_text(encoding="utf-8")
+    assert sentinel in surviving, (
+        "original TRUTH-MAP.md must survive a failed atomic write"
+    )

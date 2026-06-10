@@ -116,7 +116,12 @@ def test_rewrite_atomic_replaces_content(tmp_path: Path):
 
     rows, warnings = ledger.load(path)
     assert warnings == []
-    assert [r["drop_id"] for r in rows] == ["EV-0", "EV-4"]
+    # rewrite_atomic appends a REWRITE-MARKER row for auditability.
+    data_ids = [r["drop_id"] for r in rows if r.get("drop_id") != "REWRITE-MARKER"]
+    assert data_ids == ["EV-0", "EV-4"]
+    marker_rows = [r for r in rows if r.get("drop_id") == "REWRITE-MARKER"]
+    assert len(marker_rows) == 1
+    assert marker_rows[0].get("event") == "ledger_rewrite"
     # No stray temp files left behind.
     leftovers = [p for p in path.parent.iterdir() if p.name.endswith(".tmp")]
     assert leftovers == []
@@ -127,8 +132,11 @@ def test_rewrite_atomic_empty(tmp_path: Path):
     ledger.append(path, {"drop_id": "EV-0", "ts": "t"})
     ledger.rewrite_atomic(path, [])
     rows, warnings = ledger.load(path)
-    assert rows == []
     assert warnings == []
+    # Even an empty rewrite leaves an auditable REWRITE-MARKER row.
+    assert len(rows) == 1
+    assert rows[0]["drop_id"] == "REWRITE-MARKER"
+    assert rows[0].get("event") == "ledger_rewrite"
 
 
 # --------------------------------------------------------------------------- #
@@ -231,11 +239,13 @@ def test_repair_cleans_and_dedupes(tmp_path: Path):
 
     rows, warnings = ledger.load(path)
     assert warnings == []
-    ids = [r["drop_id"] for r in rows]
+    # repair() calls rewrite_atomic which appends a REWRITE-MARKER row.
+    data_rows = [r for r in rows if r.get("drop_id") != "REWRITE-MARKER"]
+    ids = [r["drop_id"] for r in data_rows]
     assert ids == ["EV-1", "EV-2"]
     # First occurrence kept (v == 1).
-    assert rows[0]["v"] == 1
-    # Now clean.
+    assert data_rows[0]["v"] == 1
+    # Now clean (REWRITE-MARKER has its own valid hash in the chain).
     assert ledger.verify(path)["ok"] is True
 
 
@@ -246,3 +256,246 @@ def test_cli_verify_repair(tmp_path: Path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert '"ok": true' in out.lower()
+
+
+# --------------------------------------------------------------------------- #
+# K2 acceptance tests: hash chain
+# --------------------------------------------------------------------------- #
+
+def test_hash_chain_append_sets_row_hash(tmp_path: Path):
+    """Every appended row must carry a row_hash."""
+    path = tmp_path / "events.jsonl"
+    for i in range(4):
+        ledger.append(path, {"drop_id": f"EV-{i}", "ts": "t", "v": i})
+    rows, warnings = ledger.load(path)
+    assert warnings == []
+    for row in rows:
+        assert "row_hash" in row, f"row_hash missing in {row}"
+        assert len(row["row_hash"]) == 64  # sha256 hex
+
+
+def test_hash_chain_verify_clean(tmp_path: Path):
+    """Freshly appended rows verify with ok=True and no chain_breaks."""
+    path = tmp_path / "events.jsonl"
+    for i in range(5):
+        ledger.append(path, {"drop_id": f"EV-{i}", "ts": "t", "v": i})
+    report = ledger.verify(path)
+    assert report["ok"] is True
+    assert report["chain_breaks"] == []
+    assert report["legacy_rows"] == 0
+
+
+def test_hash_chain_edit_detected(tmp_path: Path):
+    """In-place edit of row k breaks the chain; verify() reports it."""
+    path = tmp_path / "events.jsonl"
+    for i in range(5):
+        ledger.append(path, {"drop_id": f"EV-{i}", "ts": "t", "v": i})
+
+    # Tamper with row 2 (0-indexed): change its value in-place.
+    raw = path.read_text(encoding="utf-8")
+    lines = raw.splitlines()
+    obj = json.loads(lines[2])
+    obj["v"] = 999  # altered
+    lines[2] = json.dumps(obj, ensure_ascii=False)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    report = ledger.verify(path)
+    assert report["ok"] is False
+    # Break reported at the tampered line (line 3, 1-indexed).
+    assert 3 in report["chain_breaks"]
+
+
+def test_hash_chain_delete_row_detected(tmp_path: Path):
+    """Deleting a row breaks the chain for the subsequent row."""
+    path = tmp_path / "events.jsonl"
+    for i in range(5):
+        ledger.append(path, {"drop_id": f"EV-{i}", "ts": "t", "v": i})
+
+    # Delete row at index 2 (the 3rd row).
+    raw = path.read_text(encoding="utf-8")
+    lines = [l for l in raw.splitlines() if l.strip()]
+    del lines[2]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    report = ledger.verify(path)
+    assert report["ok"] is False
+    assert report["chain_breaks"]  # the row after the deleted one breaks
+
+
+def test_hash_chain_reorder_detected(tmp_path: Path):
+    """Swapping two rows breaks the chain."""
+    path = tmp_path / "events.jsonl"
+    for i in range(4):
+        ledger.append(path, {"drop_id": f"EV-{i}", "ts": "t", "v": i})
+
+    raw = path.read_text(encoding="utf-8")
+    lines = [l for l in raw.splitlines() if l.strip()]
+    # Swap rows 1 and 2.
+    lines[1], lines[2] = lines[2], lines[1]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    report = ledger.verify(path)
+    assert report["ok"] is False
+    assert report["chain_breaks"]
+
+
+def test_hash_chain_legacy_prefix_tolerated(tmp_path: Path):
+    """Legacy rows (no row_hash) before hashed rows are tolerated as legacy prefix."""
+    path = tmp_path / "events.jsonl"
+
+    # Write legacy rows manually (no row_hash field).
+    with open(path, "a", encoding="utf-8") as f:
+        for i in range(3):
+            f.write(json.dumps({"drop_id": f"LEG-{i}", "ts": "t", "v": i}) + "\n")
+
+    # Now append new hashed rows via ledger.append.
+    for i in range(3):
+        ledger.append(path, {"drop_id": f"NEW-{i}", "ts": "t", "v": i})
+
+    report = ledger.verify(path)
+    assert report["ok"] is True
+    assert report["legacy_rows"] == 3
+    assert report["chain_breaks"] == []
+
+
+def test_hash_chain_legacy_prefix_edit_in_hashed_suffix_detected(tmp_path: Path):
+    """Edit in the hashed suffix of a mixed legacy+hashed ledger is caught."""
+    path = tmp_path / "events.jsonl"
+
+    # Write legacy rows manually.
+    with open(path, "a", encoding="utf-8") as f:
+        for i in range(2):
+            f.write(json.dumps({"drop_id": f"LEG-{i}", "ts": "t", "v": i}) + "\n")
+
+    # Append hashed rows.
+    for i in range(3):
+        ledger.append(path, {"drop_id": f"NEW-{i}", "ts": "t", "v": i})
+
+    # Tamper with the 4th line (first hashed row, line index 2 → lineno 3).
+    raw = path.read_text(encoding="utf-8")
+    lines = raw.splitlines()
+    obj = json.loads(lines[2])
+    obj["v"] = 999
+    lines[2] = json.dumps(obj, ensure_ascii=False)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    report = ledger.verify(path)
+    assert report["ok"] is False
+    assert report["chain_breaks"]
+    assert report["legacy_rows"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# K2 acceptance tests: quarantine dedupe
+# --------------------------------------------------------------------------- #
+
+def test_quarantine_dedupe_single_bad_line(tmp_path: Path):
+    """The same malformed line read 3× produces exactly one quarantine entry."""
+    path = tmp_path / "events.jsonl"
+
+    # Write two good rows and one bad line.
+    ledger.append(path, {"drop_id": "EV-1", "ts": "t"})
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("NOT JSON AT ALL\n")
+    ledger.append(path, {"drop_id": "EV-2", "ts": "t"})
+
+    # First read: bad line should be quarantined.
+    rows1, warnings1 = ledger.load(path)
+    assert any("quarantin" in w for w in warnings1)
+    qpath = path.with_name(path.name + ".quarantine")
+    content1 = qpath.read_text(encoding="utf-8")
+    count1 = content1.count("NOT JSON AT ALL")
+
+    # Second read: the bad line is already quarantined — no new entry.
+    rows2, warnings2 = ledger.load(path)
+    content2 = qpath.read_text(encoding="utf-8")
+    count2 = content2.count("NOT JSON AT ALL")
+
+    # Third read: still exactly one quarantine entry.
+    rows3, warnings3 = ledger.load(path)
+    content3 = qpath.read_text(encoding="utf-8")
+    count3 = content3.count("NOT JSON AT ALL")
+
+    assert count1 == 1, "bad line should be quarantined exactly once on first read"
+    assert count2 == 1, "quarantine must not grow on second read"
+    assert count3 == 1, "quarantine must not grow on third read"
+
+    # Good rows still load correctly every time.
+    for rows in (rows1, rows2, rows3):
+        good = [r["drop_id"] for r in rows]
+        assert "EV-1" in good
+        assert "EV-2" in good
+
+
+def test_quarantine_dedupe_no_duplicate_warning_on_repeat(tmp_path: Path):
+    """Repeated reads of a bad line do not emit additional quarantine warnings."""
+    path = tmp_path / "events.jsonl"
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("BAD LINE\n")
+
+    _, warnings1 = ledger.load(path)
+    _, warnings2 = ledger.load(path)
+    _, warnings3 = ledger.load(path)
+
+    # First read: one quarantine-related warning.
+    assert any("quarantin" in w for w in warnings1)
+    # Subsequent reads: no quarantine warnings (line already seen).
+    quarantine_warnings2 = [w for w in warnings2 if "quarantin" in w]
+    quarantine_warnings3 = [w for w in warnings3 if "quarantin" in w]
+    assert quarantine_warnings2 == [], f"unexpected warnings on 2nd read: {warnings2}"
+    assert quarantine_warnings3 == [], f"unexpected warnings on 3rd read: {warnings3}"
+
+
+# --------------------------------------------------------------------------- #
+# K2 acceptance tests: repair re-chains + rewrite marker
+# --------------------------------------------------------------------------- #
+
+def test_repair_rechains_and_appends_marker(tmp_path: Path):
+    """repair() re-chains hashes and appends a REWRITE-MARKER row."""
+    path = tmp_path / "events.jsonl"
+    for i in range(4):
+        ledger.append(path, {"drop_id": f"EV-{i}", "ts": "t", "v": i})
+
+    # Inject a bad line so repair has something to do.
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("not json\n")
+
+    ledger.repair(path)
+
+    rows, warnings = ledger.load(path)
+    assert warnings == []
+
+    # A REWRITE-MARKER row must be present.
+    marker_rows = [r for r in rows if r.get("drop_id") == "REWRITE-MARKER"]
+    assert len(marker_rows) == 1
+    marker = marker_rows[0]
+    assert marker.get("event") == "ledger_rewrite"
+    assert marker.get("actor") == "repair"
+    assert "row_hash" in marker
+
+    # Chain must be valid after repair.
+    report = ledger.verify(path)
+    assert report["ok"] is True
+    assert report["chain_breaks"] == []
+
+
+def test_rewrite_atomic_rechains_and_verify_passes(tmp_path: Path):
+    """rewrite_atomic re-chains surviving rows; verify() passes afterward."""
+    path = tmp_path / "events.jsonl"
+    for i in range(6):
+        ledger.append(path, {"drop_id": f"EV-{i}", "ts": "t", "v": i})
+
+    # Keep only even rows (stripping out odd ones).
+    rows, _ = ledger.load(path)
+    survivors = [r for r in rows if r.get("v", 1) % 2 == 0]
+    ledger.rewrite_atomic(path, survivors, actor="test", reason="filter_odd")
+
+    report = ledger.verify(path)
+    assert report["ok"] is True
+    assert report["chain_breaks"] == []
+
+    # Confirm the marker carries the right actor/reason.
+    loaded, _ = ledger.load(path)
+    marker = next(r for r in loaded if r.get("drop_id") == "REWRITE-MARKER")
+    assert marker["actor"] == "test"
+    assert marker["reason"] == "filter_odd"

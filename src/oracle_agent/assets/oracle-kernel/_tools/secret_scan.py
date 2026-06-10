@@ -11,9 +11,12 @@ Public API (interface_contracts: "secret_scan API"):
 
 Required detections (interface_contracts):
     ghp_/gho_/ghu_/ghs_/github_pat_, glpat-, sk_live_/sk_test_/rk_,
-    AIza[0-9A-Za-z_-]{35}, postgres(ql)?://user:pass@, PEM headers,
-    AKIA + 40-char AWS-secret heuristic, xox*, JWT, generic
-    password:/token:/api_key: assignments, plus Shannon-entropy blobs.
+    sk-ant-... (Anthropic), AIza[0-9A-Za-z_-]{35}, GCP service-account
+    "private_key" JSON fields, postgres(ql)?://user:pass@, PEM headers,
+    AKIA + 40-char AWS-secret heuristic, xox*, JWT, AccountKey= (Azure),
+    npm_... tokens, Telegram bot tokens (NNN:AA...), generic
+    password:/token:/api_key: assignments (digit-free for sensitive keys),
+    plus Shannon-entropy blobs.
 """
 from __future__ import annotations
 
@@ -43,10 +46,17 @@ _PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
     ("gitlab_pat", re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b")),
     # Stripe live/test secret keys and restricted keys
     ("stripe_secret", re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b")),
-    # Older / generic OpenAI-style sk- keys
-    ("sk_key", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
+    # Anthropic API key (sk-ant-api03-...)
+    ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{10,}\b")),
+    # Older / generic OpenAI-style sk- keys (must not overlap Anthropic or Stripe)
+    ("sk_key", re.compile(r"\bsk-(?!ant-|live_|test_)[A-Za-z0-9]{20,}\b")),
     # Google API key
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
+    # GCP service-account JSON private key field
+    (
+        "gcp_service_account_key",
+        re.compile(r'"private_key"\s*:\s*"-----BEGIN [A-Z ]*PRIVATE KEY-----'),
+    ),
     # Postgres / Postgresql connection string with inline user:pass
     (
         "postgres_url",
@@ -65,6 +75,18 @@ _PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
     (
         "jwt",
         re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
+    ),
+    # Azure storage connection string AccountKey
+    (
+        "azure_storage_key",
+        re.compile(r"\bAccountKey=[A-Za-z0-9+/]{20,}={0,2}\b"),
+    ),
+    # npm access / automation / publish tokens (npm_...)
+    ("npm_token", re.compile(r"\bnpm_[A-Za-z0-9]{36,}\b")),
+    # Telegram bot token (numeric-id:alphanumeric-secret, e.g. 123456:AABBccdd...)
+    (
+        "telegram_bot_token",
+        re.compile(r"\b[0-9]{8,10}:AA[A-Za-z0-9_-]{33,}\b"),
     ),
 ]
 
@@ -92,12 +114,44 @@ _ASSIGNMENT = re.compile(
 
 # Structural characters that mark a value as source code or markup rather than a
 # literal credential (e.g. ``token = m.group(0)`` or ``token: <your-token>``).
-_CODE_CHARS = frozenset("()[]{}<>")
+# A colon inside the captured value means we matched a key-name list fragment
+# (password:/token:/api_key:) rather than an assigned value; real credential
+# values do not contain a bare colon.
+_CODE_CHARS = frozenset("()[]{}<>:")
 
 # Placeholder values we should NOT flag as a leaked assignment.
+# Covers: shell/Jinja/Helm ${VAR}, {{VAR}}, angle-bracket templates <...>,
+# repeated-char masks (xxx, ***), common placeholder words, and env-lookup
+# references (os.environ, getenv, env(), process.env).
 _PLACEHOLDER = re.compile(
-    r"(?i)^(?:\$\{?[a-z0-9_]+\}?|<[^>]+>|x{3,}|\*{3,}|changeme|placeholder|"
-    r"your[_-]?\w+|example|none|null|true|false|redacted|\.{3,})$"
+    r"(?i)^(?:"
+    r"\$\{?[a-z0-9_]+\}?"          # ${VAR} or $VAR
+    r"|\{\{[^}]*\}\}"               # {{VAR}} Jinja/Helm interpolation
+    r"|<[^>]+>"                     # <your-token> angle-bracket templates
+    r"|x{3,}"                       # xxx...
+    r"|\*{3,}"                      # ***...
+    r"|changeme"
+    r"|placeholder"
+    r"|your[_-]?\w*"                # your_token, your-key, yourtoken, your_
+    r"|example"
+    r"|none"
+    r"|null"
+    r"|true"
+    r"|false"
+    r"|redacted"
+    r"|\.{3,}"                      # ...
+    r"|os\.environ"                 # os.environ['KEY']
+    r"|(?:os\.)?getenv\b"           # getenv(...)
+    r"|process\.env\b"              # Node.js process.env
+    r"|env\(['\"]?[a-z0-9_]+['\"]?\)" # env('VAR')
+    r")$"
+)
+
+# Sensitive key names for which a digit-free value of ≥ 8 chars is still
+# flagged (the general heuristic requires a digit to suppress word-like prose;
+# these names make the assignment unambiguous enough to drop that guard).
+_SENSITIVE_KEY_RE = re.compile(
+    r"(?i)^(?:password|passwd|secret|token|api[_-]?key|apikey)$"
 )
 
 # Entropy scan tuning.
@@ -242,15 +296,29 @@ def scan_text(text: str) -> list[dict]:
         #    (token = m.group(0)) and docstring prose (api_key: assignments) do
         #    not trip the heuristic. Values carrying code/markup structure are
         #    never secrets; structured provider tokens are caught by _PATTERNS.
+        #
+        #    Tightened heuristic (K4): for highly sensitive key names
+        #    (password, passwd, secret, token, api_key, apikey) a digit-free
+        #    value of ≥ 8 chars is still flagged because the key name alone
+        #    makes the assignment unambiguous — digits are not needed as a
+        #    credibility signal. Placeholders and _CODE_CHARS still suppress.
         for m in _ASSIGNMENT.finditer(line):
+            key_name = m.group(1)
             quote = m.group(2)
             value = m.group(3)
             if _PLACEHOLDER.match(value):
                 continue
             if any(c in _CODE_CHARS for c in value):
                 continue
-            if not quote and (_is_wordy(value) or not any(ch.isdigit() for ch in value)):
-                continue
+            if not quote:
+                if _is_wordy(value):
+                    continue
+                # For highly sensitive key names: flag digit-free values ≥ 8
+                # chars; for all others keep the original digit requirement.
+                has_digit = any(ch.isdigit() for ch in value)
+                sensitive = bool(_SENSITIVE_KEY_RE.match(key_name))
+                if not has_digit and not (sensitive and len(value) >= 8):
+                    continue
             findings.append(
                 {
                     "pattern": "generic_assignment",

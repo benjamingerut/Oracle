@@ -19,7 +19,8 @@ Public API:
     KnowledgeIndex(root, *, force_fallback=False) -> instance
     .add(doc_id, text, *, source_id=None, sensitivity='internal',
          provenance='', chunk_index=0, start=0, end=0, title='') -> None
-    .add_chunks(chunks) -> int          # bulk add list[dict]
+    .add_chunks(chunks) -> int          # bulk add list[dict]; upserts on (source_id, chunk_index)
+    .delete_source(source_id) -> int    # remove all chunks for source_id; both engines
     .search(query, *, k=10, max_sensitivity=None) -> list[dict]
     .stats() -> dict
     .reindex(chunks) -> int             # wipe + rebuild from a fresh chunk set
@@ -228,13 +229,23 @@ class KnowledgeIndex:
                 "chunk_index UNINDEXED, start_off UNINDEXED, end_off UNINDEXED, "
                 "body, tokenize='unicode61')"
             )
+            # FTS5 virtual tables do not support UNIQUE constraints natively.
+            # We maintain a shadow table that maps (source_id, chunk_index) to
+            # the FTS5 rowid, enforcing uniqueness so upsert can delete-then-
+            # insert without leaving orphaned FTS5 rows.
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS chunks_key ("
+                "source_id TEXT NOT NULL, chunk_index INTEGER NOT NULL, "
+                "fts_rowid INTEGER NOT NULL, "
+                "PRIMARY KEY (source_id, chunk_index))"
+            )
         else:
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS chunks ("
                 "rowid INTEGER PRIMARY KEY AUTOINCREMENT, "
                 "doc_id TEXT, source_id TEXT, sensitivity TEXT, provenance TEXT, "
                 "title TEXT, chunk_index INTEGER, start_off INTEGER, end_off INTEGER, "
-                "body TEXT)"
+                "body TEXT, UNIQUE(source_id, chunk_index))"
             )
             # Inverted index: one row per (term, chunk) with term frequency.
             cur.execute(
@@ -277,22 +288,50 @@ class KnowledgeIndex:
         body = text or ""
         sid = source_id or ""
         sens = (sensitivity or "internal").strip().lower() or "internal"
+        cidx = int(chunk_index)
         if self.engine == "fts5":
-            self._con.execute(
-                "INSERT INTO chunks("
-                "doc_id, source_id, sensitivity, provenance, title, "
-                "chunk_index, start_off, end_off, body) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
-                (doc_id, sid, sens, provenance, title, int(chunk_index),
-                 int(start), int(end), body),
-            )
-        else:
+            # Upsert: if a row with the same (source_id, chunk_index) already
+            # exists, delete the FTS5 row first (via the shadow key table), then
+            # insert the new one.
+            existing = self._con.execute(
+                "SELECT fts_rowid FROM chunks_key WHERE source_id=? AND chunk_index=?",
+                (sid, cidx),
+            ).fetchone()
+            if existing is not None:
+                self._con.execute(
+                    "DELETE FROM chunks WHERE rowid=?", (existing[0],)
+                )
             cur = self._con.execute(
                 "INSERT INTO chunks("
                 "doc_id, source_id, sensitivity, provenance, title, "
                 "chunk_index, start_off, end_off, body) "
                 "VALUES(?,?,?,?,?,?,?,?,?)",
-                (doc_id, sid, sens, provenance, title, int(chunk_index),
+                (doc_id, sid, sens, provenance, title, cidx,
+                 int(start), int(end), body),
+            )
+            fts_rowid = cur.lastrowid
+            self._con.execute(
+                "INSERT OR REPLACE INTO chunks_key(source_id, chunk_index, fts_rowid) "
+                "VALUES(?,?,?)",
+                (sid, cidx, fts_rowid),
+            )
+        else:
+            # Fallback: UNIQUE(source_id, chunk_index) constraint allows us to
+            # DELETE the old postings before replacing the chunk row.
+            old = self._con.execute(
+                "SELECT rowid FROM chunks WHERE source_id=? AND chunk_index=?",
+                (sid, cidx),
+            ).fetchone()
+            if old is not None:
+                self._con.execute(
+                    "DELETE FROM postings WHERE chunk_rowid=?", (old[0],)
+                )
+            cur = self._con.execute(
+                "INSERT OR REPLACE INTO chunks("
+                "doc_id, source_id, sensitivity, provenance, title, "
+                "chunk_index, start_off, end_off, body) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (doc_id, sid, sens, provenance, title, cidx,
                  int(start), int(end), body),
             )
             rowid = cur.lastrowid
@@ -324,6 +363,47 @@ class KnowledgeIndex:
             )
             n += 1
         return n
+
+    def delete_source(self, source_id: str) -> int:
+        """Remove all indexed chunks for ``source_id`` from both engines.
+
+        Returns the number of chunk rows deleted.  Safe to call when the
+        source has no chunks (returns 0).
+        """
+        sid = str(source_id)
+        if self.engine == "fts5":
+            # Collect all FTS5 rowids for this source so we can delete them
+            # individually (FTS5 does not support DELETE … WHERE on columns
+            # that are not the rowid).
+            rows = self._con.execute(
+                "SELECT fts_rowid FROM chunks_key WHERE source_id=?", (sid,)
+            ).fetchall()
+            count = len(rows)
+            if count:
+                for row in rows:
+                    self._con.execute(
+                        "DELETE FROM chunks WHERE rowid=?", (row[0],)
+                    )
+                self._con.execute(
+                    "DELETE FROM chunks_key WHERE source_id=?", (sid,)
+                )
+        else:
+            # Collect rowids first so we can clean the postings table.
+            rows = self._con.execute(
+                "SELECT rowid FROM chunks WHERE source_id=?", (sid,)
+            ).fetchall()
+            count = len(rows)
+            if count:
+                rowids = [r[0] for r in rows]
+                placeholders = ",".join("?" * len(rowids))
+                self._con.execute(
+                    f"DELETE FROM postings WHERE chunk_rowid IN ({placeholders})",
+                    rowids,
+                )
+                self._con.execute("DELETE FROM chunks WHERE source_id=?", (sid,))
+        if count:
+            self._con.commit()
+        return count
 
     # -- search ------------------------------------------------------------- #
     def search(
@@ -649,7 +729,9 @@ class KnowledgeIndex:
 
     def _wipe(self) -> None:
         self._con.execute("DELETE FROM chunks")
-        if self.engine == "fallback":
+        if self.engine == "fts5":
+            self._con.execute("DELETE FROM chunks_key")
+        else:
             self._con.execute("DELETE FROM postings")
         self._con.commit()
 

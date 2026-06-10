@@ -28,9 +28,12 @@ Stdlib only.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -46,6 +49,7 @@ __all__ = [
     "promote_row",
     "validate_rows",
     "TruthMapError",
+    "CellValueError",
 ]
 
 # The four load-bearing columns (lowercased machine keys). A table must contain
@@ -72,6 +76,41 @@ Row = dict
 
 class TruthMapError(ValueError):
     """Raised when TRUTH-MAP.md contains no recognizable truth-map table."""
+
+
+class CellValueError(ValueError):
+    """Raised when a cell value contains an illegal character (e.g. newline)."""
+
+
+# --------------------------------------------------------------------------- #
+# cell-value helpers: escaping and validation
+# --------------------------------------------------------------------------- #
+def _escape_cell(value: str) -> str:
+    """Escape a cell value for safe markdown-table composition.
+
+    * Pipes ``|`` → ``\\|`` so they are not parsed as column delimiters.
+      The parser's ``_split_row`` already restores ``\\|`` → ``|`` on read,
+      so propose → parse round-trips correctly.
+    * Newlines are refused: a cell value containing ``\\n`` or ``\\r`` would
+      silently break table structure and is never legal.
+    """
+    value = str(value)
+    if "\n" in value or "\r" in value:
+        raise CellValueError(
+            f"cell value contains a newline, which is not allowed in a "
+            f"markdown table cell: {value!r}"
+        )
+    return value.replace("|", "\\|")
+
+
+def _compose_row(cells: list[str]) -> str:
+    """Compose a validated, pipe-escaped markdown table row string.
+
+    Raises ``CellValueError`` for any cell containing a newline. Pipes inside
+    cell values are escaped as ``\\|`` so column structure is preserved.
+    """
+    escaped = [_escape_cell(c) for c in cells]
+    return "| " + " | ".join(escaped) + " |"
 
 
 # --------------------------------------------------------------------------- #
@@ -280,13 +319,55 @@ def _find_table(text: str):
 
 
 def _write_truth_map(root: Path, text: str) -> None:
-    # TRUTH-MAP.md is a fixed literal filename at the oracle root; Path.write_text
-    # to this non-user-influenced path is the documented no-bypass exception
-    # (mirrors source_record's contained generated write).
+    """Write TRUTH-MAP.md atomically under an exclusive fcntl lock.
+
+    Mirrors the discipline of ``ledger.rewrite_atomic``: a temp file is written
+    to the same directory, then ``os.replace``d into place while holding an
+    exclusive advisory lock on the destination, so a reader never observes a
+    partial write and a crash between the temp-write and the replace leaves the
+    original intact.
+    """
     path = _truth_map_path(Path(root))
     if not text.endswith("\n"):
         text += "\n"
-    path.write_text(text, encoding="utf-8")  # contained generated write
+    encoded = text.encode("utf-8")
+    # Ensure the destination exists before we try to lock it (for new installs
+    # the file is guaranteed to exist already since propose/promote read it
+    # first, but be defensive).
+    path.touch(exist_ok=True)
+    # Hold an exclusive lock on the destination across the temp-write + replace
+    # (same pattern as ledger.rewrite_atomic).
+    # safe_paths-internal: lock handle on TRUTH-MAP.md (contained oracle path)
+    lock_fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o644)  # safe_paths-internal
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix="TRUTH-MAP.", suffix=".tmp", dir=str(path.parent)
+        )
+        try:
+            with os.fdopen(fd, "wb") as tf:  # safe_paths-internal
+                tf.write(encoded)
+                tf.flush()
+                os.fsync(tf.fileno())
+            os.replace(tmp_name, str(path))  # safe_paths-internal: atomic truth-map swap
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+        # fsync the directory so the rename is durable on Linux.
+        try:
+            dfd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:  # pragma: no cover - platform/fs may not support it
+            pass
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 def _ledger_event(root: Path, event: dict) -> None:
@@ -364,7 +445,7 @@ def propose_row(
             and not primary_source_is_authoritative(row_map.get("primary source", ""))
         ):
             cells[keys.index("primary source")] = primary_source
-            lines[existing_idx] = "| " + " | ".join(cells) + " |"
+            lines[existing_idx] = _compose_row(cells)
             _write_truth_map(root, "\n".join(lines))
             _ledger_event(
                 root,
@@ -388,7 +469,7 @@ def propose_row(
         for k, v in extra.items():
             values[_cell_key(k)] = str(v)
     cells = [values.get(k, "") for k in keys]
-    new_line = "| " + " | ".join(cells) + " |"
+    new_line = _compose_row(cells)
     lines.insert(end_idx, new_line)
     _write_truth_map(root, "\n".join(lines))
     _ledger_event(
@@ -475,7 +556,7 @@ def promote_row(
     cells = _split_row(lines[target_idx]) or []
     cells = cells + [""] * (len(keys) - len(cells))
     cells[keys.index("status")] = "confirmed"
-    lines[target_idx] = "| " + " | ".join(cells) + " |"
+    lines[target_idx] = _compose_row(cells)
     _write_truth_map(root, "\n".join(lines))
     _ledger_event(
         root,

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import sys
@@ -55,6 +56,29 @@ def _ensure_parent(path: Path) -> None:
 
 def _quarantine_path(path: Path) -> Path:
     return path.with_name(path.name + ".quarantine")
+
+
+# --------------------------------------------------------------------------- #
+# hash-chain helpers
+# --------------------------------------------------------------------------- #
+def _row_canonical(row: dict) -> str:
+    """Canonical JSON serialization of a row (sorted keys, no spaces).
+
+    Excludes ``row_hash`` so the hash commits to all content fields only.
+    """
+    stripped = {k: v for k, v in row.items() if k != "row_hash"}
+    return json.dumps(stripped, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _compute_row_hash(row: dict, prev_hash: str) -> str:
+    """sha256 of canonical(row) concatenated with prev_hash."""
+    material = _row_canonical(row) + prev_hash
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _line_sha256(raw_line: str) -> str:
+    """sha256 of the raw line string (used for quarantine deduplication)."""
+    return hashlib.sha256(raw_line.encode("utf-8")).hexdigest()
 
 
 # --------------------------------------------------------------------------- #
@@ -88,6 +112,10 @@ def append(path: Path, row: dict, *, id_prefix: str | None = None) -> str:
         try:
             if prefix:
                 payload["drop_id"] = _next_id_locked(f, prefix)
+            # Compute hash chain: read the last row_hash from disk (under the
+            # same lock so no concurrent appender can race us).
+            prev_hash = _last_row_hash_locked(f)
+            payload["row_hash"] = _compute_row_hash(payload, prev_hash)
             line = json.dumps(payload, ensure_ascii=False, sort_keys=False)
             f.seek(0, os.SEEK_END)
             f.write(line + "\n")
@@ -130,6 +158,30 @@ def _next_id_locked(f, prefix: str) -> str:
     return f"{base}{n:03d}"
 
 
+def _last_row_hash_locked(f) -> str:
+    """Return the ``row_hash`` of the last parseable row in ``f`` (already locked).
+
+    Reads from position 0; returns ``""`` if the file is empty or no row carries
+    ``row_hash`` (legacy prefix).
+    """
+    last_hash = ""
+    try:
+        f.seek(0)
+        for raw_line in f:
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            try:
+                obj = json.loads(raw_line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(obj, dict) and obj.get("row_hash"):
+                last_hash = str(obj["row_hash"])
+    except OSError:  # pragma: no cover - defensive
+        pass
+    return last_hash
+
+
 def load(path: Path) -> tuple[list[dict], list[str]]:
     """Load all rows; corruption-tolerant.
 
@@ -147,25 +199,62 @@ def load(path: Path) -> tuple[list[dict], list[str]]:
         raw = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:  # pragma: no cover - filesystem error
         return rows, [f"unreadable ledger {path}: {exc}"]
-    quarantined: list[str] = []
+
+    # Load the set of raw-line hashes already in quarantine so we never
+    # re-quarantine (or re-warn) for a line we have seen before.
+    already_quarantined: set[str] = _load_quarantine_hashes(path)
+
+    new_quarantine: list[str] = []
     for lineno, line in enumerate(raw.splitlines(), start=1):
         if not line.strip():
             continue
         try:
             obj = json.loads(line)
         except (json.JSONDecodeError, ValueError):
-            quarantined.append(line)
-            warnings.append(f"line {lineno}: unparseable JSON, quarantined")
+            lhash = _line_sha256(line)
+            if lhash not in already_quarantined:
+                new_quarantine.append(line)
+                already_quarantined.add(lhash)
+                warnings.append(f"line {lineno}: unparseable JSON, quarantined")
+            # else: already seen — emit no duplicate warning, no duplicate entry
             continue
         if not isinstance(obj, dict):
-            quarantined.append(line)
-            warnings.append(f"line {lineno}: not a JSON object, quarantined")
+            lhash = _line_sha256(line)
+            if lhash not in already_quarantined:
+                new_quarantine.append(line)
+                already_quarantined.add(lhash)
+                warnings.append(f"line {lineno}: not a JSON object, quarantined")
             continue
         rows.append(obj)
-    if quarantined:
-        _quarantine(path, quarantined)
-        warnings.append(f"quarantined {len(quarantined)} bad line(s) to {_quarantine_path(path).name}")
+    if new_quarantine:
+        _quarantine(path, new_quarantine)
+        warnings.append(
+            f"quarantined {len(new_quarantine)} bad line(s) to {_quarantine_path(path).name}"
+        )
     return rows, warnings
+
+
+def _load_quarantine_hashes(path: Path) -> set[str]:
+    """Return the set of sha256 hashes of raw lines already in the quarantine file.
+
+    Each quarantine line has format ``<ts>\\t<original_line>``; we extract the
+    original line by stripping the leading timestamp+tab prefix and hash it.
+    Returns an empty set if the quarantine file does not exist.
+    """
+    qpath = _quarantine_path(path)
+    if not qpath.exists():
+        return set()
+    hashes: set[str] = set()
+    try:
+        for qline in qpath.read_text(encoding="utf-8", errors="replace").splitlines():
+            # Format written by _quarantine(): "<stamp>\t<original_line>"
+            tab_idx = qline.find("\t")
+            if tab_idx >= 0:
+                original = qline[tab_idx + 1 :]
+                hashes.add(_line_sha256(original))
+    except OSError:
+        pass
+    return hashes
 
 
 def _quarantine(path: Path, bad_lines: list[str]) -> None:
@@ -184,8 +273,18 @@ def _quarantine(path: Path, bad_lines: list[str]) -> None:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
-def rewrite_atomic(path: Path, rows: list[dict]) -> None:
+def rewrite_atomic(
+    path: Path,
+    rows: list[dict],
+    *,
+    actor: str = "repair",
+    reason: str = "rewrite",
+) -> None:
     """Replace the entire ledger with ``rows`` atomically.
+
+    Re-chains ``row_hash`` for every surviving row so the hash chain is
+    consistent after the rewrite, and appends an auditable rewrite-marker row
+    recording ``actor`` and ``reason``.
 
     Writes a temp file in the SAME directory (so ``os.replace`` is atomic on the
     same filesystem) and replaces the target while holding the lock on the
@@ -194,7 +293,28 @@ def rewrite_atomic(path: Path, rows: list[dict]) -> None:
     """
     path = Path(path)
     _ensure_parent(path)
-    lines = [json.dumps(dict(r), ensure_ascii=False) for r in rows]
+
+    # Re-chain hashes: strip any existing row_hash and recompute from scratch.
+    rechained: list[dict] = []
+    prev_hash = ""
+    for r in rows:
+        row = {k: v for k, v in r.items() if k != "row_hash"}
+        row["row_hash"] = _compute_row_hash(row, prev_hash)
+        prev_hash = row["row_hash"]
+        rechained.append(row)
+
+    # Append a rewrite-marker row (also part of the chain).
+    marker: dict = {
+        "drop_id": "REWRITE-MARKER",
+        "ts": _now_iso(),
+        "event": "ledger_rewrite",
+        "actor": actor,
+        "reason": reason,
+    }
+    marker["row_hash"] = _compute_row_hash(marker, prev_hash)
+    rechained.append(marker)
+
+    lines = [json.dumps(dict(r), ensure_ascii=False) for r in rechained]
     body = ("\n".join(lines) + "\n") if lines else ""
     # Hold an exclusive lock on the destination across the temp-write + replace.
     # safe_paths-internal: lock handle on destination ledger (caller-supplied path)
@@ -282,9 +402,17 @@ def verify(path: Path) -> dict:
     """Inspect a ledger without modifying it.
 
     Returns a report dict: total physical lines, parsed-ok count, bad-line
-    count + their line numbers, duplicate drop_ids, and rows missing required
-    keys (``drop_id``/``ts``). ``ok`` is True only if there are no bad lines, no
-    duplicates and no missing-key rows.
+    count + their line numbers, duplicate drop_ids, rows missing required
+    keys (``drop_id``/``ts``), hash-chain breaks (line numbers), and legacy
+    unhashed prefix row count. ``ok`` is True only when all checks pass.
+
+    Hash-chain semantics:
+    - Rows without ``row_hash`` are treated as a legacy prefix; they are
+      counted in ``legacy_rows`` and do not participate in chain validation.
+    - From the first row that carries ``row_hash`` onward every row is
+      validated: the stored ``row_hash`` must equal
+      ``sha256(canonical(row_without_row_hash) + prev_row_hash)`` and there
+      must be no gaps (deleted/reordered rows break the ``prev`` linkage).
     """
     path = Path(path)
     report: dict[str, Any] = {
@@ -295,6 +423,8 @@ def verify(path: Path) -> dict:
         "bad_lines": [],
         "duplicate_ids": [],
         "missing_keys": [],
+        "chain_breaks": [],   # new: line numbers where hash validation fails
+        "legacy_rows": 0,     # new: unhashed prefix rows
         "ok": True,
     }
     if not path.exists():
@@ -302,6 +432,12 @@ def verify(path: Path) -> dict:
     raw = path.read_text(encoding="utf-8", errors="replace")
     seen: dict[str, int] = {}
     dups: set[str] = set()
+
+    # Two-pass chain validation:
+    # 1. Collect all parsed rows with their line numbers.
+    # 2. Walk hashed suffix validating chain continuity.
+    parsed_rows: list[tuple[int, dict]] = []  # (lineno, obj)
+
     for lineno, line in enumerate(raw.splitlines(), start=1):
         if not line.strip():
             continue
@@ -323,11 +459,36 @@ def verify(path: Path) -> dict:
             if did in seen:
                 dups.add(did)
             seen[did] = seen.get(did, 0) + 1
+        parsed_rows.append((lineno, obj))
+
     report["duplicate_ids"] = sorted(dups)
+
+    # Walk hash chain: count legacy prefix, then validate hashed suffix.
+    chain_started = False
+    prev_hash = ""
+    for lineno, obj in parsed_rows:
+        stored_hash = obj.get("row_hash")
+        if not stored_hash:
+            if chain_started:
+                # A row without row_hash after the chain has started = break.
+                report["chain_breaks"].append(lineno)
+            else:
+                report["legacy_rows"] += 1
+            continue
+        # This row participates in the chain.
+        expected = _compute_row_hash(obj, prev_hash)
+        if stored_hash != expected:
+            report["chain_breaks"].append(lineno)
+            # Keep advancing prev_hash with the stored value so we can detect
+            # further individual breaks rather than cascading failures.
+        prev_hash = str(stored_hash)
+        chain_started = True
+
     report["ok"] = (
         not report["bad_lines"]
         and not report["duplicate_ids"]
         and not report["missing_keys"]
+        and not report["chain_breaks"]
     )
     return report
 
@@ -377,7 +538,7 @@ def repair(path: Path) -> dict:
     if bad:
         _quarantine(path, bad)
         result["quarantined"] = len(bad)
-    rewrite_atomic(path, kept)
+    rewrite_atomic(path, kept, actor="repair", reason="repair_bad_lines_dedup")
     result["kept"] = len(kept)
     return result
 

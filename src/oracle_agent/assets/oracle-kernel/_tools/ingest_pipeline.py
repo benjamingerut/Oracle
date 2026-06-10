@@ -244,6 +244,131 @@ def _index_chunks(root: Path, source_id: str, chunks, sensitivity: str, provenan
         return {"status": "error", "reason": str(exc), "count": 0}
 
 
+def _source_id_from_fm(fm: dict) -> str:
+    """Extract the index source_id (sha256[:12]) from a source note's frontmatter.
+
+    The ingest pipeline indexes chunks under ``sha256[:12]`` where sha256 comes
+    from ``captured_sha256`` (the content hash captured at ingest time).  Older
+    notes may carry ``sha256_12`` directly.  If neither is available the note's
+    ``id``/``source_id`` field is returned as a best-effort fallback.
+    """
+    captured = str(fm.get("captured_sha256") or "").strip()
+    if captured:
+        return captured[:12]
+    sha_12 = str(fm.get("sha256_12") or "").strip()
+    if sha_12:
+        return sha_12
+    # Best-effort: plain id or source_id field.
+    return str(fm.get("source_id") or fm.get("id") or "").strip()
+
+
+def _superseded_source_ids(root: Path, origin_filename: str, new_source_id: str) -> list:
+    """Return index source_ids that share the same origin file and are not the new source.
+
+    Uses ``source_catalog`` to look up prior source records by their
+    ``origin_filename`` frontmatter field.  If ``source_catalog`` is absent or
+    fails, falls back to scanning the Sources folder directly for notes whose
+    frontmatter carries a matching ``origin_filename``.
+
+    Returns a list of (possibly empty) previous source_ids so callers can
+    remove their index chunks.  The source_id for the index is always the first
+    12 hex chars of ``captured_sha256``.
+    """
+    old_ids: list = []
+    try:
+        try:
+            import source_catalog as _sc  # type: ignore
+        except Exception:  # pragma: no cover - package import fallback
+            try:
+                from . import source_catalog as _sc  # type: ignore
+            except Exception:
+                _sc = None  # type: ignore
+
+        if _sc is not None:
+            snap = _sc.snapshot(root)
+            for entry in snap.entries:
+                fm = entry.get("fm") or {}
+                if fm.get("origin_filename") == origin_filename:
+                    sid = _source_id_from_fm(fm)
+                    if sid and sid != new_source_id:
+                        old_ids.append(sid)
+        else:
+            # Fallback: direct folder walk.
+            try:
+                import answer_protocol as _ap  # type: ignore
+            except Exception:  # pragma: no cover
+                try:
+                    from . import answer_protocol as _ap  # type: ignore
+                except Exception:
+                    return old_ids
+            folder = root / "Memory.nosync" / "Sources"
+            if folder.is_dir():
+                for p in sorted(folder.glob("*.md")):
+                    if p.name.startswith("_"):
+                        continue
+                    fm = _ap.read_frontmatter(p)
+                    if fm.get("origin_filename") == origin_filename:
+                        sid = _source_id_from_fm(fm)
+                        if sid and sid != new_source_id:
+                            old_ids.append(sid)
+    except Exception:
+        pass
+    return old_ids
+
+
+def _remove_superseded_chunks(
+    root: Path, origin_filename: str, new_source_id: str
+) -> dict:
+    """Delete index chunks for any prior source that has the same origin file.
+
+    Called AFTER the new source's chunks are already registered so the index
+    never has a gap.  Fail-closed contract:
+      * If supersession cannot be determined (catalog absent, exception), we
+        emit a review-queue-visible warning in the returned dict rather than
+        silently duplicating or destroying data.
+      * Deletion is best-effort per superseded source: a partial failure
+        records which ids were cleaned and which errored.
+    """
+    try:
+        import knowledge_index  # type: ignore
+    except Exception:
+        return {"status": "skipped", "reason": "knowledge_index unavailable", "removed": []}
+
+    try:
+        old_ids = _superseded_source_ids(root, origin_filename, new_source_id)
+    except Exception as exc:
+        # Cannot determine supersession -- emit warning, keep old chunks.
+        return {
+            "status": "warning",
+            "reason": (
+                f"supersession lookup failed ({exc}); old chunks may remain "
+                f"for origin={origin_filename!r}. Manual reindex may be needed."
+            ),
+            "removed": [],
+        }
+
+    if not old_ids:
+        return {"status": "ok", "removed": []}
+
+    removed: list = []
+    errors: list = []
+    with knowledge_index.KnowledgeIndex(root) as idx:
+        for sid in old_ids:
+            try:
+                count = idx.delete_source(sid)
+                removed.append({"source_id": sid, "chunks_deleted": count})
+            except Exception as exc:
+                errors.append({"source_id": sid, "error": str(exc)})
+
+    result: dict = {"removed": removed}
+    if errors:
+        result["status"] = "partial"
+        result["errors"] = errors
+    else:
+        result["status"] = "ok"
+    return result
+
+
 def _make_source_card(
     root: Path,
     src: Path,
@@ -588,8 +713,16 @@ def run(
 
     # 5) index (optional)
     provenance = {"source_sha256": sha256, "origin_filename": src.name, "connector": connector or "manual"}
+    new_index_source_id = sha256[:12]
     if index:
-        index_result = _index_chunks(root, sha256[:12], chunks, label, provenance)
+        index_result = _index_chunks(root, new_index_source_id, chunks, label, provenance)
+        # 5.5) Remove superseded source chunks -- only after the new chunks are
+        # registered so the index never has a gap.  Fail-closed: a lookup failure
+        # keeps old chunks and emits a review-visible warning; it never raises.
+        supersede_result = _remove_superseded_chunks(root, src.name, new_index_source_id)
+        if supersede_result.get("status") == "warning":
+            errors.append(supersede_result["reason"])
+        index_result["supersede"] = supersede_result
     else:
         index_result = {"status": "skipped", "reason": "index disabled by caller", "count": 0}
 

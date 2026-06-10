@@ -328,3 +328,127 @@ def test_keyed_hex_with_secret_key_name_still_flags():
     line = "apikey=7cc7375f69e03b768bd6271f9c84ac175617c02a9a257e479f4038d09393fc7e"
     findings = scan_text(line)
     assert findings, "credential-shaped keyed hex must still be reported"
+
+
+# --------------------------------------------------------------------------- #
+# K4 — new named patterns
+# --------------------------------------------------------------------------- #
+
+def test_anthropic_key_detected():
+    """sk-ant-... keys are flagged by the anthropic_key pattern."""
+    text = "ANTHROPIC_API_KEY=sk-ant-api03-ABCDEFGHIJKLMNOPabcdefghijklmnop"
+    assert _has(text, "anthropic_key")
+
+
+def test_anthropic_key_not_in_sk_key():
+    """sk-ant-... must NOT be double-reported as sk_key."""
+    text = "key=sk-ant-api03-ABCDEFGHIJKLMNOPabcdefghijklmnop"
+    patterns = _patterns(text)
+    assert "anthropic_key" in patterns
+    assert "sk_key" not in patterns
+
+
+def test_anthropic_key_negative():
+    """Ordinary text containing 'ant' does not trigger anthropic_key."""
+    assert not _has("The elephant and the ant walked.", "anthropic_key")
+
+
+def test_azure_storage_key_detected():
+    """AccountKey=... connection-string values are flagged."""
+    conn = (
+        "DefaultEndpointsProtocol=https;AccountName=mystorage;"
+        "AccountKey=dGhpcyBpcyBhIGZha2UgYmFzZTY0IHN0b3JhZ2Uga2V5IGZvcg==;"
+        "EndpointSuffix=core.windows.net"
+    )
+    assert _has(conn, "azure_storage_key")
+
+
+def test_azure_storage_key_negative():
+    """Plain 'AccountKey' without a base64-ish value does not flag."""
+    assert not _has("See AccountKey documentation for details.", "azure_storage_key")
+
+
+def test_npm_token_detected():
+    """npm_... publish/automation tokens are flagged."""
+    text = "NPM_TOKEN=npm_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
+    assert _has(text, "npm_token")
+
+
+def test_npm_token_negative():
+    """The word 'npm' alone or a short npm_ prefix does not flag."""
+    assert not _has("run npm install to install packages", "npm_token")
+    assert not _has("npm_config=true", "npm_token")
+
+
+def test_gcp_service_account_key_detected():
+    """GCP service-account JSON private_key fields are flagged."""
+    json_fragment = '"private_key": "-----BEGIN RSA PRIVATE KEY-----\\nMIIEowIBAAK..."'
+    assert _has(json_fragment, "gcp_service_account_key")
+
+
+def test_gcp_service_account_key_negative():
+    """Prose containing 'private_key' without a PEM header does not flag."""
+    assert not _has('Set the "private_key" field to the value from your keyfile.', "gcp_service_account_key")
+
+
+def test_telegram_bot_token_detected():
+    """Telegram bot tokens (numeric:AA...) are flagged."""
+    text = "BOT_TOKEN=123456789:AABBccddEEFFgghhIIJJkkllMMNNoopp123"
+    assert _has(text, "telegram_bot_token")
+
+
+def test_telegram_bot_token_negative():
+    """Short numeric sequences or non-AA prefix do not flag."""
+    assert not _has("meeting at 12345678:00 tomorrow", "telegram_bot_token")
+    assert not _has("ratio 123456789:XYZabcdefghijklmnopqrstuvwxyz12345", "telegram_bot_token")
+
+
+# --------------------------------------------------------------------------- #
+# K4 — tightened assignment heuristic (digit-free passwords)
+# --------------------------------------------------------------------------- #
+
+def test_password_without_digit_flagged():
+    """password = <wordlike-no-digit> (≥8 chars) must now be flagged."""
+    assert _has("password = correcthorsebatterystaple", "generic_assignment")
+
+
+def test_secret_without_digit_flagged():
+    """secret: <wordlike-no-digit> (≥8 chars) must now be flagged."""
+    assert _has("secret: mysupersecretvalue", "generic_assignment")
+
+
+def test_token_without_digit_flagged():
+    """token: <wordlike-no-digit> (≥8 chars) must now be flagged."""
+    assert _has("token: mypersonaltokenvalue", "generic_assignment")
+
+
+def test_apikey_without_digit_flagged():
+    """api_key: <wordlike-no-digit> (≥8 chars) must now be flagged."""
+    assert _has("api_key: mysecretapikey", "generic_assignment")
+
+
+def test_non_sensitive_key_without_digit_not_flagged():
+    """Non-sensitive key names (e.g. 'pwd') still require a digit for unquoted values."""
+    # 'pwd' is not in _SENSITIVE_KEY_RE so plain wordlike value stays suppressed
+    assert not _has("pwd = correcthorsebatterystaple", "generic_assignment")
+
+
+def test_password_placeholder_not_flagged():
+    """Placeholder values for sensitive keys are still suppressed."""
+    assert not _has("password = changeme", "generic_assignment")
+    assert not _has("password = your_password", "generic_assignment")
+    assert not _has("password = ${DB_PASSWORD}", "generic_assignment")
+    assert not _has("password = {{DB_PASSWORD}}", "generic_assignment")
+    assert not _has("password = <your-password>", "generic_assignment")
+
+
+def test_jinja_interpolation_not_flagged():
+    """{{VAR}} Jinja/Helm-style interpolations are placeholders."""
+    assert not _has("token: {{AUTH_TOKEN}}", "generic_assignment")
+    assert not _has('secret = "{{SECRET_VALUE}}"', "generic_assignment")
+
+
+def test_env_lookup_not_flagged():
+    """References to env lookups should not flag as leaks."""
+    assert not _has("password = os.environ['DB_PASS']", "generic_assignment")
+    assert not _has("token = getenv('API_TOKEN')", "generic_assignment")
