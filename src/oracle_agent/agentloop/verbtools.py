@@ -248,12 +248,11 @@ class Dispatcher:
             k = max(1, min(int(k), 25))
         except (TypeError, ValueError):
             k = 8
-        # Ceiling forced last; any model sensitivity token already excluded
-        # because the schema has no such field -- but strip defensively (M5).
+        # The ceiling is forced as the ONLY --max-sensitivity (M5). The model
+        # cannot smuggle one: terms ride inside a single `--q=` argv element
+        # and the schema exposes no sensitivity field.
         argv = ["search", "query", f"--q={terms}", "--k", str(k),
                 "--max-sensitivity", self.max_sensitivity]
-        argv = [a for a in argv if not _SENSITIVITY_FLAG_RE.match(a)] + \
-               ["--max-sensitivity", self.max_sensitivity]
         rc, out, _err = self._run(argv)
         return ToolOutcome(self._cap(out.strip() or "[no results]"), rc=rc)
 

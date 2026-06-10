@@ -177,3 +177,7 @@ def main(argv: list[str] | None = None) -> int:
     rep = run(args.instance)
     print(rep.render())
     return 1 if rep.worst_is_fail() else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

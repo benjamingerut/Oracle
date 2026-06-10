@@ -156,3 +156,9 @@ def test_write_gate_blocks_remember(spawned_root):
     d2 = _disp(spawned_root, write_gate=lambda: False)
     out2 = d2.dispatch("oracle_capture", {"kind": "feedback", "target": "t"})
     assert "rate limit" in out2.text
+
+
+def test_search_real_subprocess_succeeds(spawned_root):
+    """Regression: the built argv must actually parse in the kernel CLI."""
+    out = _disp(spawned_root).dispatch("oracle_search", {"terms": "anything at all"})
+    assert out.rc == 0, out.text

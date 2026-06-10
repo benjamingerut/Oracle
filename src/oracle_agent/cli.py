@@ -261,3 +261,7 @@ def _cmd_version(rest: list[str]) -> int:
     for n, r in sorted(config.instance_roots(cfg).items()):
         print(f"  instance '{n}': kernel {doctor._root_tools_version(r)}")
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
