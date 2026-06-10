@@ -1,0 +1,127 @@
+{
+  "title": "finding",
+  "description": "An atomic claim at a point in time. Enforces the analytic epistemics: a claim_tier, a numeric confidence in [0,1], non-empty evidence, and a non-empty disconfirmer (what would change the conclusion). Immutable: refresh/correction writes a new record and supersedes the old one.",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "title",
+    "created",
+    "updated",
+    "sensitivity",
+    "status",
+    "tags",
+    "claim_tier",
+    "confidence",
+    "evidence",
+    "decision_relevance",
+    "disconfirmer",
+    "as_of"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "finding"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "created": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    },
+    "updated": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": [
+        "public",
+        "internal",
+        "confidential",
+        "restricted",
+        "secret"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "needs_review",
+        "active",
+        "superseded",
+        "retired"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "actor": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "claim_tier": {
+      "type": "string",
+      "enum": [
+        "OBS",
+        "INF",
+        "SPEC",
+        "SPEC-horizon"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "evidence": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "decision_relevance": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "disconfirmer": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "resolving_source": {
+      "type": "string"
+    },
+    "resolution_date": {
+      "type": "string"
+    },
+    "as_of": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    },
+    "source_id": {
+      "type": "string"
+    },
+    "evidence_offsets": {
+      "type": "string"
+    },
+    "supersedes": {
+      "type": "string"
+    },
+    "superseded_by": {
+      "type": "string"
+    },
+    "content_sha256": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,837 @@
+{
+  "title": "oracle_yml",
+  "description": "The machine-readable kernel config (oracle.yml). workproduct.routing_lanes is the single source of truth consumed by safe_paths.assert_lane; security.sensitivity_labels and governance.roles must match the enums used by the schemas and policy.py.",
+  "type": "object",
+  "required": [
+    "company",
+    "oracle",
+    "security",
+    "governance",
+    "session_interfaces",
+    "ontology",
+    "workproduct",
+    "connectors",
+    "loops",
+    "backup",
+    "kernel"
+  ],
+  "properties": {
+    "company": {
+      "type": "object",
+      "required": [
+        "name",
+        "codename",
+        "bootstrap_date",
+        "maturity"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "codename": {
+          "type": "string"
+        },
+        "bootstrap_date": {
+          "type": "string"
+        },
+        "maturity": {
+          "type": "string"
+        }
+      }
+    },
+    "oracle": {
+      "type": "object",
+      "required": [
+        "purpose",
+        "seed_kernel",
+        "local_sovereignty",
+        "bootstrap_admin"
+      ],
+      "properties": {
+        "purpose": {
+          "type": "string"
+        },
+        "seed_kernel": {
+          "type": "string"
+        },
+        "local_sovereignty": {
+          "type": "boolean"
+        },
+        "bootstrap_admin": {
+          "type": "object",
+          "required": [
+            "name",
+            "role"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "required": [
+        "mode",
+        "secrets_policy",
+        "external_processing_default",
+        "raw_data_export",
+        "sensitivity_labels"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "local_confidential",
+            "local_standard",
+            "local_open"
+          ]
+        },
+        "secrets_policy": {
+          "type": "string"
+        },
+        "external_processing_default": {
+          "type": "string",
+          "enum": [
+            "denied_without_admin_approval",
+            "allowed_minimized",
+            "allowed"
+          ]
+        },
+        "raw_data_export": {
+          "type": "string",
+          "enum": [
+            "admin_approval_required",
+            "denied",
+            "allowed"
+          ]
+        },
+        "sensitivity_labels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "public",
+              "internal",
+              "confidential",
+              "restricted",
+              "secret"
+            ]
+          }
+        },
+        "scan_exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Root-relative globs exempted from the whole-tree secret/external-path scans (large immutable raw exports). Sovereign roots (Memory.nosync, Meta.nosync), oracle.yml and root doctrine *.md are always scanned regardless."
+        }
+      }
+    },
+    "governance": {
+      "type": "object",
+      "required": [
+        "roles"
+      ],
+      "properties": {
+        "roles": {
+          "type": "object",
+          "required": [
+            "admin",
+            "user"
+          ],
+          "properties": {
+            "admin": {
+              "type": "object",
+              "required": [
+                "can"
+              ],
+              "properties": {
+                "can": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "user": {
+              "type": "object",
+              "required": [
+                "can",
+                "cannot"
+              ],
+              "properties": {
+                "can": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "cannot": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "session_interfaces": {
+      "type": "object",
+      "required": [
+        "default",
+        "startup_prompt",
+        "reset_policy",
+        "goal_clarity_policy",
+        "modes"
+      ],
+      "properties": {
+        "default": {
+          "type": "string",
+          "enum": [
+            "user",
+            "admin"
+          ]
+        },
+        "startup_prompt": {
+          "type": "boolean"
+        },
+        "reset_policy": {
+          "type": "string",
+          "enum": [
+            "every_new_session"
+          ]
+        },
+        "goal_clarity_policy": {
+          "type": "object",
+          "required": [
+            "version",
+            "default_behavior",
+            "dialectic_method",
+            "applies_to",
+            "proportionality_axes",
+            "general_rule",
+            "levels",
+            "escalation_triggers",
+            "do_not_over_ask_when",
+            "proceed_with_assumptions_allowed"
+          ],
+          "properties": {
+            "version": {
+              "type": "string",
+              "enum": [
+                "goal-clarity-policy/v1"
+              ]
+            },
+            "default_behavior": {
+              "type": "string",
+              "enum": [
+                "proportional_dialectic_before_execution"
+              ]
+            },
+            "dialectic_method": {
+              "type": "object",
+              "required": [
+                "question_style",
+                "include_recommended_answer",
+                "resolve_dependencies",
+                "inspect_available_material_first"
+              ],
+              "properties": {
+                "question_style": {
+                  "type": "string",
+                  "enum": [
+                    "one_at_a_time"
+                  ]
+                },
+                "include_recommended_answer": {
+                  "type": "boolean"
+                },
+                "resolve_dependencies": {
+                  "type": "string",
+                  "enum": [
+                    "one_branch_at_a_time"
+                  ]
+                },
+                "inspect_available_material_first": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "applies_to": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "answering_questions",
+                  "producing_workproduct",
+                  "executing_tools",
+                  "code_changes",
+                  "loop_work",
+                  "headless_work"
+                ]
+              }
+            },
+            "proportionality_axes": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "ambiguity",
+                  "work_extent",
+                  "compute_cost",
+                  "reversibility",
+                  "business_risk",
+                  "user_time_cost"
+                ]
+              }
+            },
+            "general_rule": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "levels": {
+              "type": "object",
+              "required": [
+                "quick_low_compute",
+                "bounded_standard",
+                "extended_high_compute"
+              ],
+              "properties": {
+                "quick_low_compute": {
+                  "type": "object",
+                  "required": [
+                    "clarity_threshold",
+                    "dialectic_default",
+                    "proceed_when",
+                    "before_execution"
+                  ],
+                  "properties": {
+                    "clarity_threshold": {
+                      "type": "string",
+                      "enum": [
+                        "low"
+                      ]
+                    },
+                    "dialectic_default": {
+                      "type": "string",
+                      "enum": [
+                        "none_or_one_turn"
+                      ]
+                    },
+                    "proceed_when": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "before_execution": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "bounded_standard": {
+                  "type": "object",
+                  "required": [
+                    "clarity_threshold",
+                    "dialectic_default",
+                    "proceed_when",
+                    "before_execution"
+                  ],
+                  "properties": {
+                    "clarity_threshold": {
+                      "type": "string",
+                      "enum": [
+                        "medium"
+                      ]
+                    },
+                    "dialectic_default": {
+                      "type": "string",
+                      "enum": [
+                        "targeted_back_and_forth"
+                      ]
+                    },
+                    "proceed_when": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "before_execution": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "extended_high_compute": {
+                  "type": "object",
+                  "required": [
+                    "clarity_threshold",
+                    "dialectic_default",
+                    "proceed_when",
+                    "before_execution"
+                  ],
+                  "properties": {
+                    "clarity_threshold": {
+                      "type": "string",
+                      "enum": [
+                        "high"
+                      ]
+                    },
+                    "dialectic_default": {
+                      "type": "string",
+                      "enum": [
+                        "explicit_specing_until_clear"
+                      ]
+                    },
+                    "proceed_when": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "before_execution": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "escalation_triggers": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "do_not_over_ask_when": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "proceed_with_assumptions_allowed": {
+              "type": "boolean"
+            }
+          }
+        },
+        "switch_commands": {
+          "type": "object",
+          "properties": {
+            "admin": {
+              "type": "string"
+            },
+            "user": {
+              "type": "string"
+            }
+          }
+        },
+        "modes": {
+          "type": "object",
+          "required": [
+            "user",
+            "admin"
+          ],
+          "properties": {
+            "user": {
+              "type": "object",
+              "required": [
+                "purpose",
+                "tone",
+                "answer_protocol",
+                "control_plane_boundary",
+                "allow_capabilities",
+                "block_capabilities"
+              ],
+              "properties": {
+                "purpose": {
+                  "type": "string"
+                },
+                "tone": {
+                  "type": "string"
+                },
+                "answer_protocol": {
+                  "type": "string"
+                },
+                "control_plane_boundary": {
+                  "type": "string"
+                },
+                "admin_prompt": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "redirect": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "allow_capabilities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "block_capabilities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "admin": {
+              "type": "object",
+              "required": [
+                "purpose",
+                "tone",
+                "answer_protocol",
+                "role_gate",
+                "allow_capabilities",
+                "block_capabilities"
+              ],
+              "properties": {
+                "purpose": {
+                  "type": "string"
+                },
+                "tone": {
+                  "type": "string"
+                },
+                "answer_protocol": {
+                  "type": "string"
+                },
+                "role_gate": {
+                  "type": "string",
+                  "enum": [
+                    "policy.require_role"
+                  ]
+                },
+                "allow_capabilities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "block_capabilities": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "ontology": {
+      "type": "object",
+      "required": [
+        "entity_subtypes",
+        "decision_domains"
+      ],
+      "properties": {
+        "entity_subtypes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "decision_domains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "workproduct": {
+      "type": "object",
+      "required": [
+        "routing_lanes",
+        "routing_status"
+      ],
+      "properties": {
+        "routing_lanes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "routing_status": {
+          "type": "string"
+        }
+      }
+    },
+    "connectors": {
+      "type": "object",
+      "required": [
+        "default_capture_tier",
+        "known"
+      ],
+      "properties": {
+        "default_capture_tier": {
+          "type": "string",
+          "enum": [
+            "manifest_only",
+            "snapshot",
+            "mirror"
+          ]
+        },
+        "known": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "derived_memory": {
+      "type": "object",
+      "required": [
+        "contract_version",
+        "canonical_authority",
+        "answer_boundary",
+        "artifact_scope",
+        "engines"
+      ],
+      "properties": {
+        "contract_version": {
+          "type": "string",
+          "enum": [
+            "oracle.derived_memory.v1"
+          ]
+        },
+        "canonical_authority": {
+          "type": "string",
+          "enum": [
+            "oracle"
+          ]
+        },
+        "answer_boundary": {
+          "type": "string",
+          "enum": [
+            "oracle_answer_protocol_only"
+          ]
+        },
+        "artifact_scope": {
+          "type": "string",
+          "enum": [
+            "derived_rebuildable"
+          ]
+        },
+        "engines": {
+          "type": "object",
+          "required": [
+            "mempalace",
+            "graphify"
+          ],
+          "properties": {
+            "mempalace": {
+              "type": "object",
+              "required": [
+                "enabled",
+                "role",
+                "command",
+                "export_subdir",
+                "max_default_sensitivity",
+                "answer_authority",
+                "environment_default",
+                "minimized_chars"
+              ],
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "semantic_retrieval"
+                  ]
+                },
+                "command": {
+                  "type": "string"
+                },
+                "export_subdir": {
+                  "type": "string"
+                },
+                "max_default_sensitivity": {
+                  "type": "string",
+                  "enum": [
+                    "public",
+                    "internal",
+                    "confidential",
+                    "restricted",
+                    "secret"
+                  ]
+                },
+                "answer_authority": {
+                  "type": "string",
+                  "enum": [
+                    "never"
+                  ]
+                },
+                "environment_default": {
+                  "type": "string",
+                  "enum": [
+                    "local_deterministic",
+                    "local_agent",
+                    "external"
+                  ]
+                },
+                "minimized_chars": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "graphify": {
+              "type": "object",
+              "required": [
+                "enabled",
+                "role",
+                "command",
+                "export_subdir",
+                "max_default_sensitivity",
+                "answer_authority",
+                "environment_default",
+                "minimized_chars"
+              ],
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "knowledge_graph_analysis"
+                  ]
+                },
+                "command": {
+                  "type": "string"
+                },
+                "export_subdir": {
+                  "type": "string"
+                },
+                "max_default_sensitivity": {
+                  "type": "string",
+                  "enum": [
+                    "public",
+                    "internal",
+                    "confidential",
+                    "restricted",
+                    "secret"
+                  ]
+                },
+                "answer_authority": {
+                  "type": "string",
+                  "enum": [
+                    "never"
+                  ]
+                },
+                "environment_default": {
+                  "type": "string",
+                  "enum": [
+                    "local_deterministic",
+                    "local_agent",
+                    "external"
+                  ]
+                },
+                "minimized_chars": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "loops": {
+      "type": "object",
+      "required": [
+        "registry",
+        "create_loop_rule"
+      ],
+      "properties": {
+        "registry": {
+          "type": "string"
+        },
+        "create_loop_rule": {
+          "type": "string"
+        }
+      }
+    },
+    "backup": {
+      "type": "object",
+      "required": [
+        "tier_0_control_plane",
+        "tier_1_artifacts",
+        "tier_2_raw_data",
+        "tier_3_secrets"
+      ],
+      "properties": {
+        "tier_0_control_plane": {
+          "type": "string"
+        },
+        "tier_1_artifacts": {
+          "type": "string"
+        },
+        "tier_2_raw_data": {
+          "type": "string"
+        },
+        "tier_3_secrets": {
+          "type": "string"
+        }
+      }
+    },
+    "kernel": {
+      "type": "object",
+      "required": [
+        "tools_version",
+        "tools_sha256",
+        "manifest"
+      ],
+      "properties": {
+        "tools_version": {
+          "type": "string"
+        },
+        "tools_sha256": {
+          "type": "string"
+        },
+        "manifest": {
+          "type": "string"
+        }
+      }
+    },
+    "autonomy": {
+      "type": "object",
+      "required": [
+        "config"
+      ],
+      "properties": {
+        "config": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

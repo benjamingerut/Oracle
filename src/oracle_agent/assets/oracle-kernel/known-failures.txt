@@ -1,0 +1,16 @@
+# oracle known-failures baseline
+#
+# Each non-comment, non-blank line is a STABLE violation key
+# (`<code>::<path>[:<line>]`, exactly as printed by `oracle lint`). A key listed
+# here is DOWNGRADED from a failing violation to a warning, so a known, tracked
+# gap does not block the gate while it is being worked off -- WITHOUT ever
+# masking a NEW regression (a violation whose key is not listed still fails).
+#
+# Discipline: add a key only with a tracking note (a trailing `# why` comment is
+# encouraged); remove it the moment the underlying issue is fixed. A freshly
+# spawned, clean oracle ships with this baseline EMPTY -- everything below the
+# header is intentionally blank.
+#
+# Example (do NOT leave real entries here at spawn):
+#   note-sensitivity::Memory.nosync/Findings/2026-01-01_example.md:1  # tracked in ADR-0007
+# ---------------------------------------------------------------------------

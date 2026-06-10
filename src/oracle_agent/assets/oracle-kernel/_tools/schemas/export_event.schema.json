@@ -1,0 +1,54 @@
+{
+  "title": "export_event",
+  "description": "One append-only ledger row recording that a data/artifact left the oracle root. METADATA ONLY: there is deliberately NO payload/content field, so tracking this ledger in git can never leak the exported bytes. Written via ledger.append to Meta.nosync/ledgers/export_event.jsonl.",
+  "type": "object",
+  "required": [
+    "drop_id",
+    "ts",
+    "actor",
+    "role",
+    "classification",
+    "destination",
+    "approval",
+    "purpose"
+  ],
+  "properties": {
+    "drop_id": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "ts": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    },
+    "actor": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "role": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "classification": {
+      "type": "string",
+      "enum": [
+        "public",
+        "internal",
+        "confidential",
+        "restricted",
+        "secret"
+      ]
+    },
+    "destination": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "approval": {
+      "type": "string"
+    },
+    "purpose": {
+      "type": "string",
+      "pattern": "\\S"
+    }
+  }
+}

@@ -1,0 +1,134 @@
+{
+  "title": "recommendation",
+  "description": "A proposed action. The original action/rationale/evidence/baseline/expected_signal are IMMUTABLE; only the separate adjudication block mutates. Recommendations are adjudicated against OBSERVED Decisions and value_events, never by human approval.",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "title",
+    "created",
+    "updated",
+    "sensitivity",
+    "status",
+    "tags",
+    "action",
+    "rationale",
+    "evidence",
+    "baseline",
+    "expected_signal"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "recommendation"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "created": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    },
+    "updated": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": [
+        "public",
+        "internal",
+        "confidential",
+        "restricted",
+        "secret"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "open",
+        "supported",
+        "contradicted",
+        "superseded",
+        "retired"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "actor": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "rationale": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "evidence": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "baseline": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "expected_signal": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "adjudication": {
+      "type": "object",
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "supported",
+            "contradicted",
+            "inconclusive"
+          ]
+        },
+        "observed_signal": {
+          "type": "string"
+        },
+        "observed_decisions": {
+          "type": "string"
+        },
+        "observed_value_events": {
+          "type": "string"
+        },
+        "adjudicated_on": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "supersedes": {
+      "type": "string"
+    },
+    "superseded_by": {
+      "type": "string"
+    },
+    "content_sha256": {
+      "type": "string"
+    }
+  }
+}

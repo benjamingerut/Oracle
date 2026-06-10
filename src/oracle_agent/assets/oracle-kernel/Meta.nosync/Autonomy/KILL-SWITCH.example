@@ -1,0 +1,48 @@
+ORACLE AUTONOMY KILL-SWITCH — EXAMPLE / DOCUMENTATION
+
+This file is an EXAMPLE. It is named `KILL-SWITCH.example`, so it does NOT halt
+anything. The live kill-switch is a file named exactly `KILL-SWITCH` (no
+extension) in this same folder: Meta.nosync/Autonomy/KILL-SWITCH
+
+HOW IT WORKS
+------------
+_tools/actions.py checks for the presence of the live `KILL-SWITCH` file as the
+very FIRST step of any autonomous action, before reading autonomy.yml and before
+checking `enabled`. If the file exists, the action is refused immediately and an
+action_event row is logged with result "killed". This overrides `enabled: true`
+and every allowlist entry — it is an unconditional, instant hard stop.
+
+The contents of the file do not matter. Presence is the signal. A short note
+explaining who pulled the switch and why (like this one) is good hygiene but is
+not parsed.
+
+TO HALT THE ORACLE
+------------------
+    touch "Meta.nosync/Autonomy/KILL-SWITCH"
+
+The next headless harness run (and any in-session autonomous action) will
+hard-stop and log the event. Interactive use by a human is unaffected — the
+kill-switch only gates AUTONOMOUS actions.
+
+TO RESUME
+---------
+    rm "Meta.nosync/Autonomy/KILL-SWITCH"
+
+Removing the file lets actions.py proceed to the normal allowlist / caps checks
+again. Resuming does not re-enable anything that was not already enabled in
+autonomy.yml; it only clears the override.
+
+WHEN TO USE IT
+--------------
+- The oracle is behaving unexpectedly during headless runs.
+- You are doing maintenance and want no unattended writes.
+- A connector or lane is in a bad state and you want to freeze activity.
+- Any time you want certainty that nothing acts on its own, right now.
+
+NOTE
+----
+The kill-switch is the fastest, most reliable off-switch, but it is not the only
+guard: autonomy is OFF by default (autonomy.yml `enabled: false` with empty
+allowlists), and every action is additionally bounded by blast_radius_caps. The
+kill-switch exists for the case where you want to stop everything instantly,
+without editing autonomy.yml.

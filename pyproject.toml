@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oracle-agent"
+version = "1.0.0"
+description = "Sovereign company oracle: governed knowledge kernel + installable system agent shell"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Benjamin Gerut" }]
+# ZERO runtime dependencies. Kernel AND shell are stdlib-only by design:
+# the LLM client uses urllib, the gateway uses urllib long-polling, state
+# uses sqlite3/json. This is a load-bearing guarantee (see docs/DESIGN.md).
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+# Optional, gracefully-degrading office extractors used by the kernel ingest
+# pipeline (absent => extraction degrades, never crashes).
+office = ["pdfminer.six", "python-docx", "openpyxl"]
+
+[project.scripts]
+oracle = "oracle_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# The vendored kernel template must ship whole, including dotfiles
+# (.kernel-manifest.json, .env.example, gitignore.template).
+oracle_agent = [
+    "assets/oracle-kernel/**/*",
+    "assets/oracle-kernel/**/.*",
+    "assets/oracle-kernel/.kernel-manifest.json",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = [
+    "src/oracle_agent/assets/oracle-kernel/tests",
+    "tests",
+]

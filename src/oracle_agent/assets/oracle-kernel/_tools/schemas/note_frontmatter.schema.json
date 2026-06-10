@@ -1,0 +1,133 @@
+{
+  "title": "note_frontmatter",
+  "description": "Common required frontmatter for every Memory.nosync / Meta.nosync note. Type-specific schemas (finding, contradiction, model, recommendation, loop) layer additional required fields on top of this base.",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "title",
+    "created",
+    "updated",
+    "sensitivity",
+    "status",
+    "tags"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "entity",
+        "person",
+        "group",
+        "asset",
+        "system",
+        "metric",
+        "query",
+        "model",
+        "question",
+        "contradiction",
+        "source",
+        "finding",
+        "recommendation",
+        "decision",
+        "directive",
+        "loop",
+        "session",
+        "user_model",
+        "architecture_component",
+        "value_scorecard",
+        "feedback_event",
+        "value_event",
+        "failure_event",
+        "architecture_decision",
+        "improvement",
+        "retrospective",
+        "export_event",
+        "redaction_event"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "created": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    },
+    "updated": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": [
+        "public",
+        "internal",
+        "confidential",
+        "restricted",
+        "secret"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "actor": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "subtype": {
+      "type": "string",
+      "enum": [
+        "organization",
+        "customer",
+        "vendor",
+        "product",
+        "facility",
+        "competitor",
+        "legal_entity",
+        "term",
+        "team",
+        "department",
+        "segment",
+        "cohort",
+        "board",
+        "committee",
+        "user_group",
+        "physical",
+        "financial",
+        "digital",
+        "contractual",
+        "strategic",
+        "source_system",
+        "application",
+        "database",
+        "repo",
+        "workflow",
+        "process",
+        "custom"
+      ]
+    },
+    "supersedes": {
+      "type": "string"
+    },
+    "superseded_by": {
+      "type": "string"
+    },
+    "content_sha256": {
+      "type": "string"
+    }
+  }
+}

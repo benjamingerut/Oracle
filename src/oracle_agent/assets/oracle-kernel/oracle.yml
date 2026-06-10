@@ -1,0 +1,261 @@
+# oracle.yml — machine-readable config for the {{COMPANY_NAME}} oracle.
+#
+# BLOCK STYLE ONLY. This file is parsed by _tools/oracle_yaml.safe_load, which is a
+# conservative safe-subset loader: it RAISES on inline flow ([a, b] / {k: v}),
+# anchors (&), aliases (*), tags (!), and multi-doc (---). Write every sequence as
+# one "- item" per line; write an empty list/map as a bare "key:" (parses to None),
+# never "[]" or "{}". oracle_lint validates this file against
+# _tools/schemas/oracle_yml.schema.json.
+#
+# routing_lanes below is the SINGLE source of truth consumed by
+# safe_paths.assert_lane — every Workproduct write is contained to one of these.
+
+company:
+  name: "{{COMPANY_NAME}}"
+  codename: "{{CODENAME}}"
+  bootstrap_date: "{{DATE}}"
+  maturity: scaffolded
+
+oracle:
+  purpose: "Institutional memory, evidence system, contradiction resolver, insight generator, and workproduct engine for {{COMPANY_NAME}}."
+  seed_kernel: oracle-spawn
+  local_sovereignty: true
+  bootstrap_admin:
+    name: "{{ADMIN_NAME}}"
+    role: admin
+
+security:
+  mode: local_confidential
+  secrets_policy: env_only_never_logged
+  external_processing_default: denied_without_admin_approval
+  raw_data_export: admin_approval_required
+  sensitivity_labels:
+    - public
+    - internal
+    - confidential
+    - restricted
+    - secret
+
+governance:
+  roles:
+    admin:
+      can:
+        - change_architecture
+        - install_connector
+        - approve_connector
+        - change_security_policy
+        - update_oracle_config
+        - approve_schema_migration
+        - approve_canonical_folder_moves
+        - manage_users
+        - approve_sensitive_export
+        - approve_raw_data_export
+        - enable_autonomy
+        - approve_kernel_upgrade
+    user:
+      can:
+        - ask_questions
+        - exploratory_public_research
+        - provide_documents
+        - give_feedback
+        - teach_company_context
+        - request_workproduct
+        - propose_improvement
+      cannot:
+        - change_architecture
+        - install_connector
+        - change_truth_authority
+        - approve_raw_data_export
+        - change_security_policy
+        - enable_autonomy
+        - approve_kernel_upgrade
+
+session_interfaces:
+  default: user
+  startup_prompt: false
+  reset_policy: every_new_session
+  goal_clarity_policy:
+    version: goal-clarity-policy/v1
+    default_behavior: proportional_dialectic_before_execution
+    dialectic_method:
+      question_style: one_at_a_time
+      include_recommended_answer: true
+      resolve_dependencies: one_branch_at_a_time
+      inspect_available_material_first: true
+    applies_to:
+      - answering_questions
+      - producing_workproduct
+      - executing_tools
+      - code_changes
+      - loop_work
+      - headless_work
+    proportionality_axes:
+      - ambiguity
+      - work_extent
+      - compute_cost
+      - reversibility
+      - business_risk
+      - user_time_cost
+    general_rule: "Establish enough shared understanding before execution that the agent can state the goal, output shape, constraints, and success criteria without guessing."
+    levels:
+      quick_low_compute:
+        clarity_threshold: low
+        dialectic_default: none_or_one_turn
+        proceed_when:
+          - intent_is_plain
+          - output_is_small_or_reversible
+          - reasonable_assumptions_are_low_risk
+        before_execution:
+          - make_reasonable_assumptions
+          - ask_only_if_material_ambiguity_blocks_the_work
+      bounded_standard:
+        clarity_threshold: medium
+        dialectic_default: targeted_back_and_forth
+        proceed_when:
+          - goal_and_scope_are_clear
+          - important_constraints_are_known_or_stated_as_assumptions
+          - success_criteria_are_inferable
+        before_execution:
+          - restate_goal_when_helpful
+          - ask_targeted_questions_for_material_gaps
+          - document_assumptions_if_proceeding
+      extended_high_compute:
+        clarity_threshold: high
+        dialectic_default: explicit_specing_until_clear
+        proceed_when:
+          - goal_scope_constraints_and_non_goals_are_clear
+          - output_format_and_acceptance_criteria_are_clear
+          - unresolved_questions_are_non_blocking_or_explicitly_deferred
+        before_execution:
+          - conduct_dialectic_back_and_forth
+          - confirm_success_criteria
+          - identify_non_goals_and_constraints
+          - record_assumptions_and_open_questions
+    escalation_triggers:
+      - large_or_multi_file_change
+      - expensive_or_long_running_compute
+      - irreversible_or_external_side_effect
+      - ambiguous_business_object_or_audience
+      - broad_strategy_or_architecture_request
+      - request_spans_multiple_domains_or_deliverables
+    do_not_over_ask_when:
+      - request_is_trivial
+      - cost_of_clarification_exceeds_cost_of_trying
+      - safe_reversible_default_is_obvious
+    proceed_with_assumptions_allowed: true
+  modes:
+    user:
+      purpose: "Business-facing Oracle interface for questions, documents, feedback, company context, recommendations, and workproduct."
+      tone: business_terms
+      answer_protocol: required_for_material_answers
+      control_plane_boundary: prompt_for_admin_approval
+      admin_prompt: "This requires the Admin interface. Do you approve entering Admin mode for this request?"
+      allow_capabilities:
+        - ask_questions
+        - exploratory_public_research
+        - provide_documents
+        - give_feedback
+        - teach_company_context
+        - request_workproduct
+        - propose_improvement
+      block_capabilities:
+        - change_architecture
+        - install_connector
+        - approve_connector
+        - change_truth_authority
+        - approve_raw_data_export
+        - change_security_policy
+        - update_oracle_config
+        - approve_schema_migration
+        - approve_canonical_folder_moves
+        - manage_users
+        - approve_sensitive_export
+        - enable_autonomy
+        - approve_kernel_upgrade
+    admin:
+      purpose: "Control-plane interface for architecture, config, governance, connectors, schemas, security, autonomy, kernel tooling, and repo structure."
+      tone: control_plane_partner
+      answer_protocol: required_for_material_answers
+      role_gate: policy.require_role
+      allow_capabilities:
+        - "*"
+      block_capabilities:
+
+ontology:
+  entity_subtypes:
+    - company
+    - customer
+    - vendor
+    - competitor
+    - product
+    - facility
+    - legal_entity
+    - term
+  decision_domains:
+    - ownership_strategy
+    - finance
+    - revenue_customers
+    - product_service_delivery
+    - operations
+    - people
+    - legal_compliance
+    - market_competitive_intel
+
+workproduct:
+  routing_lanes:
+    - 00_Ownership-Strategy
+    - 01_Finance
+    - 02_Revenue-Customers
+    - 03_Product-Service-Delivery
+    - 04_Operations
+    - 05_People
+    - 06_Legal-Compliance
+    - 07_Market-Competitive-Intel
+  routing_status: provisional
+
+connectors:
+  default_capture_tier: snapshot
+  known:
+
+derived_memory:
+  contract_version: oracle.derived_memory.v1
+  canonical_authority: oracle
+  answer_boundary: oracle_answer_protocol_only
+  artifact_scope: derived_rebuildable
+  engines:
+    mempalace:
+      enabled: false
+      role: semantic_retrieval
+      command: mempalace
+      export_subdir: derived/mempalace
+      max_default_sensitivity: internal
+      answer_authority: never
+      environment_default: local_deterministic
+      minimized_chars: 500
+    graphify:
+      enabled: false
+      role: knowledge_graph_analysis
+      command: graphify
+      export_subdir: derived/graphify
+      max_default_sensitivity: internal
+      answer_authority: never
+      environment_default: local_deterministic
+      minimized_chars: 500
+
+loops:
+  registry: PLAYBOOKS/loops.md
+  create_loop_rule: "Create a loop when a process benefits from repeated re-evaluation as new information is added, altered, contradicted, or decays."
+
+backup:
+  tier_0_control_plane: admin_policy_needed
+  tier_1_artifacts: admin_policy_needed
+  tier_2_raw_data: admin_decision_required
+  tier_3_secrets: never_plaintext
+
+kernel:
+  tools_version: "0.0.0-unstamped"
+  tools_sha256: "unstamped-at-spawn"
+  manifest: ".kernel-manifest.json"
+
+autonomy:
+  config: "Meta.nosync/Autonomy/autonomy.yml"

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd template for the {{CODENAME}} oracle headless loop harness (macOS).
+
+  This is a TEMPLATE. It is rendered by scheduler/install_schedule.sh, which
+  substitutes:
+    {{CODENAME}}      -> the oracle codename (lowercased for the Label)
+    {{ORACLE_ROOT}}   -> the ABSOLUTE oracle root directory
+    {{PYTHON}}        -> the python3 interpreter to use
+
+  SAFETY:
+    * It is DISABLED by default: RunAtLoad is false and Disabled is true, so
+      even if this file is dropped into LaunchAgents it does nothing until an
+      admin explicitly enables it with `install_schedule.sh --enable`.
+    * It invokes harness.py --once, which itself checks the kill-switch first
+      and runs only allowlisted loops under the autonomy gate. The schedule is
+      inert unless Meta.nosync/Autonomy/autonomy.yml turns autonomy ON.
+    * StandardOut/StandardError go to the oracle's own tmp.nosync so logs stay
+      inside the sovereign tree.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.oracle.{{CODENAME}}.loops</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{PYTHON}}</string>
+        <string>{{ORACLE_ROOT}}/_tools/harness.py</string>
+        <string>--once</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>{{ORACLE_ROOT}}</string>
+
+    <!-- Run once an hour while loaded; harness.py decides what is actually due. -->
+    <key>StartInterval</key>
+    <integer>3600</integer>
+
+    <!-- DISABLED BY DEFAULT. Do not start on load; do not run until enabled. -->
+    <key>RunAtLoad</key>
+    <false/>
+    <key>Disabled</key>
+    <true/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>{{ORACLE_ROOT}}/tmp.nosync/loops.harness.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{ORACLE_ROOT}}/tmp.nosync/loops.harness.err.log</string>
+</dict>
+</plist>

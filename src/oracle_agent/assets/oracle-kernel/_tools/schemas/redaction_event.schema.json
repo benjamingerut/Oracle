@@ -1,0 +1,48 @@
+{
+  "title": "redaction_event",
+  "description": "One append-only ledger row recording a legal/privacy/security redaction or deletion. The content is removed but a safe stub and this metadata event are preserved. Written via ledger.append to Meta.nosync/ledgers/redaction_event.jsonl.",
+  "type": "object",
+  "required": [
+    "drop_id",
+    "ts",
+    "actor",
+    "reason",
+    "approved_by",
+    "action",
+    "stub_location"
+  ],
+  "properties": {
+    "drop_id": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "ts": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    },
+    "actor": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "reason": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "approved_by": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "redact",
+        "delete",
+        "tombstone"
+      ]
+    },
+    "stub_location": {
+      "type": "string",
+      "pattern": "\\S"
+    }
+  }
+}

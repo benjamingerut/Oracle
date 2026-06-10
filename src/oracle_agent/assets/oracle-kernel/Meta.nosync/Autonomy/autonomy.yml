@@ -1,0 +1,61 @@
+# Scoped-autonomy allowlist for the oracle.
+#
+# Consumed by _tools/actions.py and _tools/harness.py. This file is the ONLY
+# thing that grants the oracle permission to act between sessions / headless.
+#
+# DEFAULT STATE: OFF. enabled is false and every allowlist is empty, so
+# harness.py runs ZERO loops and actions.authorize() denies everything. Turning
+# autonomy on is a deliberate, admin-only act: set enabled: true and add the
+# specific loops / lanes / read-only connectors you want the oracle to touch.
+#
+# Order of checks in actions.py for any autonomous action:
+#   1. KILL-SWITCH file present?  -> hard stop, no matter what this file says.
+#   2. enabled: true?             -> if false, deny.
+#   3. action's loop in allowed_loops?      -> if not, deny.
+#   4. target lane in writable_lanes?       -> if not, deny.
+#   5. connector in readonly_connectors?    -> if not, deny (and writes always deny).
+#   6. within blast_radius_caps?            -> if not, deny.
+# Every check that runs appends an action_event row (phase intended, then actual).
+#
+# YAML SUBJECT: block style only. An empty list is written as a bare key (parses
+# to None / OFF), never as [].
+
+enabled: false
+
+# The graduated autonomy ladder (managed by `./oracle admin autonomy promote|
+# demote`, evidence-gated -- see DOCTRINE.md §5):
+#   0  nothing headless (spawn default)
+#   1  deterministic builtin loops may run headless on schedule
+#   2  + dream sessions (headless agent worklist sessions, outputs needs_review)
+#   3  + auto-apply for enumerated low-risk improvement classes
+# Promotion requires an evidence-cited proposal (meta-health drafts it) PLUS
+# the admin enable_autonomy capability. Demotion is automatic and fail-closed.
+level: 0
+
+# Loops the harness may run headless. Empty = none.
+allowed_loops:
+
+# Workproduct lanes the oracle may WRITE to autonomously. Empty = none.
+# Must be a subset of oracle.yml workproduct.routing_lanes.
+writable_lanes:
+
+# Connectors the oracle may PULL from autonomously. READ-ONLY only; a connector
+# that can write is never eligible here. Empty = none.
+readonly_connectors:
+
+# Hard ceilings on a single autonomous run. Exceeding either aborts the run and
+# logs a failure_event. Conservative defaults; raise only with admin approval.
+blast_radius_caps:
+  max_files_per_run: 25
+  max_bytes: 10485760
+
+# Presence of this file = immediate hard stop. Checked FIRST, before enabled.
+kill_switch_file: "Meta.nosync/Autonomy/KILL-SWITCH"
+
+# Dream sessions (level 2+): the scheduler convenes the operating agent on a
+# bounded charter (Review Inbox top-N + due worklists). command is the agent
+# harness invocation (e.g. "claude -p"); empty = dream refuses (unconfigured).
+dream:
+  command:
+  max_minutes: 30
+  max_inbox_items: 10

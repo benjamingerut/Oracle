@@ -1,0 +1,77 @@
+# Connector manifest template. Copy to Connectors/<id>/<id>.manifest.yaml and
+# fill in. Block-style YAML only: one '- item' per line; no anchors, aliases,
+# tags, flow ([] / {}), or multi-doc. Validated against
+# _tools/schemas/connector.schema.json by oracle_lint.
+#
+# OPTIONAL fields are OMITTED here rather than left as a bare 'key:' (a bare key
+# parses to null, and the schema types these fields, so a null would fail lint).
+# Uncomment + fill an optional field only when you have a real value for it.
+# The fields below are the REQUIRED set.
+
+# id MUST match the folder name and ^[a-z0-9-]+$.
+id: connector-id
+
+# system: the human name of the source system (non-empty).
+system: unknown
+
+# status: planned | active | degraded | broken | deprecated
+status: planned
+
+# access_mode: api | mcp | cli | file_drop | database | manual | repo | folder
+access_mode: manual
+
+# locality: where the bytes physically live.
+#   external_only | snapshot_local | mirror_local
+locality: external_only
+
+# capture_tier: how much we copy locally.
+#   manifest_only | snapshot | mirror
+capture_tier: manifest_only
+
+# auth: reference variable NAMES only; never write secret values.
+# Add 'vars:' as a block list of env-var names when the source needs credentials:
+#   vars:
+#     - FOO_API_TOKEN
+auth:
+  method: unknown
+
+# permissions: read_only | read_write | unknown
+permissions: unknown
+
+# freshness: the SLA the runtime checks freshness(ctx) against.
+# Add when known:
+#   last_verified: 2026-01-01
+#   expected_decay_days: 30
+freshness:
+  class: unknown
+
+# OPTIONAL fields below -- omit until you have real values. Reference shapes:
+#
+# schema:                      # row/object grain + where the schema map lives
+#   map_location: Connectors/<id>/schema.md
+#   key_objects:
+#     - account
+#   join_keys:
+#     - account_id
+#
+# authoritative_for:           # business objects this source is PRIMARY for
+#   - <object>
+# corroborates:                # objects it only corroborates
+#   - <object>
+# cannot_prove:                # what it cannot establish
+#   - <object>
+#
+# forbidden_uses:              # forbidden shortcuts
+#   - <use>
+# biases:                      # known blind spots / incentive distortions
+#   - <bias>
+#
+# health_check:                # what health(ctx) verifies, and how often
+#   cadence: weekly
+#   checks:
+#     - access works
+#
+# schema_refresh:              # whether/how often to re-probe the source schema
+#   enabled: false
+#   cadence: monthly
+#   remote_probe: false

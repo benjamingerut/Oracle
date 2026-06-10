@@ -1,0 +1,60 @@
+# =============================================================================
+# Oracle kernel .gitignore
+#
+# Policy (design principle: "Ledgers are tracked AND classified"):
+#   * Confidential/local stores live under *.nosync/ and are NOT committed.
+#   * EXCEPT the two append-only stores that ARE institutional memory and must
+#     be backed up + recoverable from git: the Meta ledgers and the Workproduct
+#     registries. These are negate-tracked back in below.
+#   * Those tracked ledgers/registries carry METADATA ONLY (drop_id, ts, actor,
+#     classification, destination, ...), never secret payloads — see SECURITY.md
+#     ("ledger-tracking sensitivity statement") and the export_event schema
+#     (no payload/content field). A lint check enforces this.
+#   * Real secrets live ONLY in .env.nosync (git-ignored) and are read via
+#     load-env.sh; .env.example carries variable NAMES only.
+#
+# git semantics note: to un-ignore a path inside an ignored directory you must
+# first re-include each parent directory, then the file glob. That is why each
+# negate block re-includes the directory chain before the *.jsonl / REGISTRY.md.
+# =============================================================================
+
+# --- Local / confidential stores (ignored by default) -----------------------
+*.nosync/
+*.nosync
+
+# --- Tracked: Meta append-only ledgers (metadata only) -----------------------
+# export_event.jsonl, redaction_event.jsonl, action_event.jsonl, loop_runs.jsonl
+!Meta.nosync/
+Meta.nosync/*
+!Meta.nosync/ledgers/
+!Meta.nosync/ledgers/*.jsonl
+
+# --- Tracked: Workproduct artifact registries --------------------------------
+# Human-readable REGISTRY.md plus the machine .registry.jsonl drop ledgers.
+!Workproduct.nosync/
+Workproduct.nosync/*
+!Workproduct.nosync/_INPUT/
+!Workproduct.nosync/_OUTPUT/
+!Workproduct.nosync/_INPUT/REGISTRY.md
+!Workproduct.nosync/_OUTPUT/REGISTRY.md
+!Workproduct.nosync/_INPUT/.registry.jsonl
+!Workproduct.nosync/_OUTPUT/.registry.jsonl
+
+# --- Secrets: NEVER committed ------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- Setup scratch -----------------------------------------------------------
+.setup-session/
+tmp.nosync/
+
+# --- Derived / rebuildable ---------------------------------------------------
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# --- Local OS / editor noise -------------------------------------------------
+.DS_Store
+*.swp
+*~

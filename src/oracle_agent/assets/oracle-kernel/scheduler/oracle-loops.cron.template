@@ -1,0 +1,23 @@
+# cron template for the {{CODENAME}} oracle headless loop harness (Linux).
+#
+# This is a TEMPLATE. It is rendered by scheduler/install_schedule.sh, which
+# substitutes:
+#   {{CODENAME}}      -> the oracle codename
+#   {{ORACLE_ROOT}}   -> the ABSOLUTE oracle root directory
+#   {{PYTHON}}        -> the python3 interpreter to use
+#
+# SAFETY:
+#   * DISABLED BY DEFAULT. The active schedule line below is COMMENTED OUT with
+#     a leading '#'. install_schedule.sh installs it commented unless run with
+#     --enable, in which case it uncomments exactly this one line. Without
+#     --enable nothing is ever scheduled.
+#   * harness.py --once checks the kill-switch first and runs only allowlisted
+#     loops under the autonomy gate, so the schedule is inert until
+#     Meta.nosync/Autonomy/autonomy.yml turns autonomy ON.
+#   * Output is redirected into the oracle's own tmp.nosync so logs stay inside
+#     the sovereign tree.
+#
+# Schedule: top of every hour; harness.py decides what is actually due.
+#
+# m h dom mon dow command
+#0 * * * * cd {{ORACLE_ROOT}} && {{PYTHON}} {{ORACLE_ROOT}}/_tools/harness.py --once >> {{ORACLE_ROOT}}/tmp.nosync/loops.harness.cron.log 2>&1

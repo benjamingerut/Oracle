@@ -1,0 +1,186 @@
+{
+  "title": "connector_manifest",
+  "description": "A connector manifest (Connectors/<id>/<id>.manifest.yaml). locality says where the bytes physically live; capture_tier says how much we copy. Runtime contract: Connector.pull/probe/freshness/health.",
+  "type": "object",
+  "required": [
+    "id",
+    "system",
+    "status",
+    "access_mode",
+    "locality",
+    "capture_tier",
+    "auth",
+    "permissions",
+    "freshness"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$"
+    },
+    "system": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "planned",
+        "active",
+        "degraded",
+        "broken",
+        "deprecated"
+      ]
+    },
+    "access_mode": {
+      "type": "string",
+      "enum": [
+        "api",
+        "mcp",
+        "cli",
+        "file_drop",
+        "database",
+        "manual",
+        "repo",
+        "folder"
+      ]
+    },
+    "locality": {
+      "type": "string",
+      "enum": [
+        "external_only",
+        "snapshot_local",
+        "mirror_local"
+      ]
+    },
+    "capture_tier": {
+      "type": "string",
+      "enum": [
+        "manifest_only",
+        "snapshot",
+        "mirror"
+      ]
+    },
+    "auth": {
+      "type": "object",
+      "required": [
+        "method"
+      ],
+      "properties": {
+        "method": {
+          "type": "string"
+        },
+        "vars": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "permissions": {
+      "type": "string",
+      "enum": [
+        "read_only",
+        "read_write",
+        "unknown"
+      ]
+    },
+    "freshness": {
+      "type": "object",
+      "required": [
+        "class"
+      ],
+      "properties": {
+        "class": {
+          "type": "string"
+        },
+        "last_verified": {
+          "type": "string"
+        },
+        "expected_decay_days": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "schema": {
+      "type": "object",
+      "properties": {
+        "map_location": {
+          "type": "string"
+        },
+        "key_objects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "join_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "authoritative_for": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "corroborates": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "cannot_prove": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "forbidden_uses": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "biases": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "health_check": {
+      "type": "object",
+      "properties": {
+        "cadence": {
+          "type": "string"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "schema_refresh": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "cadence": {
+          "type": "string"
+        },
+        "remote_probe": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

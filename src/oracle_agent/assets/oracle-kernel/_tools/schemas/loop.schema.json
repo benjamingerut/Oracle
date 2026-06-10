@@ -1,0 +1,225 @@
+{
+  "title": "loop",
+  "description": "A recurring improvement process. This schema validates ACTIVE loop records: runner, last_run, and next_review are required so an active loop is a real runnable record, not an inert template. oracle_lint applies this schema to every status==active loop and FAILS any that lacks a runner or last_run. Proposed/retired loops are validated against the looser note_frontmatter base only.",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "title",
+    "created",
+    "updated",
+    "sensitivity",
+    "status",
+    "tags",
+    "cadence",
+    "runner",
+    "last_run",
+    "next_review",
+    "trigger_conditions"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "loop"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "created": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    },
+    "updated": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": [
+        "public",
+        "internal",
+        "confidential",
+        "restricted",
+        "secret"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "proposed",
+        "retired",
+        "paused"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "actor": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "cadence": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "runner": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "last_run": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    },
+    "next_review": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    },
+    "trigger_conditions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "model_policy": {
+      "type": "object",
+      "required": [
+        "version",
+        "applies_to",
+        "deterministic_code_first",
+        "default_model_selection",
+        "premium_model_use",
+        "multi_agent_passes",
+        "rationale",
+        "forbid_expensive_default_model"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "enum": [
+            "loop-model-policy/v1"
+          ]
+        },
+        "applies_to": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "scheduled",
+              "headless",
+              "agent-worklist"
+            ]
+          }
+        },
+        "deterministic_code_first": {
+          "type": "boolean"
+        },
+        "default_model_selection": {
+          "type": "string",
+          "enum": [
+            "cheapest_fully_capable"
+          ]
+        },
+        "premium_model_use": {
+          "type": "object",
+          "required": [
+            "allowed_when_any",
+            "rationale_required"
+          ],
+          "properties": {
+            "allowed_when_any": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "explicit_admin_approval",
+                  "documented_on_demand_complexity"
+                ]
+              }
+            },
+            "rationale_required": {
+              "type": "boolean"
+            }
+          }
+        },
+        "multi_agent_passes": {
+          "type": "object",
+          "required": [
+            "allowed_when_any",
+            "rationale_required"
+          ],
+          "properties": {
+            "allowed_when_any": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "explicit_admin_approval",
+                  "documented_on_demand_complexity"
+                ]
+              }
+            },
+            "rationale_required": {
+              "type": "boolean"
+            }
+          }
+        },
+        "rationale": {
+          "type": "object",
+          "required": [
+            "required_for",
+            "record_in"
+          ],
+          "properties": {
+            "required_for": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "premium_model_use",
+                  "multi_agent_passes"
+                ]
+              }
+            },
+            "record_in": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "loop_completion_notes",
+                  "durable_run_artifact"
+                ]
+              }
+            }
+          }
+        },
+        "forbid_expensive_default_model": {
+          "type": "boolean"
+        }
+      }
+    },
+    "health_signal": {
+      "type": "string"
+    },
+    "supersedes": {
+      "type": "string"
+    },
+    "superseded_by": {
+      "type": "string"
+    },
+    "paused_reason": {
+      "type": "string"
+    },
+    "paused_on": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    }
+  }
+}
