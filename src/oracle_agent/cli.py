@@ -4,6 +4,7 @@
     oracle spawn --root P --company-name N --admin-name A [--codename C]
     oracle instances [list|add NAME ROOT|remove NAME|default NAME]
     oracle chat [NAME] [-m MSG] [--max-sensitivity S]
+    oracle curate [NAME] [--prepare-only] [--limit N]   work the Review Inbox
     oracle serve [--once]
     oracle doctor [NAME]
     oracle model [show|set --provider P --model M --base-url U --key-env E]
@@ -38,7 +39,8 @@ def main(argv: list[str] | None = None) -> int:
     cmd, rest = args[0], args[1:]
     handler = {
         "setup": _cmd_setup, "spawn": _cmd_spawn, "instances": _cmd_instances,
-        "chat": _cmd_chat, "serve": _cmd_serve, "doctor": _cmd_doctor,
+        "chat": _cmd_chat, "curate": _cmd_curate, "serve": _cmd_serve,
+        "doctor": _cmd_doctor,
         "model": _cmd_model, "kernel": _cmd_kernel, "version": _cmd_version,
         "upgrade": _cmd_upgrade, "backup": _cmd_backup, "restore": _cmd_restore,
         "grounding-report": _cmd_grounding_report,
@@ -236,6 +238,26 @@ def _log_grounding_override(root: Path, instance: str, mode: str) -> None:
     except OSError as exc:
         print(f"oracle: grounding-override ledger write failed: "
               f"{type(exc).__name__}", file=sys.stderr)
+
+
+def _cmd_curate(rest: list[str]) -> int:
+    """Work the Review Inbox via the fixed kind->verb curator (P5-T7b).
+
+    The curator lists the ranked queue, prepares a pinned resolution per item,
+    and applies through existing kernel verbs only -- autonomy-gated, ledgered,
+    NEVER executing an item's free-text action string.
+    """
+    import argparse
+    ap = argparse.ArgumentParser(prog="oracle curate")
+    ap.add_argument("name", nargs="?")
+    ap.add_argument("--prepare-only", action="store_true",
+                    help="prepare + list dispositions; never apply")
+    ap.add_argument("--limit", type=int, default=0)
+    ns = ap.parse_args(rest)
+    cfg = config.load_config()
+    name, root = resolve_instance(cfg, ns.name)
+    from . import curator
+    return curator.curate(root, apply=not ns.prepare_only, limit=ns.limit)
 
 
 def _cmd_serve(rest: list[str]) -> int:

@@ -148,6 +148,124 @@ def tick_instance(name: str, root: Path, timeout: float = 600.0,
     return TickResult(name, proc.returncode, False, out)
 
 
+# --------------------------------------------------------------------------- #
+# dream convocation (P5-T7a / P5S-5): the scheduler convenes a gated dream session
+# --------------------------------------------------------------------------- #
+def autonomy_level(root: Path) -> int:
+    """Cheap read of ``Meta.nosync/Autonomy/autonomy.yml`` ``level:`` (text scan).
+
+    No import, no YAML lib (mirrors ``autonomy_enabled``). Missing/garbled reads
+    as 0 (fail-closed) -- the authoritative level-2 gate is still the kernel's
+    ``dream.session`` authorize; this is only the scheduler's cheap skip check.
+    """
+    p = Path(root) / "Meta.nosync" / "Autonomy" / "autonomy.yml"
+    if not p.exists():
+        return 0
+    try:
+        for raw in p.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if line.startswith("#"):
+                continue
+            if line.startswith("level:"):
+                val = line.split(":", 1)[1].strip().strip('"').strip("'")
+                try:
+                    return int(val)
+                except ValueError:
+                    return 0
+    except OSError:
+        return 0
+    return 0
+
+
+def _gateway_token_envs(cfg: dict) -> list[str]:
+    """Every ``gateway.*.token_env`` (+ the email user/pass + slack signing) name.
+
+    These are the gateway credentials the dream narrow-env MUST scrub (P5S-4):
+    gateway tokens can never leak into an external agent harness. Pulled from
+    shell config so the kernel does not need to know the surface layout.
+    """
+    names: list[str] = []
+    gw = (cfg or {}).get("gateway") or {}
+    if not isinstance(gw, dict):
+        return names
+    for surface in gw.values():
+        if not isinstance(surface, dict):
+            continue
+        for key in ("token_env", "signing_secret_env", "user_env", "pass_env"):
+            v = surface.get(key)
+            if v and str(v) not in names:
+                names.append(str(v))
+    return names
+
+
+def _provider_api_key_env(cfg: dict) -> str:
+    """The ONE provider credential env-var name to keep in the dream env (P5S-4)."""
+    prov = (cfg or {}).get("provider") or {}
+    if isinstance(prov, dict):
+        name = prov.get("api_key_env")
+        if name:
+            return str(name)
+    return "ORACLE_LLM_API_KEY"
+
+
+def dream_instance(name: str, root: Path, cfg: dict, timeout: float = 1800.0,
+                   logger=None) -> TickResult:
+    """Convene ONE gated dream session for ``root`` under its per-root lock (P5S-5).
+
+    Mirrors ``tick_instance`` discipline:
+
+      * autonomy-OFF or level<2 -> SKIP (no harness spawn). The kernel's
+        ``dream.session`` authorize is the authoritative level-2 gate; this cheap
+        check just avoids spawning a process that would only be denied.
+      * per-root ``LOCK_NB`` (bounded retry) -> a busy root SKIPS this convocation
+        rather than stalling the daemon (the A4/P1S-13 discipline).
+      * the dream subprocess runs under the NARROW-ENV contract (P5S-4): the
+        kernel ``harness.py --dream`` is told the one provider ``api_key_env`` to
+        keep and every gateway ``token_env`` to scrub (passed as argv); the scrub
+        of the harness's OWN spawn env is the standard ``_scrubbed_env`` (the
+        narrow re-inclusion happens INSIDE run_dream for the agent child only).
+    """
+    _log = logger or (lambda *a: None)
+    root = Path(root)
+    if not (root / "oracle.yml").exists():
+        return TickResult(name, 2, False, "root missing oracle.yml")
+    if not autonomy_enabled(root):
+        return TickResult(name, 0, True, "autonomy off; dream not convened")
+    if autonomy_level(root) < 2:
+        return TickResult(name, 0, True, "autonomy level<2; dream not convened")
+    harness = root / "_tools" / "harness.py"
+    if not harness.exists():
+        return TickResult(name, 2, False, "harness.py missing")
+
+    argv = [sys.executable, str(harness), "--root", str(root), "--dream",
+            "--api-key-env", _provider_api_key_env(cfg)]
+    for tok in _gateway_token_envs(cfg):
+        argv += ["--scrub-token-env", tok]
+    try:
+        with root_lock(name, nb=True, logger=_log):
+            proc = subprocess.run(
+                argv, cwd=str(root), capture_output=True, text=True,
+                timeout=timeout, env=_scrubbed_env(),
+            )
+    except BlockingIOError:
+        _log(f"scheduler: {name}: root lock busy; skipping this dream convocation")
+        return TickResult(name, 0, True, "root lock busy; dream skipped")
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    return TickResult(name, proc.returncode, False, out)
+
+
+def dream_all(instances: dict[str, Path], cfg: dict, logger=None) -> list[TickResult]:
+    results = []
+    for name, root in instances.items():
+        try:
+            results.append(dream_instance(name, root, cfg, logger=logger))
+        except subprocess.TimeoutExpired:
+            results.append(TickResult(name, 124, False, "dream convocation timed out"))
+        except Exception as exc:  # never let one root kill the scheduler
+            results.append(TickResult(name, 1, False, f"{type(exc).__name__}: {exc}"))
+    return results
+
+
 def tick_all(instances: dict[str, Path], logger=None) -> list[TickResult]:
     results = []
     for name, root in instances.items():

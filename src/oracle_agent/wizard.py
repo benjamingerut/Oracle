@@ -396,6 +396,138 @@ def connector_step(root: Path, name: str, *, stream_in=None, stream_out=None,
     _first_pull_and_ingest(root, name, cid, stream_out=out)
 
 
+def _bootstrap_admin_name(root: Path) -> str:
+    """Best-effort read of the spawned bootstrap admin name from oracle.yml.
+
+    Used as the default ``--actor`` for the admin-only set-dream verb. A plain
+    text scan (stdlib only, no YAML lib); falls back to 'Admin' if unreadable.
+    """
+    p = Path(root) / "oracle.yml"
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return "Admin"
+    in_admin = False
+    for raw in lines:
+        s = raw.strip()
+        if s.startswith("bootstrap_admin:"):
+            in_admin = True
+            continue
+        if in_admin:
+            if s.startswith("name:"):
+                return s.split(":", 1)[1].strip().strip('"').strip("'") or "Admin"
+            # leave the block on the next dedented top-level-ish key
+            if s and not raw.startswith(" "):
+                break
+    return "Admin"
+
+
+def dream_step(root: Path, name: str, *, stream_in=None, stream_out=None) -> None:
+    """Optional operating-agent (dream actuator) wizard step (P5-T7a #1).
+
+    Configures the headless dream actuator -- ``dream.command`` (e.g. ``claude
+    -p``), ``dream.max_minutes``, ``dream.max_inbox_items`` -- EXCLUSIVELY through
+    the constrained ``oracle admin autonomy set-dream`` kernel verb (P5S-7). The
+    wizard NEVER writes ``autonomy.yml`` raw: that file also carries
+    ``level``/caps/kill-switch, and ``dream.command`` is arbitrary argv the
+    harness executes. The verb touches ONLY the ``dream.*`` subtree and is
+    admin-only.
+
+    The wizard CONFIGURES the actuator; it never raises the autonomy level
+    (promotion stays an earned, admin-approved kernel flow). After configuring,
+    it prints the level-2 gate status + the harness dry-run verdict so the
+    operator sees exactly why dream sessions are or are not yet live.
+    """
+    out = stream_out or sys.stdout
+
+    want = _ask("Configure the operating agent (headless dream actuator) now? (y/N)",
+                "N", stream_in=stream_in, stream_out=stream_out).lower()
+    if not want.startswith("y"):
+        out.write("  note: no dream actuator configured. Run setup again any time.\n")
+        return
+
+    out.write(
+        "  The dream actuator is the agent-harness command the scheduler runs to\n"
+        "  convene a bounded, autonomy-gated review session. It is arbitrary argv,\n"
+        "  so it is written ONLY through the admin-only set-dream kernel verb (it\n"
+        "  can never touch the autonomy level or caps).\n"
+    )
+    command = _ask("Dream command (agent harness invocation, e.g. 'claude -p'; "
+                   "blank to skip)", "",
+                   stream_in=stream_in, stream_out=stream_out).strip()
+    if not command:
+        out.write("  note: no dream command entered — skipped.\n")
+        return
+    minutes = _ask("Session timeout in minutes", "30",
+                   stream_in=stream_in, stream_out=stream_out).strip() or "30"
+    items = _ask("Max Review-Inbox items per session", "10",
+                 stream_in=stream_in, stream_out=stream_out).strip() or "10"
+    actor = _bootstrap_admin_name(root)
+
+    # Write the dream.* subtree via the kernel verb ONLY (never a raw autonomy.yml
+    # write). admin autonomy set-dream -> actions module set-dream subcommand.
+    argv = ["admin", "autonomy", "set-dream",
+            "--actor", actor, "--role", "admin",
+            "--command", command,
+            "--max-minutes", minutes,
+            "--max-inbox-items", items]
+    rc, sout, serr = _kernel(root, argv)
+    if rc != 0:
+        out.write(f"  warning: set-dream verb failed: {(serr or sout).strip()[:200]}\n")
+        return
+    out.write(f"  dream actuator configured via the set-dream verb (command='{command}').\n")
+
+    # Show the level-2 gate status + the harness dry-run verdict (P5-T7a #2 echo).
+    lvl = _autonomy_level(root)
+    if lvl < 2:
+        out.write(
+            f"  note: autonomy is at level {lvl}. Dream sessions require LEVEL 2 and\n"
+            "        remain BLOCKED until you earn + approve a promotion\n"
+            "        (oracle admin autonomy promote). Configuring the command does\n"
+            "        not raise the level — that stays an earned, admin-approved flow.\n"
+        )
+    else:
+        out.write("  autonomy is at level >=2: dream sessions are gate-eligible.\n")
+    rc, dout, derr = _kernel(root, ["harness", "--root", str(root), "--dream", "--dry-run"])
+    verdict = _parse_dream_dryrun(dout)
+    if verdict:
+        out.write(f"  dry-run verdict: {verdict}\n")
+
+
+def _autonomy_level(root: Path) -> int:
+    """Cheap text-scan of the autonomy level (mirrors scheduler.autonomy_level)."""
+    p = Path(root) / "Meta.nosync" / "Autonomy" / "autonomy.yml"
+    if not p.exists():
+        return 0
+    try:
+        for raw in p.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if line.startswith("#"):
+                continue
+            if line.startswith("level:"):
+                try:
+                    return int(line.split(":", 1)[1].strip().strip('"').strip("'"))
+                except ValueError:
+                    return 0
+    except OSError:
+        return 0
+    return 0
+
+
+def _parse_dream_dryrun(text: str) -> str:
+    """Pull the verdict+reason out of a ``harness --dream --dry-run`` JSON report."""
+    import json
+    try:
+        data = json.loads((text or "").strip())
+    except (json.JSONDecodeError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    verdict = data.get("verdict") or data.get("status") or ""
+    reason = data.get("reason") or ""
+    return f"{verdict} ({reason})" if reason else str(verdict)
+
+
 def _parse_pull_payload(text: str):
     import json
     text = (text or "").strip()
@@ -582,6 +714,15 @@ def run(*, stream_in=None, stream_out=None, getpass_fn=getpass.getpass) -> int:
                        getpass_fn=getpass_fn)
     except Exception as exc:  # a connector misstep never aborts setup
         out.write(f"  warning: connector step error (skipped): {exc}\n")
+
+    # optional operating-agent step (P5-T7a #1) -- configure the dream actuator
+    # via the set-dream kernel verb ONLY. Fully skippable + idempotent; never
+    # raises the autonomy level.
+    out.write("\nOperating agent (dream actuator)\n--------------------------------\n")
+    try:
+        dream_step(root, name, stream_in=stream_in, stream_out=stream_out)
+    except Exception as exc:  # a dream-step misstep never aborts setup
+        out.write(f"  warning: dream step error (skipped): {exc}\n")
 
     out.write("\nRunning doctor ...\n\n")
     rep = doctor.run(name)

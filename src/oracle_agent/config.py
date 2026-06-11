@@ -88,7 +88,14 @@ DEFAULT_CONFIG: dict = {
         # call site exists ONLY on the local-OBSERVE branch of the loop.
         "grounding_shadow": False,
     },
-    "serve": {"tick_seconds": 300},
+    # Phase 5 (P5-T7a / P5S-5): the serve daemon's loop-tick cadence plus the
+    # OPT-IN dream-convocation cadence. ``dream_tick_seconds`` default 0 ==
+    # convocation OFF: a level-2 root still convenes NOTHING until the operator
+    # sets a cadence here. This key only controls TIMING -- every convocation is
+    # still independently autonomy-gated (level-2 ``dream.session`` authorize) and
+    # per-root LOCK_NB-skipped in the kernel/scheduler, so it is intentionally NOT
+    # a SECURITY_KEY (it can never widen access; the safe direction is off).
+    "serve": {"tick_seconds": 300, "dream_tick_seconds": 0},
     "gateway": {
         "telegram": {
             "enabled": False,

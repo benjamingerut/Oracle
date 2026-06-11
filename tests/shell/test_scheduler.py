@@ -179,6 +179,162 @@ def test_flock_serializes_two_concurrent_run_verbs(profile):
     assert timeline == expected
 
 
+# ---------------------------------------------------------------------------
+# P5-T7a / P5S-5: scheduler dream convocation (cadence, gate, LOCK_NB, narrow-env)
+# ---------------------------------------------------------------------------
+def _write_autonomy(root: Path, *, enabled: bool, level: int) -> None:
+    d = root / "Meta.nosync" / "Autonomy"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "autonomy.yml").write_text(
+        f"enabled: {'true' if enabled else 'false'}\n"
+        f"level: {level}\n"
+        "allowed_loops:\n"
+        "writable_lanes:\n"
+        "readonly_connectors:\n"
+        "blast_radius_caps:\n"
+        "  max_files_per_run: 50\n"
+        "  max_bytes: 10000000\n"
+        'kill_switch_file: "Meta.nosync/Autonomy/KILL-SWITCH"\n'
+        "dream:\n"
+        '  command: "true"\n'
+        "  max_minutes: 1\n"
+        "  max_inbox_items: 5\n",
+        encoding="utf-8",
+    )
+
+
+def test_autonomy_level_reads_level(profile, tmp_path):
+    root = tmp_path / "r"
+    (root / "oracle.yml").parent.mkdir(parents=True, exist_ok=True)
+    _write_autonomy(root, enabled=True, level=2)
+    assert scheduler.autonomy_level(root) == 2
+    _write_autonomy(root, enabled=True, level=0)
+    assert scheduler.autonomy_level(root) == 0
+    # missing file -> 0 (fail-closed).
+    assert scheduler.autonomy_level(tmp_path / "nope") == 0
+
+
+def test_dream_instance_skips_when_autonomy_off(profile, spawned_root):
+    # spawned_root ships autonomy OFF.
+    res = scheduler.dream_instance("t", spawned_root, {})
+    assert res.skipped is True
+    assert res.rc == 0
+    assert "autonomy off" in res.output
+
+
+def test_dream_instance_skips_below_level_2(profile, spawned_root, monkeypatch):
+    # autonomy ON but level<2 -> the level-2 gate skips the convocation.
+    monkeypatch.setattr(scheduler, "autonomy_enabled", lambda r: True)
+    monkeypatch.setattr(scheduler, "autonomy_level", lambda r: 1)
+    res = scheduler.dream_instance("t", spawned_root, {})
+    assert res.skipped is True
+    assert "level<2" in res.output
+
+
+def test_dream_instance_missing_root(profile, tmp_path):
+    res = scheduler.dream_instance("t", tmp_path / "nope", {})
+    assert res.rc == 2
+    assert res.skipped is False
+
+
+def test_dream_instance_skips_when_root_locked_nb(profile, spawned_root, monkeypatch):
+    """A busy root SKIPS the convocation (LOCK_NB), never stalls the daemon."""
+    monkeypatch.setattr(scheduler, "autonomy_enabled", lambda r: True)
+    monkeypatch.setattr(scheduler, "autonomy_level", lambda r: 2)
+    orig_max, orig_step = scheduler._LOCK_RETRY_MAX, scheduler._LOCK_RETRY_STEP
+    scheduler._LOCK_RETRY_MAX, scheduler._LOCK_RETRY_STEP = 0.05, 0.01
+    try:
+        ready, release = threading.Event(), threading.Event()
+
+        def holder():
+            with scheduler.root_lock("t"):
+                ready.set()
+                release.wait(timeout=5.0)
+
+        th = threading.Thread(target=holder, daemon=True)
+        th.start()
+        ready.wait(timeout=2.0)
+        try:
+            res = scheduler.dream_instance("t", spawned_root, {})
+        finally:
+            release.set()
+            th.join(timeout=2.0)
+        assert res.skipped is True
+        assert "lock busy" in res.output
+    finally:
+        scheduler._LOCK_RETRY_MAX, scheduler._LOCK_RETRY_STEP = orig_max, orig_step
+
+
+def test_dream_instance_passes_narrow_env_argv(profile, spawned_root, monkeypatch):
+    """The convocation tells the kernel the one credential to keep + tokens to scrub.
+
+    Asserts the narrow-env contract is wired through argv: --api-key-env names the
+    provider credential, --scrub-token-env names every gateway token_env.
+    """
+    monkeypatch.setattr(scheduler, "autonomy_enabled", lambda r: True)
+    monkeypatch.setattr(scheduler, "autonomy_level", lambda r: 2)
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs.get("env")
+
+        class _P:
+            returncode = 0
+            stdout = "{}"
+            stderr = ""
+        return _P()
+
+    monkeypatch.setattr(scheduler.subprocess, "run", fake_run)
+    cfg = {
+        "provider": {"api_key_env": "ORACLE_LLM_API_KEY"},
+        "gateway": {
+            "telegram": {"token_env": "ORACLE_TELEGRAM_TOKEN"},
+            "slack": {"token_env": "ORACLE_SLACK_TOKEN",
+                      "signing_secret_env": "ORACLE_SLACK_SIGNING_SECRET"},
+            "email": {"user_env": "ORACLE_EMAIL_USER", "pass_env": "ORACLE_EMAIL_PASS"},
+            "http": {"token_env": "ORACLE_HTTP_TOKEN"},
+        },
+    }
+    res = scheduler.dream_instance("t", spawned_root, cfg)
+    assert res.rc == 0
+    argv = captured["argv"]
+    assert "--dream" in argv
+    # the ONE provider credential is named to keep.
+    i = argv.index("--api-key-env")
+    assert argv[i + 1] == "ORACLE_LLM_API_KEY"
+    # every gateway token_env is named to scrub.
+    scrubbed = [argv[j + 1] for j, a in enumerate(argv) if a == "--scrub-token-env"]
+    for tok in ("ORACLE_TELEGRAM_TOKEN", "ORACLE_SLACK_TOKEN",
+                "ORACLE_SLACK_SIGNING_SECRET", "ORACLE_EMAIL_USER",
+                "ORACLE_EMAIL_PASS", "ORACLE_HTTP_TOKEN"):
+        assert tok in scrubbed
+    # the harness itself is spawned under the standard scrubbed env (no secrets).
+    assert captured["env"] is not None
+    assert not any(k.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD"))
+                   for k in captured["env"])
+
+
+def test_gateway_token_envs_collected(profile):
+    cfg = {"gateway": {
+        "telegram": {"token_env": "ORACLE_TELEGRAM_TOKEN"},
+        "http": {"token_env": "ORACLE_HTTP_TOKEN"},
+        "email": {"user_env": "ORACLE_EMAIL_USER", "pass_env": "ORACLE_EMAIL_PASS"},
+    }}
+    names = scheduler._gateway_token_envs(cfg)
+    assert "ORACLE_TELEGRAM_TOKEN" in names
+    assert "ORACLE_HTTP_TOKEN" in names
+    assert "ORACLE_EMAIL_USER" in names and "ORACLE_EMAIL_PASS" in names
+
+
+def test_dream_all_isolated_failure(profile, spawned_root, tmp_path):
+    insts = {"good": spawned_root, "bad": tmp_path / "missing"}
+    results = {r.instance: r for r in scheduler.dream_all(insts, {})}
+    # good is autonomy-off -> skipped clean; bad is a structural miss.
+    assert results["good"].rc == 0
+    assert results["bad"].rc == 2
+
+
 # S2 #8 -- serve log rotation
 def test_serve_log_rotation(profile, tmp_path, monkeypatch):
     """serve.log rotates to .1 when it exceeds 5 MiB."""

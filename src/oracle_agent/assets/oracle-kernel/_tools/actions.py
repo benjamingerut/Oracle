@@ -884,6 +884,83 @@ def promote(root: Path, *, actor: str, role: str = "admin",
     return {"level": new_level, "drop_id": drop_id, "proposal": proposal.get("drop_id")}
 
 
+# The ONLY autonomy.yml keys the constrained set-dream verb may touch. Anything
+# outside this subtree (level, enabled, caps, allowlists, kill_switch_file) is
+# preserved verbatim from the loaded config -- set-dream can never widen autonomy
+# (P5S-7). ``command`` is arbitrary argv executed by the harness, so this verb is
+# admin-only (policy.require_role enable_autonomy) and is NEVER model-reachable
+# (absent from every tool schema on every surface).
+DREAM_SUBTREE_KEYS = ("command", "max_minutes", "max_inbox_items")
+
+
+def set_dream(root: Path, *, actor: str, role: str = "admin",
+              command: Optional[str] = None,
+              max_minutes: Optional[int] = None,
+              max_inbox_items: Optional[int] = None,
+              now: Optional[datetime] = None) -> dict:
+    """Update ONLY the ``dream.*`` subtree of autonomy.yml (P5S-7).
+
+    The wizard configures the dream actuator through THIS verb, never a raw
+    autonomy.yml write: ``dream.command`` is arbitrary argv the harness executes
+    (code execution for whoever writes the file) and the same file carries
+    ``level``/caps/kill-switch state. So this verb:
+
+      * is control-plane, admin-only -- gated by ``policy.require_role`` for the
+        ``enable_autonomy`` capability (a missing policy module DENIES, never
+        waves through), exactly like ``promote``;
+      * mutates ONLY ``command``/``max_minutes``/``max_inbox_items`` and PRESERVES
+        ``level``, ``enabled``, ``blast_radius_caps``, allowlists, and
+        ``kill_switch_file`` verbatim from the loaded config -- it can never raise
+        the autonomy level or relax a cap;
+      * is NEVER exposed on any model/gateway tool schema (control-plane stays
+        human-only on the local attended surface).
+
+    ``None`` for a field leaves the current value untouched (partial update);
+    a passed value overwrites it. Returns the new dream subtree + the config path.
+    """
+    root = Path(root)
+    policy = _import_policy()
+    if policy is None:
+        raise ActionDenied("policy module unavailable; cannot verify enable_autonomy")
+    policy.require_role(actor, role, "enable_autonomy", root=root)
+
+    autonomy = Autonomy.load(root)
+    # Start from the existing dream subtree so an unspecified field is preserved.
+    dream = dict(autonomy.dream or {})
+    if command is not None:
+        dream["command"] = str(command).strip()
+    if max_minutes is not None:
+        dream["max_minutes"] = _as_int(max_minutes, 30)
+    if max_inbox_items is not None:
+        dream["max_inbox_items"] = _as_int(max_inbox_items, 10)
+    # Drop any stray keys an old/hand-edited file may carry under dream: -- the
+    # verb's surface is exactly DREAM_SUBTREE_KEYS, nothing else round-trips.
+    dream = {k: dream[k] for k in DREAM_SUBTREE_KEYS if k in dream}
+
+    # Re-serialize with the SAME level/caps/allowlists/kill-switch -- only the
+    # dream subtree differs. We pass the loaded autonomy through unchanged except
+    # for its dream dict, and hold level constant (enabled=None keeps it as-is for
+    # level>=1; for level 0 the renderer writes enabled:false anyway).
+    autonomy.dream = dream
+    dst = _write_autonomy_yml(root, autonomy, level=autonomy.level,
+                              enabled=autonomy.enabled)
+    ledger = _import_ledger()
+    row = {
+        "kind": "autonomy_event",
+        "action": "set-dream",
+        "level": autonomy.level,
+        "actor": str(actor),
+        "dream_command_set": bool(dream.get("command")),
+        "max_minutes": _as_int(dream.get("max_minutes"), 30),
+        "max_inbox_items": _as_int(dream.get("max_inbox_items"), 10),
+    }
+    if now is not None:
+        row["ts"] = now.isoformat(timespec="seconds")
+    drop_id = ledger.append(_autonomy_ledger_path(root), row, id_prefix="AUTO")
+    return {"dream": dream, "config": str(dst), "drop_id": drop_id,
+            "level": autonomy.level}
+
+
 def demote(root: Path, *, reason: str, actor: str = "actions",
            evidence: Optional[list] = None, to_level: Optional[int] = None,
            now: Optional[datetime] = None) -> dict:
@@ -1034,6 +1111,18 @@ def main(argv: Optional[list] = None) -> int:
     p_demote.add_argument("--reason", required=True)
     p_demote.add_argument("--actor", default="cli")
 
+    p_setdream = sub.add_parser(
+        "set-dream",
+        help="configure ONLY the dream.* subtree (admin: enable_autonomy); "
+        "never touches level/caps/kill-switch",
+    )
+    p_setdream.add_argument("--actor", required=True)
+    p_setdream.add_argument("--role", default="admin")
+    p_setdream.add_argument("--command", default=None,
+                            help="agent-harness invocation, e.g. 'claude -p'")
+    p_setdream.add_argument("--max-minutes", type=int, default=None)
+    p_setdream.add_argument("--max-inbox-items", type=int, default=None)
+
     args = parser.parse_args(argv)
     root = Path(args.root)
 
@@ -1098,6 +1187,22 @@ def main(argv: Optional[list] = None) -> int:
 
     if args.cmd == "demote":
         res = demote(root, reason=args.reason, actor=args.actor)
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.cmd == "set-dream":
+        try:
+            res = set_dream(
+                root,
+                actor=args.actor,
+                role=args.role,
+                command=args.command,
+                max_minutes=args.max_minutes,
+                max_inbox_items=args.max_inbox_items,
+            )
+        except (ActionDenied, PermissionError) as exc:
+            print(f"set-dream: DENIED -- {exc}", file=sys.stderr)
+            return 2
         print(json.dumps(res, indent=2, ensure_ascii=False))
         return 0
 

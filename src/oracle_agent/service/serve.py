@@ -375,7 +375,12 @@ def serve(cfg: dict, *, once: bool = False) -> int:
 
     instances = config.instance_roots(cfg)
     poll_drivers, push_adapters = _build_gateways(cfg, instances)
-    tick_seconds = int((cfg.get("serve") or {}).get("tick_seconds", 300))
+    serve_cfg = cfg.get("serve") or {}
+    tick_seconds = int(serve_cfg.get("tick_seconds", 300))
+    # P5-T7a / P5S-5: opt-in dream convocation cadence. 0 == OFF (a level-2 root
+    # still convenes nothing until the operator sets a cadence). Each convocation
+    # is independently autonomy-gated + LOCK_NB-skipped in the scheduler.
+    dream_tick_seconds = int(serve_cfg.get("dream_tick_seconds", 0))
 
     # Push adapters (http) run their own listener thread (P4S-9). Started once;
     # stopped cleanly in the finally block.
@@ -404,11 +409,16 @@ def serve(cfg: dict, *, once: bool = False) -> int:
         if once:
             for r in scheduler.tick_all(instances, logger=_log):
                 _log(f"tick {r.instance}: rc={r.rc} skipped={r.skipped} {r.output[:200]}")
+            if dream_tick_seconds > 0:
+                for r in scheduler.dream_all(instances, cfg, logger=_log):
+                    _log(f"dream {r.instance}: rc={r.rc} skipped={r.skipped} "
+                         f"{r.output[:200]}")
             _poll_all()
             _run_briefer(cfg, instances, poll_drivers, push_adapters)
             return 0
 
         last_tick = 0.0
+        last_dream = 0.0
         while not stop["flag"]:
             now = time.time()
             if now - last_tick >= tick_seconds:
@@ -416,6 +426,11 @@ def serve(cfg: dict, *, once: bool = False) -> int:
                     _log(f"tick {r.instance}: rc={r.rc} skipped={r.skipped} {r.output[:200]}")
                 _run_briefer(cfg, instances, poll_drivers, push_adapters)
                 last_tick = now
+            if dream_tick_seconds > 0 and now - last_dream >= dream_tick_seconds:
+                for r in scheduler.dream_all(instances, cfg, logger=_log):
+                    _log(f"dream {r.instance}: rc={r.rc} skipped={r.skipped} "
+                         f"{r.output[:200]}")
+                last_dream = now
             if poll_drivers:
                 _poll_all()
             else:
