@@ -672,6 +672,23 @@ def kernel_asset_dir() -> Path:
     return Path(__file__).resolve().parent / "assets" / "oracle-kernel"
 
 
+# Sentinel files whose absence means the vendored kernel template itself is
+# truncated (e.g. an installer/packaging step stripped part of the tree). A
+# spawn from an incomplete template is guaranteed to fail its own post-spawn
+# audit on every machine, so fail BEFORE writing anything, with the fix.
+_KERNEL_SENTINELS = (
+    "oracle.yml",
+    "tmp.nosync/_CONTEXT.md",
+    "_tools/setup_audit.py",
+    "_tools/oracle_lint.py",
+)
+
+
+def check_kernel_asset(kernel: Path) -> list[str]:
+    """Return the kernel-relative sentinel paths missing from the template."""
+    return [rel for rel in _KERNEL_SENTINELS if not (kernel / rel).is_file()]
+
+
 def stamp_kernel_version(root: Path) -> dict:
     """Render ``.kernel-manifest.json`` for the spawned root and stamp
     ``kernel.tools_version`` + ``kernel.tools_sha256`` into its ``oracle.yml``.
@@ -1006,6 +1023,17 @@ def main(argv: list[str] | None = None) -> int:
     kernel = kernel_asset_dir()
     if not kernel.exists():
         print(f"missing kernel: {kernel}", file=sys.stderr)
+        return 2
+    missing = check_kernel_asset(kernel)
+    if missing:
+        print(
+            "FATAL: the installed kernel template is incomplete -- missing "
+            f"{', '.join(missing)} under {kernel}.\n"
+            "An oracle spawned from it would fail its own post-spawn audit. "
+            "This is an install/packaging defect, not a setup mistake: "
+            "re-run installer/install.sh from a clean checkout.",
+            file=sys.stderr,
+        )
         return 2
 
     # Placeholder values are substituted into YAML frontmatter, Python
