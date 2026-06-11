@@ -295,7 +295,12 @@ def _guarded_pull(connector: Connector, ctx: ConnectorContext) -> tuple[list, di
 
 def _require_pull_role(ctx: ConnectorContext) -> None:
     role = (getattr(ctx, "role", "") or "").strip()
-    if role in ("", "system"):
+    # "", "system" and "unknown" are the system-path sentinels (no HUMAN role
+    # asserted): the scheduled connector-pull loop runs as the system harness
+    # exactly as the dream path does -- the autonomy gate already skips its
+    # advisory act_autonomously role check on "unknown", and the kill-switch /
+    # enabled / allowlist / blast-cap gates remain binding (P7-T9).
+    if role in ("", "system", "unknown"):
         return
     policy_mod = _import_policy()
     if policy_mod is None:

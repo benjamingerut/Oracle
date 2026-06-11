@@ -17,8 +17,48 @@ from .loop import AgentLoop, GroundingPolicy, build_system_prompt
 from .verbtools import Dispatcher
 
 
+# Per-turn wall-clock ceiling on the gateway (P3S-7): aligned with
+# Dispatcher.timeout (120s). A repair storm must not stall the single-threaded
+# serve loop under LOCK_EX, so the whole turn (original + repairs) is bounded.
+_GATEWAY_TURN_WALL_CLOCK = 120.0
+
+
+def grounding_for(cfg: dict, surface: str,
+                  grounding_override: str | None = None) -> GroundingPolicy:
+    """Decide the forced-grounding policy for ``surface`` (P3-T4, P3S-9/11).
+
+    ``build_loop`` is the SOLE decision point. The rule is:
+
+      * ``surface == "gateway"`` -> ``ENFORCE``, HARD-CODED. Config cannot lower
+        it; there is no gateway grounding key at all (P3S-11). A
+        ``grounding_override`` is ignored on the gateway -- unbacked claims reach
+        other people there, so it never waits on the budget gate (gateway-first
+        rollout). This is the ``security_map``-enforced guarantee.
+      * any local surface -> the single config key ``chat.grounding_default``
+        (default ``observe`` until the P3-T7 budget gate flips it), unless the
+        operator passes ``grounding_override`` (the ``oracle chat --grounding``
+        opt-up/opt-down, logged by the CLI).
+
+    An unknown mode string raises ``ValueError`` so the caller surfaces a clear
+    error rather than silently falling back to a less-strict mode.
+    """
+    if surface == "gateway":
+        return GroundingPolicy.ENFORCE  # hard-coded, config-immutable (P3S-11)
+    raw = grounding_override
+    if raw is None:
+        raw = ((cfg.get("chat") or {}).get("grounding_default") or "observe")
+    raw = str(raw).strip().lower()
+    try:
+        return GroundingPolicy(raw)
+    except ValueError:
+        raise ValueError(
+            f"unknown grounding mode {raw!r}; expected 'observe' or 'enforce'"
+        )
+
+
 def build_loop(cfg: dict, root: Path, *, surface: str,
                ceiling_override: str | None = None,
+               grounding_override: str | None = None,
                write_actor: str | None = None,
                write_gate=None) -> AgentLoop:
     """Construct a ready AgentLoop for ``root`` on ``surface``.
@@ -27,6 +67,12 @@ def build_loop(cfg: dict, root: Path, *, surface: str,
     ``--max-sensitivity``; gateway ``max_sensitivity``).  Unknown/mis-cased
     labels raise ``ValueError`` so the caller can surface a clear error (CLI
     exits non-zero; gateway refuses to start).
+
+    ``grounding_override`` is the ``oracle chat --grounding`` flag (local only;
+    ignored on the gateway, which is always ``ENFORCE``). The builder is the
+    sole forced-grounding decision point (P3S-9): the mode is fixed at
+    construction and no tool output, prompt injection, or config read can flip
+    it mid-session.
     """
     prov = cfg.get("provider") or {}
     base_url = prov.get("base_url", "")
@@ -82,9 +128,15 @@ def build_loop(cfg: dict, root: Path, *, surface: str,
     )
     system_prompt = build_system_prompt(Path(root), surface, environment, ceiling)
     chat_cfg = cfg.get("chat") or {}
+    grounding = grounding_for(cfg, surface, grounding_override)
+    # The gateway runs the whole turn (original + repairs) under a wall-clock
+    # ceiling so a repair storm cannot stall the serve loop (P3S-7). Local chat
+    # has no wall-clock ceiling (the operator owns the terminal).
+    turn_wall_clock = _GATEWAY_TURN_WALL_CLOCK if surface == "gateway" else None
     return AgentLoop(
         client, dispatcher, system_prompt,
-        grounding=GroundingPolicy.OBSERVE,  # P3-T4 wires the real surface decision
+        grounding=grounding,
+        turn_wall_clock=turn_wall_clock,
         max_iterations=int(chat_cfg.get("max_iterations", 20)),
         history_max_chars=int(chat_cfg.get("history_max_chars", 400000)),
         max_tokens=int(prov.get("max_tokens", 4096)),

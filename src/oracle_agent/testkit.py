@@ -338,7 +338,12 @@ class Harness:
             )
             loop = AgentLoop(
                 fake_llm, dispatcher, "SYS",
-                grounding=GroundingPolicy.OBSERVE,  # P3-T4 sets the real gateway mode
+                # P3-T4: the gateway is ENFORCE, hard-coded -- the testkit
+                # factory mirrors the real builder.grounding_for decision so a
+                # fake model that scripts ungrounded prose through the gateway is
+                # gated exactly as production would gate it.
+                grounding=GroundingPolicy.ENFORCE,
+                turn_wall_clock=120.0,
                 retry_kwargs={"sleep": lambda *_: None},
             )
             loops[(user_id, instance)] = loop

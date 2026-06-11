@@ -386,3 +386,77 @@ def test_cli_default_subcommand_is_show_via_dispatcher(tmp_path, minimal_oracle,
     assert oracle_cli.main(["dashboard", "--root", str(root)]) == 0
     assert oracle_cli.main(["admin", "dashboard", "--root", str(root), "panels"]) == 0
     capsys.readouterr()
+
+
+# --------------------------------------------------------------------------- #
+# connectors panel: REAL manifest layout discovery + per-connector health
+# (P7-T10 / P7S-28 -- the old top-level glob counted zero)
+# --------------------------------------------------------------------------- #
+def _write_localfolder_manifest(root: Path, source_path: Path, *, cid: str = "localfolder",
+                                last_verified: str = "2026-06-01",
+                                expected_decay_days: int = 365) -> None:
+    """Write a schema-valid localfolder manifest at the REAL nested layout
+    Connectors/<id>/<id>.manifest.yaml (NOT the old flat glob the broken panel
+    looked for)."""
+    mdir = root / "Connectors" / cid
+    mdir.mkdir(parents=True, exist_ok=True)
+    (mdir / f"{cid}.manifest.yaml").write_text(
+        f"id: {cid}\n"
+        "system: local-filesystem\n"
+        "status: active\n"
+        "access_mode: folder\n"
+        "locality: snapshot_local\n"
+        "capture_tier: snapshot\n"
+        "auth:\n  method: none\n  vars:\n"
+        "permissions: read_only\n"
+        "freshness:\n  class: manual\n"
+        f'  last_verified: "{last_verified}"\n'
+        f"  expected_decay_days: {expected_decay_days}\n"
+        "source:\n"
+        f'  path: "{source_path}"\n'
+        "  default_sensitivity: internal\n",
+        encoding="utf-8",
+    )
+
+
+def test_connectors_panel_discovers_real_layout(tmp_path, minimal_oracle):
+    """The panel discovers connectors via _known_connector_ids at the nested
+    Connectors/<id>/<id>.manifest.yaml layout -- the old top-level glob saw
+    zero (P7S-28)."""
+    root = _ready_root(minimal_oracle, tmp_path)
+    src = tmp_path / "src_folder"
+    src.mkdir()
+    (src / "a.txt").write_text("hello", encoding="utf-8")
+    _write_localfolder_manifest(root, src)
+
+    d = dashboard.build(root, now=NOW)
+    panel = next(p for p in d["panels"] if p["key"] == "connectors")
+    assert panel["state"] in ("ok", "warn"), panel
+    assert "1 installed" in panel["headline"]
+    # per-connector health row present + a pull control for it.
+    ids = [r["id"] for r in panel.get("rows_connectors", [])]
+    assert "localfolder" in ids
+    assert any(c["control"] == "connector localfolder" for c in panel["controls"])
+
+
+def test_connectors_panel_health_and_freshness_from_cursor(tmp_path, minimal_oracle):
+    """The row reflects the connector's health() AND last-pull age from the
+    cursor (freshness-from-cursor, P7S-23 -- a localfolder reports from its own
+    health, a remote from its cursor)."""
+    root = _ready_root(minimal_oracle, tmp_path)
+    # A missing source folder -> localfolder health is broken.
+    _write_localfolder_manifest(root, tmp_path / "does_not_exist")
+    d = dashboard.build(root, now=NOW)
+    panel = next(p for p in d["panels"] if p["key"] == "connectors")
+    row = next(r for r in panel["rows_connectors"] if r["id"] == "localfolder")
+    assert row["status"] == "broken"
+    assert panel["state"] == "attention"
+
+
+def test_connectors_panel_empty_when_none_installed(tmp_path, minimal_oracle):
+    root = _ready_root(minimal_oracle, tmp_path)
+    d = dashboard.build(root, now=NOW)
+    panel = next(p for p in d["panels"] if p["key"] == "connectors")
+    assert panel["state"] == "off"
+    assert "none installed" in panel["headline"]
+    assert panel.get("rows_connectors", []) == []

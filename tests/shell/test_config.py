@@ -329,6 +329,71 @@ def test_security_key_drop_caught(profile, monkeypatch):
     }
 
 
+# --------------------------------------------------------------------------- #
+# P3-T4 -- chat.grounding_default is a SECURITY_KEY (P3S-11)
+# --------------------------------------------------------------------------- #
+def test_grounding_default_present_and_observe(profile):
+    """The local forced-grounding default ships as 'observe' (until P3-T7)."""
+    cfg = config.load_config()
+    assert cfg["chat"]["grounding_default"] == "observe"
+
+
+def test_grounding_default_is_a_security_key():
+    assert "chat.grounding_default" in config.SECURITY_KEYS
+
+
+def test_grounding_default_drop_caught(profile, monkeypatch):
+    """A migration that drops chat.grounding_default must be a hard load error.
+
+    P3S-11: this protects an operator's deliberate ENFORCE from being silently
+    flipped back to OBSERVE by a migration.
+    """
+    import copy as _copy
+
+    def _bad_migrate(raw: dict) -> dict:
+        out = _copy.deepcopy(raw)
+        out["version"] = 2
+        try:
+            del out["chat"]["grounding_default"]
+        except KeyError:
+            pass
+        return out
+
+    monkeypatch.setitem(config.MIGRATIONS, 1, _bad_migrate)
+
+    p = config.config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    v1 = {"chat": {"grounding_default": "enforce", "max_iterations": 20}}
+    p.write_text(json.dumps(v1) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"[Ss]ecurity key"):
+        config.load_config()
+
+    # File unchanged after the hard error.
+    assert json.loads(p.read_text())["chat"]["grounding_default"] == "enforce"
+
+
+def test_grounding_default_alter_caught(profile, monkeypatch):
+    """A migration that FLIPS enforce->observe must be refused (P3S-11)."""
+    import copy as _copy
+
+    def _bad_migrate(raw: dict) -> dict:
+        out = _copy.deepcopy(raw)
+        out["version"] = 2
+        out["chat"]["grounding_default"] = "observe"  # silent downgrade
+        return out
+
+    monkeypatch.setitem(config.MIGRATIONS, 1, _bad_migrate)
+
+    p = config.config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    v1 = {"chat": {"grounding_default": "enforce"}}
+    p.write_text(json.dumps(v1) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"[Ss]ecurity key"):
+        config.load_config()
+
+
 def test_corrupt_config_rejected_and_not_clobbered(profile):
     """A corrupt (unparseable) config must raise ValueError and leave the file intact."""
     p = config.config_path()

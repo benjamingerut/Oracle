@@ -105,7 +105,11 @@ def test_version_runs(profile, capsys):
 def test_chat_oneshot_with_stubbed_loop(profile, spawned_root, monkeypatch, capsys):
     _register(spawned_root, "main")
 
+    from oracle_agent.agentloop.loop import GroundingPolicy
+
     class FakeLoop:
+        grounding = GroundingPolicy.OBSERVE
+
         class dispatcher:
             environment = "local_agent"
             max_sensitivity = "internal"
@@ -132,8 +136,11 @@ def test_chat_ceiling_can_only_lower(profile, spawned_root, monkeypatch):
     def spy(cfg, root, **kw):
         captured.update(kw)
         # don't actually build an LLM loop in tests
+        from oracle_agent.agentloop.loop import GroundingPolicy
 
         class L:
+            grounding = GroundingPolicy.OBSERVE
+
             class dispatcher:
                 environment = "external"
                 max_sensitivity = "public"
@@ -149,6 +156,75 @@ def test_chat_ceiling_can_only_lower(profile, spawned_root, monkeypatch):
     # builder.min_sensitivity guarantees override can only lower; verify directly:
     from oracle_agent.agentloop import policy_bridge as pb
     assert pb.min_sensitivity("public", "secret") == "public"
+
+
+def _chat_spy(monkeypatch, grounding_value="enforce"):
+    """Install a build_loop spy; return the captured-kwargs dict."""
+    import oracle_agent.agentloop.builder as builder
+    from oracle_agent.agentloop.loop import GroundingPolicy, TurnResult
+    captured = {}
+
+    def spy(cfg, root, **kw):
+        captured.update(kw)
+
+        class L:
+            grounding = GroundingPolicy(grounding_value)
+
+            class dispatcher:
+                environment = "local_agent"
+                max_sensitivity = "internal"
+
+            def run_turn(self, text):
+                return TurnResult(text="ok", envelopes=[], iterations=1)
+        return L()
+
+    monkeypatch.setattr(builder, "build_loop", spy)
+    return captured
+
+
+def test_chat_grounding_flag_passed_to_builder(profile, spawned_root, monkeypatch):
+    """oracle chat --grounding enforce forwards grounding_override to the builder."""
+    _register(spawned_root, "main")
+    captured = _chat_spy(monkeypatch, "enforce")
+    rc = cli.main(["chat", "main", "-m", "x", "--grounding", "enforce"])
+    assert rc == 0
+    assert captured["grounding_override"] == "enforce"
+
+
+def test_chat_grounding_override_logs_banner_and_ledger(profile, spawned_root,
+                                                        monkeypatch, capsys):
+    """A --grounding override emits a stderr banner AND a metadata-only ledger row."""
+    _register(spawned_root, "main")
+    _chat_spy(monkeypatch, "enforce")
+    cli.main(["chat", "main", "-m", "hello secret message", "--grounding", "enforce"])
+    err = capsys.readouterr().err
+    assert "grounding mode overridden" in err
+    # Metadata-only ledger row on the instance root.
+    ledger = (spawned_root / "Meta.nosync" / "ledgers" / "chat_event.jsonl")
+    assert ledger.exists(), "grounding-override ledger row not written"
+    import json as _json
+    row = _json.loads(ledger.read_text().splitlines()[-1])
+    assert row["kind"] == "grounding_override"
+    assert row["mode"] == "enforce"
+    assert row["surface"] == "local"
+    # Never a message body.
+    assert "hello secret message" not in _json.dumps(row)
+
+
+def test_chat_no_grounding_flag_writes_no_ledger(profile, spawned_root, monkeypatch):
+    """Without --grounding, no override banner/ledger row is produced.
+
+    The spawned_root is session-scoped and may carry rows from other tests, so
+    assert that THIS turn adds nothing (row count unchanged), not that the file
+    is absent.
+    """
+    _register(spawned_root, "main")
+    _chat_spy(monkeypatch, "observe")
+    ledger = (spawned_root / "Meta.nosync" / "ledgers" / "chat_event.jsonl")
+    before = len(ledger.read_text().splitlines()) if ledger.exists() else 0
+    cli.main(["chat", "main", "-m", "x"])
+    after = len(ledger.read_text().splitlines()) if ledger.exists() else 0
+    assert after == before, "a turn without --grounding must not log an override"
 
 
 # --------------------------------------------------------------------------- #

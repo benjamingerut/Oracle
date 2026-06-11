@@ -702,6 +702,75 @@ GUARANTEES: list[Guarantee] = [
         kind="test",
         source="C2",
     ),
+
+    # ------------------------------------------------------------------
+    # P3 -- forced grounding (Phase 3). The gate is OBJECT-level, not
+    # proposition-level (P3S-4): it forces answer-protocol invocation and
+    # verdict-obligation compliance PER BUSINESS OBJECT. It does not verify the
+    # asserted proposition against the grounded payload -- that is Phase 6/8
+    # eval territory. The wording below is deliberately limited to that.
+    # ------------------------------------------------------------------
+    Guarantee(
+        id="SH-059",
+        statement=(
+            "No material company claim is released to any user without a covering "
+            "answer-protocol envelope for its business object whose obligations the "
+            "text honors (gateway: no override). The gate is object-level, not "
+            "proposition-level: it forces protocol invocation and verdict-obligation "
+            "compliance per object; it does not verify the asserted proposition."
+        ),
+        enforcer="tests/shell/test_agentloop.py::test_enforce_repair_exhaustion_redacts_with_notice",
+        kind="test",
+        source="P3S-4",
+    ),
+    Guarantee(
+        id="SH-060",
+        statement=(
+            "The gateway surface runs forced-grounding in ENFORCE, hard-coded in "
+            "builder.build_loop: a config attempting to lower it (or a stray gateway "
+            "grounding key) still yields ENFORCE. There is no gateway grounding key "
+            "in the config schema, so the mode is beyond the reach of config "
+            "migration, prompt injection, or tool output."
+        ),
+        enforcer="tests/shell/test_agentloop.py::test_build_loop_gateway_enforce_immutable_to_config",
+        kind="test",
+        source="P3S-11",
+    ),
+    Guarantee(
+        id="SH-061",
+        statement=(
+            "An assertion on a refused-class envelope is reported as mismatched and "
+            "withheld; a withheld:true envelope (even with a grounded exit_code) is "
+            "treated as refused-class, since the model never saw the grounded payload."
+        ),
+        enforcer="tests/shell/test_grounding.py::test_withheld_envelope_is_mismatched",
+        kind="test",
+        source="P3S-1",
+    ),
+    Guarantee(
+        id="SH-062",
+        statement=(
+            "On exhausted repair budget the unbacked/mismatched claim units are "
+            "redacted whole (never shipped with a disclaimer); a fully-redacted reply "
+            "ships notice + footer alone. Any grounding-gate exception withholds the "
+            "ENTIRE reply (fail closed, never fail open)."
+        ),
+        enforcer="tests/shell/test_agentloop.py::test_gate_error_withholds_entire_reply",
+        kind="test",
+        source="P3S-8",
+    ),
+    Guarantee(
+        id="SH-063",
+        statement=(
+            "The local forced-grounding default lives in the single SECURITY_KEYS-"
+            "protected config key chat.grounding_default; a migration that drops or "
+            "alters it is refused at load, so an operator's deliberate ENFORCE can "
+            "never be silently flipped back to OBSERVE."
+        ),
+        enforcer="tests/shell/test_config.py::test_grounding_default_drop_caught",
+        kind="test",
+        source="P3S-11",
+    ),
 ]
 
 # ---------------------------------------------------------------------------

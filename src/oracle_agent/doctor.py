@@ -130,6 +130,123 @@ def _count_real_sources(root: Path) -> int:
     )
 
 
+def _known_connector_ids(root: Path) -> list[str]:
+    """Discover connector ids from the REAL manifest layout
+    Connectors/<id>/<id>.manifest.yaml (the same discovery the kernel runtime
+    and dashboard use; NOT the old top-level glob that found nothing)."""
+    cdir = root / "Connectors"
+    if not cdir.is_dir():
+        return []
+    ids: list[str] = []
+    for sub in sorted(cdir.iterdir()):
+        try:
+            if sub.is_dir() and (sub / f"{sub.name}.manifest.yaml").exists():
+                ids.append(sub.name)
+        except OSError:
+            continue
+    return ids
+
+
+def _connector_health(root: Path) -> list[dict]:
+    """Run the kernel's ``connector health --json`` (read-only: PROBES, never
+    pulls) and return the per-connector report list. A non-zero rc still yields
+    the parsed reports (the verb reports broken connectors with rc 1)."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(root / "oracle"), "connector", "--json", "health"],
+            cwd=str(root), capture_output=True, text=True, timeout=60,
+        )
+    except Exception:
+        return []
+    out = (proc.stdout or "").strip()
+    if not out:
+        return []
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    return [r for r in data if isinstance(r, dict)]
+
+
+def _is_unconfigured_scaffold(note: str) -> bool:
+    """True iff a ``broken`` health note is the default-deny / no-source signal
+    of a pristine connector scaffold a fresh spawn ships (awaiting admin setup),
+    rather than a genuine misconfiguration (unresolved declared auth vars,
+    schema-invalid manifest, read_write misuse)."""
+    n = (note or "").lower()
+    markers = (
+        "scope allowlist is empty",
+        "source.path is required",
+        "source path is required",
+        "is required (the",
+    )
+    return any(m in n for m in markers)
+
+
+def _check_connectors(rep: "Report", name: str, root: Path) -> None:
+    """Add per-connector doctor rows for one instance.
+
+    Each configured connector is checked for: manifest schema-valid + auth vars
+    resolvable + ``health`` not ``broken`` -- each with a one-line fix. Doctor
+    stays read-only (it probes via ``connector health``; it never pulls). The
+    egress-honesty note (P7S-6) is pinned on the revocation fix line: removing a
+    credential var disables the connector here, but the upstream token stays
+    valid until revoked AT the provider.
+    """
+    cids = _known_connector_ids(root)
+    if not cids:
+        return  # no connectors configured -> nothing to report (not a warning)
+    reports = {str(r.get("connector") or ""): r for r in _connector_health(root)}
+    for cid in cids:
+        rep_row = reports.get(cid)
+        if rep_row is None:
+            # health verb could not report it -> manifest likely invalid or the
+            # connector failed to load. This is the schema/load failure path.
+            rep.add(WARN, f"instance '{name}': connector '{cid}' health unavailable "
+                          "(manifest invalid or adapter failed to load)",
+                    f"oracle kernel {name} -- connector health {cid}  (read the error; "
+                    "fix the manifest or auth vars)")
+            continue
+        status = str(rep_row.get("status") or "unknown")
+        notes = rep_row.get("notes") or []
+        first_note = str(notes[0]) if notes else ""
+        if status == "broken" and _is_unconfigured_scaffold(first_note):
+            # A pristine scaffold a fresh spawn ships (empty default-deny
+            # allowlist / no source path / no auth vars yet) is NOT misconfigured
+            # -- it is simply awaiting admin setup. WARN, not FAIL, so a healthy
+            # fresh spawn does not red-flag on its own connector scaffolds.
+            rep.add(WARN, f"instance '{name}': connector '{cid}' not configured yet"
+                          + (f" — {first_note}" if first_note else ""),
+                    f"configure its scope allowlist + credentials, then re-check: "
+                    f"oracle kernel {name} -- connector health {cid}")
+        elif status == "broken":
+            # Genuinely misconfigured: schema-invalid manifest, unresolved auth
+            # vars (declared but missing), read_write misuse. The fix names the
+            # most common cause plus the egress-honesty caveat (P7S-6).
+            rep.add(FAIL, f"instance '{name}': connector '{cid}' broken"
+                          + (f" — {first_note}" if first_note else ""),
+                    f"resolve auth vars in {root}/.env.nosync (e.g. app password for "
+                    f"imap-mailbox), fix the manifest/allowlist, then re-check: "
+                    f"oracle kernel {name} -- connector health {cid}. "
+                    "NOTE: removing a credential var disables the connector here, but "
+                    "the upstream token stays valid until you revoke it AT the provider")
+        elif status == "degraded":
+            rep.add(WARN, f"instance '{name}': connector '{cid}' degraded"
+                          + (f" — {first_note}" if first_note else ""),
+                    f"oracle kernel {name} -- connector freshness {cid}  "
+                    "(pull to refresh once it's due)")
+        elif status in ("healthy", "not_configured"):
+            rep.add(OK, f"instance '{name}': connector '{cid}' {status}")
+        else:
+            rep.add(WARN, f"instance '{name}': connector '{cid}' health {status}"
+                          + (f" — {first_note}" if first_note else ""),
+                    f"oracle kernel {name} -- connector health {cid}")
+
+
 def run(instance: str | None = None) -> Report:
     rep = Report()
 
@@ -210,6 +327,11 @@ def run(instance: str | None = None) -> Report:
                     f"oracle kernel {name} -- ingest batch <path>")
         else:
             rep.add(OK, f"instance '{name}': {n_sources} source(s) ingested")
+
+        # per-instance connector health (read-only: doctor PROBES, never pulls;
+        # a remote probe is authenticated egress -- the same kind doctor already
+        # performs for the LLM provider -- but no bytes are pulled into _INPUT).
+        _check_connectors(rep, name, root)
 
     # provider
     prov = cfg.get("provider") or {}

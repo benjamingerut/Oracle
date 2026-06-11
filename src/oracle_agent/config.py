@@ -59,6 +59,11 @@ DEFAULT_CONFIG: dict = {
         "max_iterations": 20,
         "tool_result_max_chars": 20000,
         "history_max_chars": 400000,
+        # Phase 3 (P3S-11): the LOCAL-chat forced-grounding default. The gateway
+        # has NO grounding key -- its mode is hard-coded ENFORCE in the builder,
+        # beyond the reach of config. Local default is "observe" until the P3-T7
+        # budget gate passes, then flips to "enforce" (one change, here).
+        "grounding_default": "observe",
     },
     "serve": {"tick_seconds": 300},
     "gateway": {
@@ -68,6 +73,11 @@ DEFAULT_CONFIG: dict = {
             "allowlist": {},  # {"<tg_user_id>": {"role": "user", "instance": "<name>"}}
             "max_sensitivity": "internal",
             "per_user_writes_per_hour": 20,
+            # Phase 3 (P3S-3): optional hourly cap on forced-grounding repair
+            # round-trips per user. This is a throttle, NOT the grounding MODE
+            # (which is hard-coded ENFORCE on the gateway, P3S-11). null = no cap;
+            # the per-turn iteration + wall-clock budgets still bound every turn.
+            "per_user_repairs_per_hour": None,
         }
     },
     "instances": {},  # {"<name>": {"root": "/abs/path"}}
@@ -88,6 +98,7 @@ SECURITY_KEYS: tuple[str, ...] = (
     "gateway.telegram.allowlist",
     "gateway.telegram.max_sensitivity",
     "gateway.telegram.token_env",
+    "chat.grounding_default",
     "providers.*.api_key_env",
     "ingest_roots",
     "default_instance",

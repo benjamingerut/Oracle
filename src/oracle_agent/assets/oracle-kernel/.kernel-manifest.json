@@ -1,5 +1,5 @@
 {
-  "aggregate_sha256": "9f72517124c8ab36fdeea5bae9ff62f2a37978632738bf44818ad98ad11145ef",
+  "aggregate_sha256": "c1a126d0c2d3fd35c76891f7687564da44498fc5b29b5641bfc6344ee54ef452",
   "files": {
     "_tools/KERNEL_VERSION": "eb0cd1f1d199956d3cb6a119202fe1c98f31b6ae513e4326d57ca1f9946f7a31",
     "_tools/_CONTEXT.md": "661ae48ec92ac8c7e0eda8f65fce86f0ffeae498fdde9de4d758774c4f7abd0d",
@@ -10,7 +10,7 @@
     "_tools/briefing.py": "4f78e4a255530c4aa512717cce36b09d0a98bd19ef0dc5bcd9a4207c2bcab42d",
     "_tools/capture.py": "fa93c751af9a7cebf0345ecccaed189260f91b4746dab9a5b01a31a605419932",
     "_tools/chunker.py": "6cacbf6c6791a59024b8d84071cc1c85a8d641eb033df60b2ebe3bb159d8675e",
-    "_tools/connectors/__init__.py": "444841b852b7256370b70f8b6b5d92e5e97e76232f26ff855b469fb57d2f330e",
+    "_tools/connectors/__init__.py": "c1e79ab2b39c3fd9a6d2690ba0f4bce0ea028dbbb83686a0ba456ce1040713d1",
     "_tools/connectors/base.py": "e34c2a1263cd169aaaadd808c8097f14cd7091c94fe44b05dc6fb626fad3c303",
     "_tools/connectors/gdrive.py": "29f23de5121566911d4607beaa87a598cfa8757653da72c9bcd2f7edc4db5786",
     "_tools/connectors/imap_mailbox.py": "e750758d6656d737acab2578a6ad5ed561a4aa248942e66c758a0caae23b9623",
@@ -20,7 +20,7 @@
     "_tools/connectors/remote.py": "a3e2436a3327634342d1b10884e616680b03527238bf40e7e5baa5ec72ca379f",
     "_tools/connectors/slack_export.py": "52f6775bc973f46347b13566b0824547c1766fc89ee27b00edbb9522b386abdc",
     "_tools/contradiction.py": "a416a1179b702d83f92c0051e27330eb14717d2ed1cc22d84b5b08427ea7060d",
-    "_tools/dashboard.py": "07ac5ea1e1d460d06e5a7f5d70265636c0ba5b67466d0e9b6fa633be01bdf6f6",
+    "_tools/dashboard.py": "88dc92b9bedd4e9ccffa06ef31cf7a28558cef0e48f3534c6371b97ad0e8faf0",
     "_tools/derive.py": "ade8cf73ae18d1fa89a357b38552b0c3dc30e1e1ce323ee27229fd01d85d7366",
     "_tools/derived_memory.py": "ba0c76408ad1f0bbe3070d7afe3b42c6610fd1c877d25c05e8b64b1e3b7e9838",
     "_tools/extractors/__init__.py": "673736fb217c835a8bf386dd6d34615f035d9f4d70c977394d134b51f8e2e66f",
@@ -34,7 +34,7 @@
     "_tools/intake_classify.py": "c816c935aedfca14b6835fa09f354d92160f945a0f0e4b4c7ec573a554cdbd17",
     "_tools/knowledge_index.py": "109341e1019a818bf9b41a79fbaa40886b44f8278a639cee931d5963cd7306cc",
     "_tools/ledger.py": "e8fd415c716decfca3785e38461e2a4bf5a49bb86ee25a0da3589a62339bcf52",
-    "_tools/loops.py": "576d31d5a8f66f1b4f2079faa6431fbc0f381870bf4730ad973b1555a778d10c",
+    "_tools/loops.py": "3dfd3df696b256f6e823bebce71a50adb12e5af0dd52a38b8692996697d7d8da",
     "_tools/meta_health.py": "f22a79b1e1da9cd92a687b57af028ce4fd287247db382ece11f95a5d06b03e52",
     "_tools/migrations/0001_kernel_version_stamp.py": "852b028661c6ac34c0121418960a149de95766e536399967fe3b42468418b61a",
     "_tools/migrations/0002_session_interfaces.py": "643bb8e1bc16ee9dbd8bdcabb8ea49ad32212c264e96d28aaf5be7f004e5c5a9",
@@ -72,6 +72,6 @@
     "_tools/truth_map.py": "32f230610bc6764c7d46629142ad50844ead2c176f3de4027b26c31e3c7ac55f",
     "_tools/upgrade.py": "b4a0b49e7f2fa3eb8beacc2e5a6d024e95e514868b8c4b949d052b71481e2c3a"
   },
-  "generated": "2026-06-10T22:21:47",
+  "generated": "2026-06-10T22:45:16",
   "tools_version": "3.0.0"
 }

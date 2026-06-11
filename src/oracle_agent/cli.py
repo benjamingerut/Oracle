@@ -157,6 +157,9 @@ def _cmd_chat(rest: list[str]) -> int:
     ap.add_argument("name", nargs="?")
     ap.add_argument("-m", "--message", help="one-shot message (no REPL)")
     ap.add_argument("--max-sensitivity", help="LOWER the ceiling for this session")
+    ap.add_argument("--grounding", choices=("observe", "enforce"),
+                    help="forced-grounding mode for this LOCAL session "
+                         "(opt-up to enforce, or opt-down to observe); logged")
     ns = ap.parse_args(rest)
 
     cfg = config.load_config()
@@ -166,10 +169,19 @@ def _cmd_chat(rest: list[str]) -> int:
     from .service.scheduler import root_lock
 
     loop = build_loop(cfg, root, surface="local",
-                      ceiling_override=ns.max_sensitivity)
+                      ceiling_override=ns.max_sensitivity,
+                      grounding_override=ns.grounding)
     disp = loop.dispatcher
+    # P3-T4: a --grounding override on local chat is logged -- a stderr banner
+    # line plus a metadata-only ledger row on the instance root (mode name only,
+    # never message bodies).
+    if ns.grounding:
+        print(f"oracle: grounding mode overridden to '{loop.grounding.value}' "
+              f"for this local session (operator flag)", file=sys.stderr)
+        _log_grounding_override(root, name, loop.grounding.value)
     print(f"oracle chat — instance '{name}' | model {cfg['provider'].get('model')} "
-          f"| env {disp.environment} | ceiling {disp.max_sensitivity}")
+          f"| env {disp.environment} | ceiling {disp.max_sensitivity} "
+          f"| grounding {loop.grounding.value}")
 
     def turn(text: str) -> int:
         with root_lock(name):
@@ -196,6 +208,32 @@ def _cmd_chat(rest: list[str]) -> int:
         if line in ("/quit", "/exit", "/q"):
             return 0
         turn(line)
+
+
+def _log_grounding_override(root: Path, instance: str, mode: str) -> None:
+    """Append a metadata-only ledger row recording a --grounding override (P3-T4).
+
+    The row carries the mode NAME only -- never a message body. It lands on the
+    instance root's gateway-style ledger dir so it is co-located with the other
+    metadata-only turn rows. Best-effort: a ledger write failure never blocks the
+    operator's local chat (the stderr banner is the primary, always-emitted log).
+    """
+    import datetime
+    import json as _json
+
+    row = {
+        "kind": "grounding_override", "surface": "local",
+        "instance": instance, "mode": mode,
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    path = Path(root) / "Meta.nosync" / "ledgers" / "chat_event.jsonl"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(_json.dumps(row, sort_keys=True) + "\n")
+    except OSError as exc:
+        print(f"oracle: grounding-override ledger write failed: "
+              f"{type(exc).__name__}", file=sys.stderr)
 
 
 def _cmd_serve(rest: list[str]) -> int:

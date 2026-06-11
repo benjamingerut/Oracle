@@ -661,24 +661,102 @@ def _panel_scorecard(ctx: dict) -> dict:
             "headline": headline, "lines": [], "controls": []}
 
 
+_CONNECTOR_HEALTH_GLYPH = {
+    "healthy": "ok", "degraded": "warn", "broken": "attention",
+    "unknown": "warn", "not_configured": "off",
+}
+
+
+def _connector_rows(root: Path, now: datetime) -> list[dict]:
+    """Per-connector health/freshness rows discovered from the REAL manifest
+    layout (Connectors/<id>/<id>.manifest.yaml) via connectors._known_connector_ids
+    -- NOT the old broken top-level glob that counted zero (P7S-28).
+
+    Health comes from each connector's ``health()``; last-pull age comes from
+    the connector cursor's ``last_success_ts`` (the freshness-from-cursor rule,
+    P7S-23) so a scheduled connector does not read a never-updated manifest
+    field. Read-only and fully defensive: a broken adapter degrades its OWN row,
+    never the panel."""
+    cm = _import("connectors")
+    if cm is None:
+        return []
+    try:
+        cids = list(cm._known_connector_ids(root))
+    except Exception:
+        return []
+    base = getattr(cm, "ConnectorContext", None)
+    rows: list[dict] = []
+    for cid in cids:
+        row: dict = {"id": cid, "status": "unknown", "age_days": None,
+                     "verdict": "unknown", "note": ""}
+        try:
+            conn = cm.get_connector(root, cid)
+            cctx = base(root, conn.manifest, dry_run=True, now=now)
+            health = _safe(lambda c=conn, x=cctx: c.health(x), {}) or {}
+            row["status"] = str(health.get("status") or "unknown")
+            notes = health.get("notes") or []
+            if notes:
+                row["note"] = str(notes[0])
+            fresh = health.get("freshness") or _safe(lambda c=conn, x=cctx: c.freshness(x), {}) or {}
+            row["verdict"] = str(fresh.get("verdict") or "unknown")
+            age = fresh.get("age_days")
+            row["age_days"] = age if isinstance(age, (int, float)) else None
+        except Exception as exc:  # a connector that won't even load is broken
+            row["status"] = "broken"
+            row["note"] = f"{type(exc).__name__}: {exc}"
+        rows.append(row)
+    return rows
+
+
 def _panel_connectors(ctx: dict) -> dict:
-    cfg = ctx["cfg"]
-    known = (cfg.get("connectors") or {}).get("known") or []
-    if isinstance(known, dict):
-        known = list(known)
-    manifests = _safe(
-        lambda: sorted(p.name for p in (ctx["root"] / "Connectors").glob("*.manifest.yaml")
-                       if not p.name.startswith("connector-template")),
-        [],
+    rows = _safe(lambda: _connector_rows(ctx["root"], ctx["now"]), [])
+    n = len(rows)
+    if not n:
+        return {
+            "key": "connectors",
+            "title": "Connectors",
+            "state": "off",
+            "headline": "none installed — ./oracle admin connector (admin)",
+            "lines": [],
+            "controls": [],
+        }
+    broken = [r for r in rows if r["status"] == "broken"]
+    degraded = [r for r in rows if r["status"] in ("degraded", "unknown")]
+    healthy = [r for r in rows if r["status"] == "healthy"]
+    if broken:
+        state = "attention"
+    elif degraded:
+        state = "warn"
+    else:
+        state = "ok"
+    headline = (
+        f"{n} installed · {len(healthy)} healthy"
+        + (f" · {len(degraded)} degraded" if degraded else "")
+        + (f" · {len(broken)} broken" if broken else "")
     )
-    n = max(len(known) if isinstance(known, list) else 0, len(manifests))
+    lines = []
+    controls = []
+    for r in rows:
+        glyph = _GLYPH.get(_CONNECTOR_HEALTH_GLYPH.get(r["status"], "warn"), "?")
+        if r["age_days"] is not None:
+            age = f"last pull {round(r['age_days'], 1)}d ago"
+        else:
+            age = "never pulled"
+        note = f" — {r['note']}" if r["note"] else ""
+        lines.append(f"{glyph} {r['id']}: {r['status']} · {age} ({r['verdict']}){note}")
+        controls.append({
+            "control": f"connector {r['id']}",
+            "state": r["status"],
+            "command": f"./oracle connector pull {r['id']} --dry-run  (then drop --dry-run)",
+        })
     return {
         "key": "connectors",
         "title": "Connectors",
-        "state": "ok" if n else "off",
-        "headline": f"{n} installed" if n else "none installed — ./oracle admin connector (admin)",
-        "lines": [f"manifests: {', '.join(manifests)}"] if manifests else [],
-        "controls": [],
+        "state": state,
+        "headline": headline,
+        "lines": lines,
+        "rows_connectors": rows,
+        "controls": controls,
     }
 
 

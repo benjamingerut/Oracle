@@ -45,6 +45,7 @@ Stdlib only.
 """
 from __future__ import annotations
 
+import functools
 import re
 import sys
 from dataclasses import dataclass, field
@@ -88,21 +89,30 @@ class ClaimCheck:
 # --------------------------------------------------------------------------- #
 # known_objects -- server-side truth-map enumeration (P3S-5)
 # --------------------------------------------------------------------------- #
+@functools.lru_cache(maxsize=1)
 def _vendored_kernel_tools() -> str:
     """Absolute path to the agent's vendored kernel ``_tools`` directory.
 
     Reading the truth map through the VENDORED reader (not the target root's
     possibly version-skewed ``_tools/truth_map.py``) gives one stable parser
     regardless of the root's kernel version -- handles STRESS A6.
+
+    Cached: the path is fixed for the process, and ``Path.resolve()`` is a
+    realpath syscall. The extractor calls ``_normalize_object`` once per known
+    object per claim unit, so an uncached resolve here turns a 10k-row table
+    into tens of thousands of ``lstat`` calls (P3-T5 performance guard).
     """
     return str(Path(__file__).resolve().parents[1] / "assets" / "oracle-kernel" / "_tools")
 
 
+@functools.lru_cache(maxsize=1)
 def _truth_map_module():
     """Import the vendored ``truth_map`` reader (load_rows / normalize_object).
 
     The module is stdlib-only at import time (its ledger/policy/answer_protocol
     imports are lazy), so adding ``_tools`` to ``sys.path`` is safe and cheap.
+    Cached: the import is process-stable and the per-unit hot path must not pay
+    a ``sys.path`` scan + import-machinery lookup on every call (P3-T5).
     """
     tools = _vendored_kernel_tools()
     if tools not in sys.path:
@@ -134,12 +144,19 @@ def known_objects(root: Path) -> list[str]:
     return out
 
 
+@functools.lru_cache(maxsize=4096)
 def _normalize_object(name: str) -> str:
     """``truth_map.normalize_object`` with a stdlib fallback.
 
     Used for coverage equality and object-mention matching. Falls back to the
     same algorithm if the vendored module is somehow unavailable so the gate
     never crashes mid-check.
+
+    Cached: normalization is a pure function of ``name`` and the extractor
+    re-normalizes the same handful of object names (and unit texts) thousands of
+    times across a large draft. The cache is bounded (P3-T5 performance guard);
+    a pathological draft with thousands of distinct units evicts LRU entries
+    without unbounded growth.
     """
     try:
         return _truth_map_module().normalize_object(name)

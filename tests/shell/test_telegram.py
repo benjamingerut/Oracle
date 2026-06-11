@@ -33,16 +33,24 @@ class FakeAPI:
 class FakeTurn:
     text: str = "the answer"
     envelopes: list = field(default_factory=list)
+    grounding: str = "enforce"
+    repairs: int = 0
+    redacted_count: int = 0
+    withheld: bool = False
 
 
 class FakeLoop:
-    def __init__(self):
+    def __init__(self, *, repairs=0, redacted_count=0):
         self.turns = []
+        self._repairs = repairs
+        self._redacted_count = redacted_count
 
     def run_turn(self, text):
         self.turns.append(text)
         return FakeTurn(text="the answer",
-                        envelopes=[{"verdict": "grounded", "exit_code": 0}])
+                        envelopes=[{"verdict": "grounded", "exit_code": 0}],
+                        repairs=self._repairs,
+                        redacted_count=self._redacted_count)
 
 
 class BombLoop:
@@ -60,24 +68,27 @@ def _msg(update_id, user_id, text, chat_type="private", chat_id=None, with_from=
 
 
 def _gateway(tmp_path, updates, allowlist=None, root=None, profile_dir=None,
-             sleeps=None, root_lock_factory=None):
+             sleeps=None, root_lock_factory=None, factory=None, tg_extra=None,
+             clock=None):
     root = root or tmp_path / "root"
     (root / "Meta.nosync" / "ledgers").mkdir(parents=True, exist_ok=True)
     if profile_dir is None:
         profile_dir = tmp_path / "profile"
         profile_dir.mkdir(parents=True, exist_ok=True)
-    cfg = {"gateway": {"telegram": {
+    tg = {
         "enabled": True, "allowlist": allowlist or {},
         "max_sensitivity": "internal", "per_user_writes_per_hour": 2,
-    }}}
+    }
+    tg.update(tg_extra or {})
+    cfg = {"gateway": {"telegram": tg}}
     api = FakeAPI(updates=updates)
     loops = {}
 
-    def factory(user_id, instance, r):
-        loops[(user_id, instance)] = FakeLoop()
-        return loops[(user_id, instance)]
+    if factory is None:
+        def factory(user_id, instance, r):
+            loops[(user_id, instance)] = FakeLoop()
+            return loops[(user_id, instance)]
 
-    sleep_calls = sleeps if sleeps is not None else []
     recorded_sleeps = []
 
     def fake_sleep(t):
@@ -85,7 +96,7 @@ def _gateway(tmp_path, updates, allowlist=None, root=None, profile_dir=None,
 
     gw = TelegramGateway(
         api, cfg, {"main": root}, factory,
-        clock=lambda: 1000.0,
+        clock=clock if clock is not None else (lambda: 1000.0),
         sleep=fake_sleep,
         profile_dir=profile_dir,
         root_lock_factory=root_lock_factory if root_lock_factory is not None
@@ -414,3 +425,75 @@ def test_gateway_turn_holds_root_lock(tmp_path):
     )
     gw.poll_once()
     assert lock_calls == ["main"]
+
+
+# --------------------------------------------------------------------------- #
+# P3-T4 -- gateway ledger repair telemetry + per-user repair cap
+# --------------------------------------------------------------------------- #
+def test_ledger_carries_repair_telemetry(tmp_path):
+    """The gateway_turn ledger row gains repairs/redacted/grounding/added_seconds."""
+    allow = {"42": {"role": "user", "instance": "main"}}
+
+    def factory(user_id, instance, r):
+        return FakeLoop(repairs=2, redacted_count=1)
+
+    gw, api, _, root, _ = _gateway(
+        tmp_path, [_msg(1, 42, "what is revenue?")], allow, factory=factory)
+    assert gw.poll_once() == 1
+    rows = (root / "Meta.nosync" / "ledgers" / "gateway_event.jsonl"
+            ).read_text().splitlines()
+    row = json.loads(rows[-1])
+    assert row["repairs"] == 2
+    assert row["redacted"] == 1
+    assert row["grounding"] == "enforce"
+    assert row["withheld"] is False
+    assert "added_seconds" in row
+    # Still metadata-only: no message body anywhere in the row.
+    assert "what is revenue" not in json.dumps(row)
+
+
+def test_per_user_repair_cap_throttles(tmp_path):
+    """Over the hourly repair cap, a turn is refused before any model call."""
+    allow = {"42": {"role": "user", "instance": "main"}}
+    # Each turn reports 2 repairs; cap is 3 -> first turn allowed (records 2),
+    # second turn refused (window already at 2, but check is < cap BEFORE the
+    # turn; 2 < 3 so it would run -- so set cap to 2 to force a refusal on turn 2).
+    built = []
+
+    def factory(user_id, instance, r):
+        loop = FakeLoop(repairs=2)
+        built.append(loop)
+        return loop
+
+    gw, api, _, root, _ = _gateway(
+        tmp_path,
+        [_msg(1, 42, "q1"), _msg(2, 42, "q2")],
+        allow, factory=factory,
+        tg_extra={"per_user_repairs_per_hour": 2},
+    )
+    handled = gw.poll_once()
+    # Both updates are "handled" (a reply is sent for each), but only the first
+    # actually ran the loop; the second was refused over the cap.
+    assert handled == 2
+    # The loop_factory caches per (user, instance), so only one loop is built,
+    # and it ran exactly once (turn 1); turn 2 never reached run_turn.
+    assert len(built) == 1
+    assert built[0].turns == ["q1"]
+    # The second reply is the cap-refusal notice.
+    assert "hourly limit" in api.sent[-1][1]
+
+
+def test_no_repair_cap_when_unconfigured(tmp_path):
+    """With no per_user_repairs_per_hour, repairs never throttle."""
+    allow = {"42": {"role": "user", "instance": "main"}}
+
+    def factory(user_id, instance, r):
+        return FakeLoop(repairs=5)
+
+    gw, api, loops, root, _ = _gateway(
+        tmp_path,
+        [_msg(1, 42, "q1"), _msg(2, 42, "q2"), _msg(3, 42, "q3")],
+        allow, factory=factory)  # default config has no repairs cap
+    assert gw.poll_once() == 3
+    # No cap-refusal notice anywhere.
+    assert all("hourly limit" not in text for _, text in api.sent)

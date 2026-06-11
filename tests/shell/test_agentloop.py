@@ -430,3 +430,81 @@ def test_footer_determinism_unchanged_under_enforce(spawned_root):
     foot_o = res_observe.text.split("\n\n— authority")[-1]
     assert foot_e == foot_o
     assert "grounded (Revenue / invoices)" in res_enforce.text
+
+
+# --------------------------------------------------------------------------- #
+# P3-T4 -- builder is the SOLE surface-decision point (P3S-9/11)
+# --------------------------------------------------------------------------- #
+def test_grounding_for_gateway_is_enforce_hardcoded():
+    """surface=='gateway' -> ENFORCE, regardless of config (P3S-11)."""
+    from oracle_agent.agentloop.builder import grounding_for
+
+    # Even a config that names observe (or a stray gateway grounding key) cannot
+    # lower the gateway: it has no grounding key, and the builder hard-codes it.
+    cfg = {"chat": {"grounding_default": "observe"},
+           "gateway": {"telegram": {"grounding": "observe"}}}
+    assert grounding_for(cfg, "gateway") is GroundingPolicy.ENFORCE
+    # An override is ignored on the gateway too.
+    assert grounding_for(cfg, "gateway",
+                         grounding_override="observe") is GroundingPolicy.ENFORCE
+
+
+def test_grounding_for_local_reads_config_default():
+    from oracle_agent.agentloop.builder import grounding_for
+
+    assert grounding_for({"chat": {"grounding_default": "observe"}},
+                         "local") is GroundingPolicy.OBSERVE
+    assert grounding_for({"chat": {"grounding_default": "enforce"}},
+                         "local") is GroundingPolicy.ENFORCE
+    # Missing key -> observe (the P3-T7 default until the gate flips it).
+    assert grounding_for({}, "local") is GroundingPolicy.OBSERVE
+
+
+def test_grounding_for_local_override_wins_over_config():
+    from oracle_agent.agentloop.builder import grounding_for
+
+    cfg = {"chat": {"grounding_default": "observe"}}
+    assert grounding_for(cfg, "local",
+                         grounding_override="enforce") is GroundingPolicy.ENFORCE
+    cfg = {"chat": {"grounding_default": "enforce"}}
+    assert grounding_for(cfg, "local",
+                         grounding_override="observe") is GroundingPolicy.OBSERVE
+
+
+def test_grounding_for_unknown_mode_raises():
+    from oracle_agent.agentloop.builder import grounding_for
+
+    with pytest.raises(ValueError):
+        grounding_for({"chat": {"grounding_default": "loose"}}, "local")
+
+
+def test_build_loop_gateway_enforce_immutable_to_config(profile, spawned_root):
+    """SECURITY: building via the builder with surface='gateway' and a config
+    attempting observe still yields ENFORCE (P3-T4 acceptance, the security_map
+    guarantee SH-059's enforcer)."""
+    from oracle_agent import config as _config
+    from oracle_agent.agentloop.builder import build_loop
+
+    cfg = _config.load_config()
+    # A config that deliberately tries to relax grounding for local chat...
+    cfg["chat"]["grounding_default"] = "observe"
+    # ...and even an injected (non-schema) gateway grounding key must not matter.
+    cfg["gateway"]["telegram"]["grounding"] = "observe"
+    # Point at a loopback provider so the builder doesn't try a real network.
+    cfg["provider"]["base_url"] = "http://127.0.0.1:1/v1"
+    loop = build_loop(cfg, spawned_root, surface="gateway")
+    assert loop.grounding is GroundingPolicy.ENFORCE
+
+
+def test_build_loop_local_observe_is_v1_behavior(profile, spawned_root):
+    """local --grounding observe (or default) -> OBSERVE (v1 footer-only)."""
+    from oracle_agent import config as _config
+    from oracle_agent.agentloop.builder import build_loop
+
+    cfg = _config.load_config()
+    cfg["provider"]["base_url"] = "http://127.0.0.1:1/v1"
+    loop = build_loop(cfg, spawned_root, surface="local")
+    assert loop.grounding is GroundingPolicy.OBSERVE
+    loop2 = build_loop(cfg, spawned_root, surface="local",
+                       grounding_override="enforce")
+    assert loop2.grounding is GroundingPolicy.ENFORCE

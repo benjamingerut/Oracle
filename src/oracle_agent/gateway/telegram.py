@@ -136,6 +136,8 @@ class TelegramGateway:
         self._offset_file: Path | None = None
         self._loops: OrderedDict[tuple[str, str], object] = OrderedDict()
         self._write_times: dict[str, list[float]] = {}
+        # Per-user repair-round-trip timestamps for the optional hourly cap (P3S-3).
+        self._repair_times: dict[str, list[float]] = {}
         self._fail_streak = 0               # consecutive poll failures
         self._offset_loaded = False
 
@@ -294,6 +296,16 @@ class TelegramGateway:
             return True
 
         loop = self._loop_for(str(user_id), instance, root)
+        # Per-user repair cap (P3S-3, optional): a runaway repair source (e.g. a
+        # user echoing numbers to buy repair turns) is throttled per hour. When
+        # over the cap the turn is refused before any model call -- structural,
+        # like the write rate limit.
+        if not self._allow_repairs(str(user_id)):
+            self._reply(chat["id"],
+                        "You've hit the hourly limit for grounding-repair "
+                        "turns. Please try again later.")
+            return True
+        started = self.clock()
         try:
             # SPEC S2 #1: every gateway turn holds the root lock.
             with self._root_lock_factory(instance):
@@ -303,9 +315,12 @@ class TelegramGateway:
                 f"gateway: turn failed for {user_id}: {type(exc).__name__}")
             self._reply(chat["id"], "Sorry — I hit an error handling that.")
             return True
+        added_seconds = max(0.0, self.clock() - started)
+        # Record repair round-trips against the per-user hourly cap.
+        self._record_repairs(str(user_id), int(getattr(result, "repairs", 0) or 0))
 
         self._reply(chat["id"], result.text)
-        self._ledger(root, user_id, chat["id"], text, result)
+        self._ledger(root, user_id, chat["id"], text, result, added_seconds)
         return True
 
     def _loop_for(self, user_id: str, instance: str, root: Path):
@@ -328,14 +343,29 @@ class TelegramGateway:
         except Exception as exc:
             self.logger(f"gateway: send failed: {type(exc).__name__}")
 
-    def _ledger(self, root: Path, user_id, chat_id, text_in, result) -> None:
-        """Append a metadata-only gateway_turn row (never message bodies)."""
+    def _ledger(self, root: Path, user_id, chat_id, text_in, result,
+                added_seconds: float = 0.0) -> None:
+        """Append a metadata-only gateway_turn row (never message bodies).
+
+        P3-T4: the row gains forced-grounding repair telemetry from the
+        ``TurnResult`` -- the repair round-trip count, the redacted/withheld
+        claim counts, the grounding mode name, and the added wall-clock seconds
+        for the turn. All metadata; never claim text or message bodies (P3S-3/7;
+        the claim text lives ONLY in the local-only shadow file, P3S-10, never on
+        any gateway path).
+        """
         verdicts = [e.get("verdict") for e in (result.envelopes or [])]
         row = {
             "kind": "gateway_turn", "platform": "telegram",
             "user_id": str(user_id), "chat_id": str(chat_id),
             "chars_in": len(text_in), "chars_out": len(result.text),
-            "verdicts": verdicts, "ts": _iso(self.clock()),
+            "verdicts": verdicts,
+            "grounding": getattr(result, "grounding", None),
+            "repairs": int(getattr(result, "repairs", 0) or 0),
+            "redacted": int(getattr(result, "redacted_count", 0) or 0),
+            "withheld": bool(getattr(result, "withheld", False)),
+            "added_seconds": round(float(added_seconds), 3),
+            "ts": _iso(self.clock()),
         }
         path = Path(root) / "Meta.nosync" / "ledgers" / "gateway_event.jsonl"
         try:
@@ -343,6 +373,42 @@ class TelegramGateway:
             _append_jsonl(path, row)
         except OSError as exc:
             self.logger(f"gateway: ledger append failed: {type(exc).__name__}")
+
+    # -- grounding repair cap (P3S-3, optional) ----------------------------- #
+    def _repair_cap(self) -> int | None:
+        """Per-user repair-round-trips-per-hour cap, or None if unconfigured.
+
+        Read from ``gateway.per_user_repairs_per_hour``; a missing/non-positive
+        value disables the cap (the iteration + wall-clock budgets still bound
+        every turn -- this is an extra per-user throttle, not the only one).
+        """
+        raw = self._tg.get("per_user_repairs_per_hour")
+        if raw is None:
+            return None
+        try:
+            cap = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return cap if cap > 0 else None
+
+    def _allow_repairs(self, user_id: str) -> bool:
+        """True iff this user is under the hourly repair cap (window-checked)."""
+        cap = self._repair_cap()
+        if cap is None:
+            return True
+        now = self.clock()
+        window = [t for t in self._repair_times.get(user_id, []) if now - t < 3600]
+        self._repair_times[user_id] = window
+        return len(window) < cap
+
+    def _record_repairs(self, user_id: str, n: int) -> None:
+        """Record ``n`` repair round-trips for this user (for the hourly cap)."""
+        if n <= 0 or self._repair_cap() is None:
+            return
+        now = self.clock()
+        window = [t for t in self._repair_times.get(user_id, []) if now - t < 3600]
+        window.extend([now] * n)
+        self._repair_times[user_id] = window
 
     # -- write rate limiting (M4), used by the loop_factory's dispatcher ---- #
     def allow_write(self, user_id: str) -> bool:

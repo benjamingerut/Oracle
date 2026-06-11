@@ -816,6 +816,8 @@ def _dispatch(root: Path, loop: Loop, *, now: datetime, headless: bool) -> dict:
             fn="run_architecture_retrospective_loop",
             kind="builtin:architecture-retrospective",
         )
+    if runner_key in ("builtin:connector-pull", "connectors:run_connector_pull_loop"):
+        return _run_connector_pull(root, loop, now=now)
     if runner == "" or runner_key in ("agent-worklist", "agent", "worklist"):
         return {
             "status": "worklist",
@@ -1139,6 +1141,238 @@ def _run_skill_repository_learning(root: Path, loop: Loop, *, now: datetime) -> 
         "processed": len(pending),
         "note_path": note_path,
         "event_consumption": consumed,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# builtin: connector-pull (P7-T9) -- scheduled pulls through the autonomy gate
+# --------------------------------------------------------------------------- #
+#: source.cadence vocabulary pinned by the manifest grammar (P7S-24):
+#: hourly | daily | weekly | <N>h | <N>d (default daily). Anything else falls
+#: back to daily (logged, never a crash). NOTE: this is the CONNECTOR cadence
+#: grammar -- deliberately narrower than the loop-record cadence vocabulary --
+#: so a typo'd connector cadence can never silently mean "never run".
+_CONNECTOR_CADENCE_DEFAULT = timedelta(days=1)
+_CONNECTOR_CADENCE_NAMED = {
+    "hourly": timedelta(hours=1),
+    "daily": timedelta(days=1),
+    "weekly": timedelta(days=7),
+}
+_CONNECTOR_CADENCE_NH_RE = re.compile(r"^(\d+)h$")
+_CONNECTOR_CADENCE_ND_RE = re.compile(r"^(\d+)d$")
+
+
+def parse_connector_cadence(cadence: Any) -> timedelta:
+    """Map a connector ``source.cadence`` to a timedelta per the pinned grammar.
+
+    ``hourly | daily | weekly | <N>h | <N>d``; default ``daily``. Anything
+    outside the grammar (None, '', a typo, a zero/negative count) falls back to
+    ``daily`` -- never a crash, and never "never" (an empty/garbled cadence must
+    not silently disable a scheduled connector).
+    """
+    if cadence is None:
+        return _CONNECTOR_CADENCE_DEFAULT
+    key = str(cadence).strip().lower()
+    if not key:
+        return _CONNECTOR_CADENCE_DEFAULT
+    if key in _CONNECTOR_CADENCE_NAMED:
+        return _CONNECTOR_CADENCE_NAMED[key]
+    m = _CONNECTOR_CADENCE_NH_RE.match(key)
+    if m and int(m.group(1)) > 0:
+        return timedelta(hours=int(m.group(1)))
+    m = _CONNECTOR_CADENCE_ND_RE.match(key)
+    if m and int(m.group(1)) > 0:
+        return timedelta(days=int(m.group(1)))
+    return _CONNECTOR_CADENCE_DEFAULT
+
+
+def _import_connectors():
+    """Import the connectors package bare-or-as-package; None if unavailable."""
+    for loader in (
+        lambda: importlib.import_module("connectors"),
+        lambda: importlib.import_module(".connectors", package="_tools"),
+    ):
+        try:
+            return loader()
+        except Exception:
+            continue
+    return None
+
+
+def _connector_floor(manifest: dict) -> str:
+    src = manifest.get("source") if isinstance(manifest, dict) else None
+    src = src if isinstance(src, dict) else {}
+    cand = src.get("default_sensitivity")
+    order = ("public", "internal", "confidential", "restricted", "secret")
+    return cand if cand in order else "internal"
+
+
+def _connector_is_due(conn_mod, root: Path, cid: str, manifest: dict, now: datetime) -> bool:
+    """Manifest-due check from the connector's OWN cursor last_success_ts.
+
+    A pull never rewrites its manifest (P7S-23), so due-ness reads the cursor,
+    not a manifest field: never-pulled => due; otherwise due iff
+    ``now >= last_success_ts + cadence``. An unparseable cursor ts is treated as
+    never-pulled (fail-open to "due", which is safe -- idempotent landing names).
+    """
+    src = manifest.get("source") if isinstance(manifest, dict) else None
+    src = src if isinstance(src, dict) else {}
+    cadence = parse_connector_cadence(src.get("cadence"))
+    try:
+        from connectors.remote import load_cursor as _load_cursor  # type: ignore
+    except Exception:  # pragma: no cover - package fallback
+        try:
+            from .connectors.remote import load_cursor as _load_cursor  # type: ignore
+        except Exception:
+            _load_cursor = getattr(getattr(conn_mod, "remote", None), "load_cursor", None)
+    cur = {}
+    if callable(_load_cursor):
+        try:
+            cur = _load_cursor(root, cid) or {}
+        except Exception:
+            cur = {}
+    last = parse_dt(cur.get("last_success_ts")) if isinstance(cur, dict) else None
+    if last is None:
+        return True
+    return now >= last + cadence
+
+
+def _run_connector_pull(root: Path, loop: Loop, *, now: datetime) -> dict:
+    """Builtin runner for the canonical ``connector-pull`` loop (P7-T9).
+
+    For each manifest-due connector (its ``source.cadence`` per the pinned
+    grammar), run a GATED pull so ``actions.with_action`` enforces kill-switch /
+    enabled / allowed_loops / writable_lanes(_INPUT) / readonly_connectors /
+    blast caps -- authorization runs BEFORE any probe/list network call (the
+    base's authorize-before-network, P7S-18) -- then ingest the newly landed
+    files via ``ingest_pipeline.run_batch(..., connector=<id>,
+    sensitivity=<manifest floor>)`` under the same grant so the floor survives
+    into ingest-time re-classification (P7S-16) and source records + authority
+    proposals stay review-gated and connector-tagged (P7S-19).
+
+    Result vocabulary discipline (P7S-12): a connector whose pull is refused by
+    the action gate is recorded as a per-connector failure but NEVER lets an
+    ``skipped_out_of_scope`` row become a failure_event / demotion signal -- that
+    bookkeeping lives in the base ``pull`` and is not re-derived here.
+    """
+    conn_mod = _import_connectors()
+    if conn_mod is None:
+        return {
+            "status": "fail",
+            "performed": False,
+            "kind": "builtin:connector-pull",
+            "error": "connectors module unavailable",
+        }
+    base = getattr(conn_mod, "ConnectorContext", None)
+    try:
+        cids = list(conn_mod._known_connector_ids(root))
+    except Exception as exc:
+        return {
+            "status": "fail",
+            "performed": False,
+            "kind": "builtin:connector-pull",
+            "error": f"connector discovery failed: {type(exc).__name__}: {exc}",
+        }
+
+    try:
+        import ingest_pipeline as _ingest  # type: ignore
+    except Exception:  # pragma: no cover - package fallback
+        try:
+            from . import ingest_pipeline as _ingest  # type: ignore
+        except Exception:
+            _ingest = None  # type: ignore
+
+    per_connector: list[dict] = []
+    pulled = ingested = skipped = refused = failed = denied = due = 0
+    for cid in cids:
+        try:
+            manifest = conn_mod.load_manifest(root, cid)
+        except Exception as exc:
+            per_connector.append({"connector": cid, "status": "load-failed",
+                                   "error": f"{type(exc).__name__}: {exc}"})
+            failed += 1
+            continue
+        if not _connector_is_due(conn_mod, root, cid, manifest, now):
+            per_connector.append({"connector": cid, "status": "not-due"})
+            continue
+        due += 1
+        try:
+            conn = conn_mod.get_connector(root, cid)
+        except Exception as exc:
+            per_connector.append({"connector": cid, "status": "broken",
+                                  "error": f"{type(exc).__name__}: {exc}"})
+            failed += 1
+            continue
+        floor = _connector_floor(manifest)
+        # GATED pull: authorize-before-probe under the canonical connector-pull
+        # loop id with the connector's own scope (gate enforces caps/allowlists).
+        # role="unknown": the system harness asserts no HUMAN role, so the
+        # autonomy gate's advisory act_autonomously role check is skipped (as the
+        # dream path does); kill-switch / enabled / allowlist / caps stay binding.
+        ctx = base(root, conn.manifest, actor="harness", role="unknown",
+                   gated=True) if base is not None else None
+        try:
+            results, meta = conn_mod._guarded_pull(conn, ctx)
+        except Exception as exc:
+            # A refusal from the action gate (autonomy off / not allowlisted /
+            # over caps) -- the pull did NOT run. Recorded per-connector; this is
+            # NOT a failure_event (the gate already logged the intended/deny row)
+            # and must not feed enforce_demotion_policy.
+            per_connector.append({"connector": cid, "status": "gate-denied",
+                                  "reason": f"{type(exc).__name__}: {exc}"})
+            denied += 1
+            continue
+
+        c_ingested = [r for r in results if r.get("action") == "ingested"]
+        c_skipped = [r for r in results if r.get("action") in ("skipped_policy", "skipped_out_of_scope", "skipped")]
+        c_refused = [r for r in results if r.get("action") == "refused"]
+        c_failed = [r for r in results if r.get("action") == "failed"]
+        pulled += len(c_ingested)
+        skipped += len(c_skipped)
+        refused += len(c_refused)
+        failed += len(c_failed)
+
+        # Ingest the newly landed files under the SAME grant so the manifest
+        # floor survives into ingest-time re-classification and the source
+        # records / authority proposals stay review-gated + connector-tagged.
+        landed = [r.get("dst") for r in c_ingested if r.get("dst")]
+        ingest_summary = None
+        if landed and _ingest is not None:
+            try:
+                ingest_summary = _ingest.run_batch(
+                    root, landed, connector=cid, sensitivity=floor,
+                    actor="harness", role="system",
+                )
+                ingested += int(ingest_summary.get("ingested", 0))
+            except Exception as exc:
+                ingest_summary = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        per_connector.append({
+            "connector": cid,
+            "status": "pulled",
+            "action_gate": meta.get("action_gate"),
+            "pulled": len(c_ingested),
+            "skipped": len(c_skipped),
+            "refused": len(c_refused),
+            "failed": len(c_failed),
+            "ingested": int((ingest_summary or {}).get("ingested", 0)) if isinstance(ingest_summary, dict) else 0,
+        })
+
+    # A connector pull that REFUSED on containment grounds (security) is a real
+    # failure of the loop; a gate-denial or out-of-scope skip is not.
+    loop_status = "fail" if (refused or failed) else "ok"
+    return {
+        "status": loop_status,
+        "performed": due > 0,
+        "kind": "builtin:connector-pull",
+        "health_signal": "healthy" if loop_status == "ok" else "degraded",
+        "due_connectors": due,
+        "pulled": pulled,
+        "ingested": ingested,
+        "skipped": skipped,
+        "refused": refused,
+        "failed": failed,
+        "gate_denied": denied,
+        "connectors": per_connector,
     }
 
 
