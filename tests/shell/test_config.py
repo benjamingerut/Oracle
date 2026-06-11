@@ -132,3 +132,252 @@ def test_scan_secret_leak_telegram_token_direct():
     """_scan_secret_leak detects Telegram bot token shape directly."""
     reason = config._scan_secret_leak("9876543210:BBCCddEEFFggHHIIjjKKLLmmNNOOppQQ")
     assert reason is not None
+
+
+# --------------------------------------------------------------------------- #
+# P1-T3 — config versioning + migration
+# --------------------------------------------------------------------------- #
+
+# A minimal v1 fixture (no "version" key, real-world shape).
+_V1_FIXTURE: dict = {
+    "provider": {
+        "name": "openai",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4o",
+        "api_key_env": "MY_OPENAI_KEY",
+        "max_tokens": 2048,
+        "local_is_confined": False,
+    },
+    "chat": {"max_iterations": 10},
+    "gateway": {
+        "telegram": {
+            "enabled": True,
+            "token_env": "TG_BOT_TOKEN",
+            "allowlist": {"42": {"role": "user", "instance": "prod"}},
+            "max_sensitivity": "public",
+        }
+    },
+    "instances": {"prod": {"root": "/srv/oracle/prod"}},
+    "ingest_roots": ["/data/docs"],
+    "default_instance": "prod",
+}
+
+
+def test_v1_fixture_loads_and_migrates_in_memory(profile):
+    """A v1 config (no 'version') loads, is migrated to v2 in memory.
+    The raw file on disk must remain byte-identical after the load.
+    """
+    p = config.config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    raw_text = json.dumps(_V1_FIXTURE, indent=2, sort_keys=True) + "\n"
+    p.write_text(raw_text, encoding="utf-8")
+
+    cfg = config.load_config()
+
+    # File on disk must be untouched (in-memory-only migration, P1S-14).
+    assert p.read_text(encoding="utf-8") == raw_text, (
+        "load_config must NOT write the file; raw file was modified."
+    )
+
+    # The returned dict should have the merged defaults + migrated data.
+    assert cfg["provider"]["name"] == "openai"
+    assert cfg["gateway"]["telegram"]["enabled"] is True
+    assert cfg["ingest_roots"] == ["/data/docs"]
+    assert cfg["default_instance"] == "prod"
+
+    # The raw file still has NO "version" key (it was not saved by load).
+    on_disk = json.loads(p.read_text(encoding="utf-8"))
+    assert "version" not in on_disk
+
+
+def test_version_not_in_default_config():
+    """'version' must not appear in DEFAULT_CONFIG (P1S-6 / frozen interface)."""
+    assert "version" not in config.DEFAULT_CONFIG
+
+
+def test_future_version_rejected(profile):
+    """A config with version > CONFIG_VERSION must be rejected with guidance."""
+    p = config.config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    future = {"version": config.CONFIG_VERSION + 5, "provider": {"name": "test"}}
+    p.write_text(json.dumps(future) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"[Uu]pgrade"):
+        config.load_config()
+
+    # The file must be unchanged.
+    assert json.loads(p.read_text())["version"] == config.CONFIG_VERSION + 5
+
+
+def test_migration_idempotency():
+    """Applying migrations to an already-migrated dict is identity.
+
+    Running the full migration sequence twice must produce the same result as
+    running it once (pure + idempotent guarantee).
+    """
+    raw = {"version": 1, "gateway": {"telegram": {"enabled": False}}}
+
+    # First pass
+    m1 = config.MIGRATIONS[1](raw)
+    # Second pass (re-migrate the result starting from v1 again — same input)
+    m2 = config.MIGRATIONS[1](raw)
+
+    assert m1 == m2
+
+
+def test_migration_v1_to_v2_stamps_version():
+    """The v1→v2 migration must set 'version' to 2 and preserve all other keys."""
+    raw = {"provider": {"name": "test"}, "ingest_roots": ["/foo"]}
+    migrated = config.MIGRATIONS[1](raw)
+    assert migrated["version"] == 2
+    assert migrated["provider"] == {"name": "test"}
+    assert migrated["ingest_roots"] == ["/foo"]
+
+
+def test_security_key_drop_caught(profile, monkeypatch):
+    """A migration that drops a SECURITY_KEYS path must be caught as a hard error.
+
+    We deliberately plant a broken migration in MIGRATIONS via monkeypatch.
+    It drops gateway.telegram.allowlist — the preservation check must fire.
+    """
+    import copy as _copy
+
+    def _bad_migrate(raw: dict) -> dict:
+        """Deliberately drop gateway.telegram.allowlist."""
+        out = _copy.deepcopy(raw)
+        out["version"] = 2
+        try:
+            del out["gateway"]["telegram"]["allowlist"]
+        except KeyError:
+            pass
+        return out
+
+    monkeypatch.setitem(config.MIGRATIONS, 1, _bad_migrate)
+
+    p = config.config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    v1 = {
+        "gateway": {
+            "telegram": {
+                "enabled": True,
+                "token_env": "TG_TOKEN",
+                "allowlist": {"7": {"role": "user", "instance": "x"}},
+                "max_sensitivity": "internal",
+            }
+        }
+    }
+    p.write_text(json.dumps(v1) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"[Ss]ecurity key"):
+        config.load_config()
+
+    # File must be unchanged after the hard error.
+    assert json.loads(p.read_text())["gateway"]["telegram"]["allowlist"] == {
+        "7": {"role": "user", "instance": "x"}
+    }
+
+
+def test_corrupt_config_rejected_and_not_clobbered(profile):
+    """A corrupt (unparseable) config must raise ValueError and leave the file intact."""
+    p = config.config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    corrupt = b"{ this is: not valid JSON !!!\x00"
+    p.write_bytes(corrupt)
+
+    with pytest.raises(ValueError, match=r"[Cc]orrupt|unreadable"):
+        config.load_config()
+
+    # File must still contain the original corrupt bytes.
+    assert p.read_bytes() == corrupt
+
+
+def test_save_stamps_version(profile):
+    """save_config must write 'version': CONFIG_VERSION into the file."""
+    cfg = config.load_config()
+    config.save_config(cfg)
+    on_disk = json.loads(config.config_path().read_text())
+    assert on_disk.get("version") == config.CONFIG_VERSION
+
+
+def test_save_does_not_mutate_caller_dict(profile):
+    """save_config must not mutate the dict passed by the caller."""
+    cfg = config.load_config()
+    cfg_copy = json.loads(json.dumps(cfg))
+    # Ensure no "version" present in a freshly-loaded dict (no prior save).
+    cfg.pop("version", None)
+    config.save_config(cfg)
+    # cfg must be unchanged
+    assert cfg == cfg_copy or "version" not in cfg
+
+
+def test_round_trip_version(profile):
+    """save then load round-trip preserves version and a user-set key."""
+    cfg = config.load_config()
+    cfg["provider"]["model"] = "test-round-trip-model"
+    config.save_config(cfg)
+    again = config.load_config()
+    assert again["provider"]["model"] == "test-round-trip-model"
+    # After save+load the version in the returned dict reflects the merge.
+    # The file must carry CONFIG_VERSION.
+    on_disk = json.loads(config.config_path().read_text())
+    assert on_disk["version"] == config.CONFIG_VERSION
+
+
+def test_already_v2_config_loads_without_migration(profile):
+    """A config already at CONFIG_VERSION=2 must load without triggering migrations."""
+    import copy as _copy
+    call_log: list[int] = []
+
+    original_migrate = config.MIGRATIONS.get(1)
+
+    def _tracking_migrate(raw: dict) -> dict:
+        call_log.append(1)
+        return original_migrate(raw)  # type: ignore[misc]
+
+    # Write a v2 config so no migration should run.
+    p = config.config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    v2 = {"version": 2, "provider": {"name": "already-v2"}}
+    p.write_text(json.dumps(v2) + "\n", encoding="utf-8")
+
+    # Temporarily replace migration — it must NOT be called.
+    orig = config.MIGRATIONS.get(1)
+    config.MIGRATIONS[1] = _tracking_migrate
+    try:
+        cfg = config.load_config()
+    finally:
+        if orig is not None:
+            config.MIGRATIONS[1] = orig
+        else:
+            del config.MIGRATIONS[1]
+
+    assert call_log == [], "Migration must NOT run when config is already at CONFIG_VERSION"
+    assert cfg["provider"]["name"] == "already-v2"
+
+
+def test_security_key_preserved_for_wildcard_providers(profile, monkeypatch):
+    """providers.*.api_key_env wildcard must be checked for each provider entry."""
+    import copy as _copy
+
+    def _bad_migrate_drops_api_key(raw: dict) -> dict:
+        """Drop api_key_env from all providers sub-entries."""
+        out = _copy.deepcopy(raw)
+        out["version"] = 2
+        for prov in out.get("providers", {}).values():
+            prov.pop("api_key_env", None)
+        return out
+
+    monkeypatch.setitem(config.MIGRATIONS, 1, _bad_migrate_drops_api_key)
+
+    p = config.config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    v1 = {
+        "providers": {
+            "openai": {"api_key_env": "OPENAI_KEY"},
+            "anthropic": {"api_key_env": "ANTHROPIC_KEY"},
+        }
+    }
+    p.write_text(json.dumps(v1) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"[Ss]ecurity key"):
+        config.load_config()

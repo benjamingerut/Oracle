@@ -13,6 +13,16 @@ the file is never briefly world-readable. ``save_config`` refuses any dict that
 smuggles a literal secret (by key name, URL userinfo, or token shape) so a
 credential can never land in the world-readable config.json.
 
+Config versioning (P1-T3 / P1S-6 / P1S-14 / P1F-9):
+  - ``CONFIG_VERSION`` is the current schema version (2).
+  - ``"version"`` is NOT in DEFAULT_CONFIG; migration/detection run on raw JSON.
+  - ``load_config`` migrates in memory only — never writes the file.
+  - ``save_config`` stamps ``CONFIG_VERSION`` into the saved dict.
+  - A missing ``"version"`` key is treated as v1.
+  - A ``version > CONFIG_VERSION`` is rejected with guidance (fail closed).
+  - After migration, every SECURITY_KEYS path present in the raw config must
+    be present and unchanged in the migrated config (hard load error otherwise).
+
 Stdlib only.
 """
 from __future__ import annotations
@@ -23,6 +33,14 @@ import os
 import re
 import tempfile
 from pathlib import Path
+from typing import Callable
+
+# --------------------------------------------------------------------------- #
+# config versioning
+# --------------------------------------------------------------------------- #
+
+#: The current config schema version.  Increment when a migration is added.
+CONFIG_VERSION: int = 2
 
 # --------------------------------------------------------------------------- #
 # defaults
@@ -59,6 +77,139 @@ DEFAULT_CONFIG: dict = {
 
 _CONFIG_NAME = "config.json"
 _ENV_NAME = ".env"
+
+# --------------------------------------------------------------------------- #
+# Security-key paths that migrations must never drop or alter silently.
+# Each entry is a dotted path string; "providers.*.api_key_env" uses the
+# wildcard "*" to match any single key at that level.
+# --------------------------------------------------------------------------- #
+SECURITY_KEYS: tuple[str, ...] = (
+    "gateway.telegram.enabled",
+    "gateway.telegram.allowlist",
+    "gateway.telegram.max_sensitivity",
+    "gateway.telegram.token_env",
+    "providers.*.api_key_env",
+    "ingest_roots",
+    "default_instance",
+    "default_provider",
+)
+
+
+def _get_dotted(d: dict, path: str):
+    """Return the value at ``path`` (dotted) or ``_MISSING`` if absent."""
+    parts = path.split(".")
+    cur: object = d
+    for part in parts:
+        if not isinstance(cur, dict) or part not in cur:
+            return _MISSING
+        cur = cur[part]
+    return cur
+
+
+def _get_dotted_wildcard(d: dict, path: str) -> list[tuple[str, object]]:
+    """Expand a single ``*`` in ``path`` and return ``(resolved_path, value)`` pairs.
+
+    Only the first ``*`` in the path is treated as a wildcard (matching any
+    single mapping key).  All other segments are treated literally.
+    """
+    parts = path.split(".")
+    try:
+        star_idx = parts.index("*")
+    except ValueError:
+        # No wildcard — behave like a normal lookup.
+        v = _get_dotted(d, path)
+        if v is _MISSING:
+            return []
+        return [(path, v)]
+
+    # Navigate to the dict that contains the wildcard level.
+    before = parts[:star_idx]
+    after = parts[star_idx + 1:]
+    cur: object = d
+    for part in before:
+        if not isinstance(cur, dict) or part not in cur:
+            return []
+        cur = cur[part]
+    if not isinstance(cur, dict):
+        return []
+
+    results = []
+    for key in cur:
+        sub_path = ".".join(before + [key] + after)
+        v = _get_dotted(cur[key], ".".join(after)) if after else cur[key]
+        if v is not _MISSING:
+            results.append((sub_path, v))
+    return results
+
+
+class _Missing:
+    """Sentinel for absent dotted-path lookups."""
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<MISSING>"
+
+
+_MISSING = _Missing()
+
+
+def _check_security_keys(raw: dict, migrated: dict) -> None:
+    """Verify that every SECURITY_KEYS path present in ``raw`` is present and
+    unchanged in ``migrated``.  Raises ``ValueError`` on the first violation.
+    """
+    for path in SECURITY_KEYS:
+        if "*" in path:
+            pairs = _get_dotted_wildcard(raw, path)
+            for resolved, raw_val in pairs:
+                # Build the resolved path for lookup in migrated.
+                mig_val = _get_dotted(migrated, resolved)
+                if mig_val is _MISSING:
+                    raise ValueError(
+                        f"Migration dropped security key {resolved!r} "
+                        f"(was: {raw_val!r}); refusing to load."
+                    )
+                if mig_val != raw_val:
+                    raise ValueError(
+                        f"Migration altered security key {resolved!r}: "
+                        f"{raw_val!r} -> {mig_val!r}; refusing to load."
+                    )
+        else:
+            raw_val = _get_dotted(raw, path)
+            if raw_val is _MISSING:
+                continue  # Key not present in raw; nothing to preserve.
+            mig_val = _get_dotted(migrated, path)
+            if mig_val is _MISSING:
+                raise ValueError(
+                    f"Migration dropped security key {path!r} "
+                    f"(was: {raw_val!r}); refusing to load."
+                )
+            if mig_val != raw_val:
+                raise ValueError(
+                    f"Migration altered security key {path!r}: "
+                    f"{raw_val!r} -> {mig_val!r}; refusing to load."
+                )
+
+
+# --------------------------------------------------------------------------- #
+# Migrations: key n migrates version n -> n+1.
+# Each migration must be pure (no side effects) and idempotent.
+# --------------------------------------------------------------------------- #
+
+def _migrate_v1_to_v2(raw: dict) -> dict:
+    """Migrate a v1 config dict to v2.
+
+    v1 had no ``"version"`` field.  v2 adds it.  No other structural change
+    is required for the base schema; the stamp is added here and ``load_config``
+    sets it, but the canonical stamp is written by ``save_config``.
+    """
+    out = copy.deepcopy(raw)
+    out["version"] = 2
+    return out
+
+
+MIGRATIONS: dict[int, Callable[[dict], dict]] = {
+    1: _migrate_v1_to_v2,
+}
 
 # Secret-guard patterns (STRESS M3).
 _SECRET_KEY_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|authorization|cookie|bearer)$")
@@ -120,17 +271,65 @@ def config_path() -> Path:
 
 
 def load_config() -> dict:
-    """Load config.json merged over DEFAULT_CONFIG (defaults fill gaps)."""
+    """Load config.json merged over DEFAULT_CONFIG (defaults fill gaps).
+
+    Version detection, future-version rejection, and migrations all run on
+    the **raw parsed JSON** before ``_deep_merge`` with ``DEFAULT_CONFIG``
+    (P1S-6, P1F-9).  The file is NEVER written by this function; migration
+    happens in memory only (P1S-14).  A corrupt or unparseable file raises
+    ``ValueError`` and is never overwritten (fail closed, INV-I4).
+    """
     p = config_path()
     if not p.exists():
         return copy.deepcopy(DEFAULT_CONFIG)
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        raw_text = p.read_text(encoding="utf-8")
+        data = json.loads(raw_text)
     except (json.JSONDecodeError, OSError) as exc:
-        raise ValueError(f"config.json is unreadable: {exc}") from exc
+        raise ValueError(
+            f"config.json is corrupt or unreadable: {exc}\n"
+            f"Fix or remove {p} — it will never be auto-repaired."
+        ) from exc
     if not isinstance(data, dict):
-        raise ValueError("config.json must contain a JSON object")
-    return _deep_merge(DEFAULT_CONFIG, data)
+        raise ValueError(
+            "config.json must contain a JSON object at the top level."
+        )
+
+    # --- Version detection (on raw data, before merge) ---
+    raw_version: int = data.get("version", 1)  # missing "version" => v1
+    if not isinstance(raw_version, int) or raw_version < 1:
+        raise ValueError(
+            f"config.json has an invalid 'version' value: {raw_version!r}. "
+            f"Expected a positive integer."
+        )
+    if raw_version > CONFIG_VERSION:
+        raise ValueError(
+            f"config.json was written by a newer Oracle shell "
+            f"(version {raw_version}); this shell understands up to "
+            f"version {CONFIG_VERSION}. "
+            f"Upgrade the oracle-agent package to load this config."
+        )
+
+    # --- Apply migrations in sequence on a copy of the raw dict ---
+    migrated = copy.deepcopy(data)
+    current = raw_version
+    while current < CONFIG_VERSION:
+        migrator = MIGRATIONS.get(current)
+        if migrator is None:
+            raise ValueError(
+                f"No migration path from config version {current} to "
+                f"{current + 1}.  Cannot load config."
+            )
+        migrated = migrator(migrated)
+        current += 1
+
+    # --- Security-key preservation check (P1S-6) ---
+    if raw_version < CONFIG_VERSION:
+        # Only run the check when migration actually happened.
+        _check_security_keys(data, migrated)
+
+    # --- Merge migrated raw dict over defaults ---
+    return _deep_merge(DEFAULT_CONFIG, migrated)
 
 
 def _scan_secret_leak(value, key: str = "") -> str | None:
@@ -166,13 +365,20 @@ def _scan_secret_leak(value, key: str = "") -> str | None:
 
 
 def save_config(cfg: dict) -> None:
-    """Atomically write config.json (0o600), refusing any smuggled secret."""
+    """Atomically write config.json (0o600), refusing any smuggled secret.
+
+    Stamps ``CONFIG_VERSION`` into the saved dict so that future loads can
+    detect the schema version.  The original ``cfg`` dict is not mutated.
+    """
     reason = _scan_secret_leak(cfg)
     if reason:
         raise ValueError(f"refusing to save config with a secret: {reason}")
+    # Stamp version into the copy that gets written; do NOT mutate the caller's dict.
+    to_write = copy.deepcopy(cfg)
+    to_write["version"] = CONFIG_VERSION
     p = config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(cfg, indent=2, sort_keys=True) + "\n"
+    text = json.dumps(to_write, indent=2, sort_keys=True) + "\n"
     _atomic_write(p, text, mode=0o600)
 
 
