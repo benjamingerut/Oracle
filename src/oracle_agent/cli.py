@@ -11,6 +11,8 @@
     oracle upgrade [--check]             per-instance direction report
     oracle upgrade kernel NAME [--approve ADMIN] [--force-downgrade]
     oracle upgrade self --from-dir DIR   maintainer re-vendor (git checkout only)
+    oracle backup [NAME] [--out DIR] [--tier TIER]   backup instance (or --profile)
+    oracle restore NAME --from PATH [--allow-cross-origin] [--trust-archive]
     oracle version
 
 Instance resolution: explicit NAME > cwd inside a registered root >
@@ -37,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
         "setup": _cmd_setup, "spawn": _cmd_spawn, "instances": _cmd_instances,
         "chat": _cmd_chat, "serve": _cmd_serve, "doctor": _cmd_doctor,
         "model": _cmd_model, "kernel": _cmd_kernel, "version": _cmd_version,
-        "upgrade": _cmd_upgrade,
+        "upgrade": _cmd_upgrade, "backup": _cmd_backup, "restore": _cmd_restore,
     }.get(cmd)
     if handler is None:
         print(f"oracle: unknown command {cmd!r} (try `oracle help`)", file=sys.stderr)
@@ -271,6 +273,16 @@ def _cmd_kernel(rest: list[str]) -> int:
 def _cmd_upgrade(rest: list[str]) -> int:
     from .upgrade_shell import cmd_upgrade
     return cmd_upgrade(rest)
+
+
+def _cmd_backup(rest: list[str]) -> int:
+    from .backup_shell import cmd_backup_dispatch
+    return cmd_backup_dispatch(rest)
+
+
+def _cmd_restore(rest: list[str]) -> int:
+    from .backup_shell import cmd_restore_dispatch
+    return cmd_restore_dispatch(rest)
 
 
 def _cmd_version(rest: list[str]) -> int:

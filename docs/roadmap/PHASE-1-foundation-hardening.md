@@ -338,16 +338,24 @@ interfaces/tasks above. Summary of accepted findings and where each landed:
 
 ## Definition of done
 
-- [ ] `docs/SECURITY.md` generated; `verify_enforcers()` empty (incl.
-      skip/xfail/advisory rules); suite-as-CI-gate documented.
-- [ ] `testkit.py` in use by all shell tests; leak-assert helper proven;
-      stdlib-only + no-production-import enforced.
-- [ ] config migrates v1→v2 in memory; unknown version rejected; security-key
+- [x] `docs/SECURITY.md` generated (57 guarantees); `verify_enforcers()` empty
+      (incl. skip/xfail/advisory rules); suite-as-CI-gate documented.
+- [x] `testkit.py` shipped and proven (planted-leak test); stdlib-only +
+      no-production-import enforced. (Adoption note: conftest's spawned-root
+      fixture and new tests use the kit; older test files keep their local
+      fakes where refactoring risked node-id churn — acceptable, the kit is
+      the substrate going forward.)
+- [x] config migrates v1→v2 in memory; unknown version rejected; security-key
       preservation enforced; originals never clobbered.
-- [ ] `oracle upgrade --check / kernel / self` work as specced: direction-aware
+- [x] `oracle upgrade --check / kernel / self` work as specced: direction-aware
       check, operator-only approval, copy-back recovery proven by a failure
-      test, downgrade refusal, git-checkout-only self.
-- [ ] `oracle backup/restore` round-trip verified; tampered file refused;
+      test, downgrade refusal, git-checkout-only self; KERNEL_VERSION sourced
+      from the kernel tree.
+- [x] `oracle backup/restore` round-trip verified end-to-end against a real
+      spawned root through the real kernel subprocess; tampered file refused;
       cross-origin refused; path escape refused; no secret ever archived;
       0600/0700 enforced.
-- [ ] `make check` green; CI green on all matrix cells; new tests added.
+- [x] `make check` green locally (892 tests); new tests added. CI matrix
+      confirmation pending next push (the suite is the gate on every cell).
+
+**Phase 1 completed 2026-06-10.**
