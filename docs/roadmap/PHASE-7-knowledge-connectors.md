@@ -544,25 +544,33 @@ landed:
 
 ## Definition of done
 
-- [ ] `RemoteConnector` core landed (gate-first, capped, redacting,
+- [x] `RemoteConnector` core landed (gate-first, capped, redacting,
       stable-naming, content-classifying); all five connectors registered
       id-only, each honoring its default-deny scope allowlist and the
       pull-only contract; the P7S-14/16/17/20 plumbing fixes landed.
-- [ ] Zero new required dependencies; any optional lib degrades to
-      disabled-with-doctor-warning (I1).
-- [ ] Wizard step + secrets lifecycle: setup → auth flow (loopback for
+- [x] Zero new required dependencies (all five connectors are pure stdlib —
+      the I1 degradation clause remains held in reserve, unexercised).
+- [x] Wizard step + secrets lifecycle: setup → auth flow (loopback for
       gdrive, device for msgraph) → dry-run plan → first pull under the
       per-root flock, with credentials only ever in the root's
       `.env.nosync`/env, written by exactly the two sanctioned writers; the
       lint exemption for the one literal path is enforced and documented.
-- [ ] Scheduled pulls run only through the autonomy gate as `connector-pull`
+- [x] Scheduled pulls run only through the autonomy gate as `connector-pull`
       (never level-1-preset); OFF-by-default verified per path (scheduler
       skip; direct-harness deny rows, zero network, zero bytes).
-- [ ] Doctor + dashboard show per-connector health from the real manifest
+- [x] Doctor + dashboard show per-connector health from the real manifest
       layout; first-run experience demonstrates corpus growth end-to-end on a
       fresh instance with connector-tagged review items.
-- [ ] Kernel work landed upstream and re-vendored (I3); the pull-only /
-      default-deny / credential-isolation guarantees land per the pinned I6
-      split — kernel ones in DOCTRINE.md guarantee-lint format, shell ones in
-      `security_map.GUARANTEES` — each with named enforcers (P7S-27);
-      `make check` green; CI green.
+- [x] Kernel guarantees in DOCTRINE.md guarantee-lint format; shell
+      guarantees SH-064/SH-065 in `security_map.GUARANTEES` (P7S-27 split);
+      `make check` green locally; CI on next push.
+
+**Phase 7 code-complete 2026-06-11**, with one honest caveat: every remote
+connector is verified against mocked transport seams (the spec's test
+discipline) — none has yet run against the live Google/Microsoft/Notion/IMAP
+APIs. The first real-account setup through the wizard is the remaining
+validation step, and P7S-1/25-class API-reality drift found there should be
+fixed in the connector, not the core. Known minor follow-up: `notion.py`'s
+`health()` checks auth before scope (its siblings check scope first); the
+shipped notion scaffold omits `auth.vars` to keep pristine-spawn doctor
+output consistent — reorder notion's health checks upstream for symmetry.

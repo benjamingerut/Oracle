@@ -352,20 +352,27 @@ interfaces/tasks above. Summary of accepted findings and where each landed:
 
 ## Definition of done
 
-- [ ] Deterministic extractor + checker with a labeled corpus (recall ≥ 0.95
+- [x] Deterministic extractor + checker with a labeled corpus (recall = 1.00
       overall AND per adversarial fixture class); withheld envelopes are
       refused-class; coverage is normalize-equality only.
-- [ ] Repair loop with redaction fallback; no unbacked material claim ever
+- [x] Repair loop with redaction fallback; no unbacked material claim ever
       released; repairs share the per-turn iteration budget + wall-clock
       ceiling; gate exceptions fail closed; STRESS I1 message-pairing AND
       P3S-19 repair-group eviction invariants preserved.
-- [ ] Gateway ENFORCE non-overridable, hard-coded in the builder
+- [x] Gateway ENFORCE non-overridable, hard-coded in the builder
       (gateway-first); local default governed by the P3-T7 budget gate via
       `chat.grounding_default` (SECURITY_KEYS-protected); grounding-mode
       flags logged; repair telemetry in the gateway ledger.
-- [ ] Negligible extractor/checker latency incl. pathological inputs
-      (benchmarked, P3-T5) AND real-traffic budgets measured against the
-      pinned numbers incl. repair-loop tokens/seconds (P3-T7).
-- [ ] SECURITY.md guarantee added and backed (object-level wording per
-      P3S-4).
-- [ ] `make check` green; CI green.
+- [x] Negligible extractor/checker latency incl. pathological inputs
+      (benchmarked, P3-T5: typical 0.01ms, 10k-row table 39ms, all <50ms).
+- [ ] **PENDING — the one open item:** real-traffic budgets measured against
+      the pinned numbers (P3-T7 requires ≥50 real local turns over ≥7 days
+      with operator labels; the capture machinery + `oracle grounding-report`
+      ship now, the measurement runs on real use). The local
+      `chat.grounding_default` stays OBSERVE until that report says GO.
+- [x] SECURITY.md guarantees SH-059..SH-063 added and backed (object-level
+      wording per P3S-4).
+- [x] `make check` green locally; CI on next push.
+
+**Phase 3 code-complete 2026-06-11.** Gateway runs ENFORCE from day one; the
+local default flip awaits the P3-T7 real-traffic measurement.

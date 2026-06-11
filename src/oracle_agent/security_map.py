@@ -771,6 +771,35 @@ GUARANTEES: list[Guarantee] = [
         kind="test",
         source="P3S-11",
     ),
+    Guarantee(
+        id="SH-064",
+        statement=(
+            "Connector credentials live only in the instance root's .env.nosync "
+            "(written by the shell's write_root_env_secret or the kernel's sanctioned "
+            "rotated-token writer, 0600) and resolve there even under the shell's "
+            "scrubbed kernel-subprocess environment; they never land in config.json."
+        ),
+        enforcer=(
+            "tests/shell/test_wizard_connectors.py::"
+            "test_scrubbed_env_pull_resolves_auth_from_root_env_nosync"
+        ),
+        kind="test",
+        source="P7S-4",
+    ),
+    Guarantee(
+        id="SH-065",
+        statement=(
+            "Wizard-driven connector setup holds the per-root flock across the whole "
+            "first pull + ingest, so it cannot interleave with a serve tick or "
+            "gateway turn on the same root."
+        ),
+        enforcer=(
+            "tests/shell/test_wizard_connectors.py::"
+            "test_flock_held_during_pull_and_ingest"
+        ),
+        kind="test",
+        source="P7S-22",
+    ),
 ]
 
 # ---------------------------------------------------------------------------
