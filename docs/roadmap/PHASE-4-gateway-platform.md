@@ -569,29 +569,46 @@ and where each landed:
 
 ## Definition of done
 
-- [ ] `GatewayCore` extracted per the responsibility table; Telegram
+- [x] `GatewayCore` extracted per the responsibility table; Telegram
       refactored with zero behavior change except the pinned non-blocking
       backoff carve-out (P4S-18); builder fails closed on surface (P4S-1);
       ceiling/write-gate/actor core-injected (P4S-2); testkit amended (P4S-6).
-- [ ] Slack (Option A, injectable transport, dep-free guarantee tests),
+- [x] Slack (Option A, injectable transport, dep-free guarantee tests),
       email (layered fail-closed identity, reply/loop/cursor discipline),
       HTTP/MCP (fail-closed auth, Host check, literal-loopback bind,
       Dispatcher-only MCP, no control plane) adapters; each with a truthful
       `is_private` and its own stress-tested privacy guarantee.
-- [ ] `serve` drives all enabled surfaces with per-adapter isolation, no
+- [x] `serve` drives all enabled surfaces with per-adapter isolation, no
       in-line sleeps, explicit socket timeouts, and tick cadence preserved;
       clean shutdown including the HTTP listener thread.
-- [ ] Above-public replies impossible on non-private channels (tested per
+- [x] Above-public replies impossible on non-private channels (tested per
       surface, per the drop-vs-serve matrix).
-- [ ] Scheduled briefing delivery (P4-T8): exactly-once per new brief across
+- [x] Scheduled briefing delivery (P4-T8): exactly-once per new brief across
       restarts, allowlisted-private targets only, document-level ceiling
       re-checked per delivery surface, fail-closed on state corruption,
       ledgered.
-- [ ] SECURITY_KEYS extended + `provider.api_key_env` wildcard fixed;
+- [x] SECURITY_KEYS extended + `provider.api_key_env` wildcard fixed;
       CONFIG_VERSION 3 migration landed with the preservation check
       exercised (P4S-16).
-- [ ] SECURITY.md guarantees added (incl. email low-assurance and
+- [x] SECURITY.md guarantees added (incl. email low-assurance and
       token-is-the-principal statements); doctor validates each surface per
       the P4-T7 matrix; `verify_enforcers()` empty.
-- [ ] `make check` green; CI green (pytest-only install passes with the
+- [x] `make check` green; CI green (pytest-only install passes with the
       optional Slack dep absent).
+
+**Phase 4 code-complete 2026-06-11.** All eight tasks (T1 GatewayCore +
+Telegram refactor, T2 Slack, T3 email, T4 HTTP/MCP, T5 serve multiplex, T6
+config/SECURITY_KEYS, T7 doctor matrix, T8 scheduled briefing) shipped; every
+per-surface privacy guarantee is stress-tested and backed in
+`security_map.GUARANTEES` (SH-066..084), `verify_enforcers()` empty. One honest
+caveat, and it is **by design, not a gap**: Slack's live Socket Mode transport
+wiring is an explicit `NotImplementedError` seam in
+`gateway/slack.build_socket_transport` (P4S-14). The spec's own acceptance
+demanded **Option A — an injectable transport with dep-free guarantee tests** —
+NOT live websocket wiring; so every Slack security guarantee (parse / IM-only /
+allowlist / typing / no-control-plane) is enforced over the injected
+`FakeSlackTransport` and holds whether or not the optional `websockets` dep is
+present. The concrete WSS wiring is operator-provided when they opt into the
+optional dep; the gateway imports cleanly with it absent (the clean-absence
+test). This is "production socket-wiring is a seam behind the injectable
+transport," which the spec called for, not a shortfall against it.

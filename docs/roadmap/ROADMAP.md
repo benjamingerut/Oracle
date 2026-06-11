@@ -1,6 +1,13 @@
 # Oracle — Forward Architecture Roadmap
 
-**Status: planning.** This is the arc from v1.0 (shipped) to the final best
+**Status: EXECUTED (2026-06-11).** Phases 1, 3, 4, 5, 6, 7, 8 are
+code-complete (each spec's DoD carries its stamps and honest caveats); Phase
+2 closed at its own P2-T0 usefulness gate (provisional NO-GO,
+`docs/eval/p2-t0/REPORT.md`) with the enterprise-tier ADR delivered and
+three named re-entry paths. Open operational items: the P3-T7 real-traffic
+grounding measurement, P7's first live-API connector validation, and real
+embedding-model vectors replacing the synthetic gold fixtures. The text
+below is preserved as the planning record. This is the arc from v1.0 (shipped) to the final best
 state: a governed, sovereign company oracle that is genuinely trustworthy with
 confidential data, **filled with the company's actual knowledge**, reachable
 everywhere its users already are, operable by a non-technical admin, and

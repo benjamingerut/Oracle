@@ -27,7 +27,9 @@ from pathlib import Path
 
 from .harness import (
     SEVERITY_BY_DIMENSION,
+    last_committed_scorecard,
     render_scorecard,
+    render_trend,
     run_catalog,
 )
 
@@ -73,6 +75,15 @@ def cmd_eval(rest: list[str]) -> int:
     date = args.date or datetime.datetime.now(datetime.timezone.utc).strftime(
         "%Y-%m-%d")
     rendered = render_scorecard(scorecard, date)
+    # Trend seam (P6-T5): compare against the LAST COMMITTED docs/eval/*.md
+    # (class-1/2 metrics only). Read the baseline BEFORE --write persists this
+    # run, so the card being written never becomes its own baseline. A missing
+    # baseline => "no trend", stated. A quality regression is a WARNING here,
+    # never the --ci failure (only a safety floor breach fails --ci).
+    docs_eval = _repo_root() / "docs" / "eval"
+    baseline = last_committed_scorecard(docs_eval)
+    trend = render_trend(scorecard, baseline)
+    rendered = rendered + "\n" + trend
     print(rendered)
 
     if args.write:

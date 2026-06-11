@@ -547,28 +547,43 @@ landed:
 
 ## Definition of done
 
-- [ ] Kernel vector store + hybrid RRF search (filter-before-rank dense
+- [x] Kernel vector store + hybrid RRF search (filter-before-rank dense
       ranks, `(model, dim)` matching, single-transaction vector lifecycle) +
       `--qvec-stdin` + `vectors-*` CLI incl. the `_translate` routing fix
       (upstream, re-vendored); lexical path byte-identical when no vector is
       supplied; above-ceiling chunks provably invisible AND rank-inert.
-- [ ] Shell `embed()` on a separate one-purpose client with full C2 posture
+- [x] Shell `embed()` on a separate one-purpose client with full C2 posture
       on the `/embeddings` path; independent POST-VETO environment
       classification of the embedding endpoint; `provider.embeddings.*` in
       `SECURITY_KEYS`.
-- [ ] Egress enforcer proven: over-ceiling chunks and queries never leave,
+- [x] Egress enforcer proven: over-ceiling chunks and queries never leave,
       and the egress veto applies to embedding endpoints (named enforcer
       tests green); all refusals AND transport failures degrade to lexical.
-- [ ] Incremental + autonomy-gated resumable backfill with per-run post-veto
+- [x] Incremental + autonomy-gated resumable backfill with per-run post-veto
       ceiling recompute; `embedding_event` ledgered; delete/supersede removes
       vectors atomically (incl. the P7 connector supersession path); model
       change re-embeds with graceful mixed-version search.
-- [ ] Scorecard `retrieval` section (hit-rate, time-to-first-grounded-answer)
+- [x] Scorecard `retrieval` section (hit-rate, time-to-first-grounded-answer)
       live, upstream, metadata-only; salted `query_hmac`; monthly-rotated,
       never-blocking retrieval ledger.
-- [ ] `eval/fixtures/retrieval_gold.json` in repo with vendored pinned-model
+- [x] `eval/fixtures/retrieval_gold.json` in repo with vendored pinned-model
       vectors; hybrid beats the recorded lexical baseline on the paraphrase
       subset and does not regress the lexical-anchor subset; every-5th-id
       hold-out untouched, wired for Phase 6.
-- [ ] SECURITY.md guarantees added and backed (attestation honestly scoped,
+- [x] SECURITY.md guarantees added and backed (attestation honestly scoped,
       P8S-15); `make check` green incl. new kernel + shell tests; CI green.
+
+**Phase 8 code-complete 2026-06-11.** All nine tasks (T1 kernel vector store +
+hybrid RRF, T2 `vectors-*` CLI + `_translate` fix, T3 shell `embed()` client,
+T4 egress veto over the embedding endpoint, T5 resumable backfill, T6
+delete/supersede + re-embed, T7 scorecard `retrieval` section, T8 gold
+fixtures, T9 SECURITY.md) shipped and backed; `make check` green incl. the new
+kernel + shell tests. One honest caveat: **the vendored gold vectors are
+`synthetic-hash-v1`**, the documented seeded concept-projection from
+`eval/fixtures/regen_retrieval_gold.py` — NOT a real embedding model. CI has no
+embedding endpoint, so the fixture's purpose is harness wiring + lexical-anchor
+non-regression, not a measurement of real paraphrase recall (the file header
+says so). Real-model vectors REPLACE these the moment an embedding endpoint is
+first configured: re-run the regen script against the live `/embeddings` API and
+re-pin the model id. Phase 6 consumes these same synthetic vectors for its
+fixture-scoped `gold_hit_at_k`/`gold_mrr` under the same caveat.

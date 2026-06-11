@@ -23,7 +23,10 @@ from .harness import (
     SEVERITY_BY_DIMENSION,
     Verdict,
     fresh_root,
+    last_committed_scorecard,
+    parse_scorecard_rates,
     render_scorecard,
+    render_trend,
     run_catalog,
     run_scenario,
 )
@@ -36,7 +39,10 @@ __all__ = [
     "SEVERITY_BY_DIMENSION",
     "Verdict",
     "fresh_root",
+    "last_committed_scorecard",
+    "parse_scorecard_rates",
     "render_scorecard",
+    "render_trend",
     "run_catalog",
     "run_scenario",
     "all_scenarios",
@@ -51,13 +57,15 @@ def all_scenarios() -> list["Scenario"]:
     other catalogs, and so importing the package does not eagerly construct
     every scenario closure.
     """
-    from .scenarios import leak, grounding, policy, gateway
+    from .scenarios import leak, grounding, policy, gateway, behavior, usefulness
 
     out: list[Scenario] = []
     out.extend(leak.scenarios())
     out.extend(grounding.scenarios())
     out.extend(policy.scenarios())
     out.extend(gateway.scenarios())
+    out.extend(behavior.scenarios())
+    out.extend(usefulness.scenarios())
     out.sort(key=lambda s: s.id)
     return out
 

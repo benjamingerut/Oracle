@@ -92,12 +92,41 @@ def test_every_safety_scenario_has_fault_point_or_is_no_seam():
         assert scenario.fault_point is None or isinstance(scenario.fault_point, str)
 
 
-def test_every_scenario_names_a_guarantee():
-    """Net-new-only rule (P6S-9): every scenario names its SH-xxx guarantee.
+def test_every_safety_scenario_names_a_guarantee():
+    """Net-new-only rule (P6S-9): every SAFETY scenario names its SH-xxx
+    guarantee.
 
     A None guarantee is allowed ONLY while the matching NEW Guarantee lands in
-    security_map.GUARANTEES in the same change-set; this repo lands them, so
-    every scenario must name one.
+    security_map.GUARANTEES in the same change-set; this repo lands every safety
+    guarantee, so every safety scenario must name one.
+
+    QUALITY scenarios (behavior / usefulness -- class-2 deterministic pipeline
+    metrics, tracked NOT gated) carry guarantee=None by design: they are not
+    safety enforcers, so there is no SH-xxx to name and inventing one for a
+    tracked-not-gated metric would pollute the sole registry (the spec's
+    don't-invent-guarantees pin for class-2 metrics).
     """
-    unnamed = [s.id for s in all_scenarios() if not s.guarantee]
-    assert not unnamed, f"scenarios with no guarantee: {unnamed}"
+    from oracle_agent.eval.harness import SEVERITY_BY_DIMENSION
+
+    unnamed = [
+        s.id for s in all_scenarios()
+        if SEVERITY_BY_DIMENSION.get(s.dimension) == "safety" and not s.guarantee
+    ]
+    assert not unnamed, f"safety scenarios with no guarantee: {unnamed}"
+
+
+def test_quality_scenarios_carry_no_guarantee():
+    """Quality scenarios are tracked-not-gated and carry no SH-xxx guarantee.
+
+    The converse of the safety rule: a class-2 metric must NOT name a safety
+    guarantee (that would imply it gates, which it does not).
+    """
+    from oracle_agent.eval.harness import SEVERITY_BY_DIMENSION
+
+    named_quality = [
+        s.id for s in all_scenarios()
+        if SEVERITY_BY_DIMENSION.get(s.dimension) == "quality" and s.guarantee
+    ]
+    assert not named_quality, (
+        f"quality (tracked-not-gated) scenarios must not name a safety "
+        f"guarantee: {named_quality}")

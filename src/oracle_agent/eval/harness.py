@@ -22,6 +22,7 @@ Stdlib only.
 """
 from __future__ import annotations
 
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -294,4 +295,152 @@ def render_scorecard(sc: Scorecard, date: str) -> str:
             lines.append(f"- {sid}")
     lines.append("")
 
+    # Hold-out lifecycle stamp (P6-T7 / P6S-6): rendered whenever the usefulness
+    # dimension is scored (the gold eval consumes the hold-out on a scoring run).
+    # The consumed ids are the frozen every-5th hold-out -- a deterministic
+    # constant, so this stays byte-identical across runs. Convention-only: the
+    # ids are in-repo, world-readable, excluded from tuning by P8S-12 discipline
+    # -- NOT a secret.
+    if "usefulness" in sc.by_dimension:
+        lines.append("## Hold-out lifecycle (usefulness, convention-only)")
+        lines.append("")
+        lines.append(
+            f"This scoring run CONSUMED the frozen retrieval hold-out (query "
+            f"ids {', '.join(str(i) for i in _HOLDOUT_IDS)} -- every 5th id). "
+            f"The hold-out is CONVENTION-ONLY: in-repo, world-readable, excluded "
+            f"from tuning by the P8S-12 discipline -- NOT a secret. On "
+            f"consumption the ids are recorded here (dated by the scorecard "
+            f"stamp), folded into the tracked set, and a fresh hold-out is "
+            f"minted via eval/fixtures/regen_retrieval_gold.py (new generation, "
+            f"same every-5th rule) for the next eval generation. Review rule: no "
+            f"change-set may touch ranker constants and gold fixtures together."
+        )
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+#: The frozen every-5th retrieval hold-out, stamped on each scoring run (P6S-6).
+#: Kept here (not only in the usefulness scenario) so render_scorecard is the
+#: single place the consumed-ids stamp is produced -- deterministic + dated.
+_HOLDOUT_IDS = (5, 10, 15, 20, 25)
+
+
+# ---------------------------------------------------------------------------
+# Trend renderer (P6-T5): compare the current scorecard against the LAST
+# COMMITTED docs/eval/*.md. Class-1/2 metrics only (every dimension's rate is a
+# class-1/2 number -- safety counts and quality rates; no class-3 number is ever
+# rendered, so there is nothing here CI cannot honestly compute). A missing
+# baseline => no trend, stated. A quality regression past TREND_DELTA renders a
+# WARNING, never a failure (quality is tracked, not gated -- the CLI's --ci gate
+# fires only on a safety_floor_breach, not on a trend).
+# ---------------------------------------------------------------------------
+
+#: A quality rate must drop by MORE than this to be flagged a regression. Equal
+#: rates (and tiny float wobble) read as "flat", never a spurious regression
+#: (the P6S-14 reproducibility discipline carried into trends).
+TREND_DELTA = 0.0001
+
+# Matches a dimension row of a rendered scorecard table:
+#   | leak | safety | 3 | 3 | 1.0000 |
+_DIM_ROW = re.compile(
+    r"^\|\s*([A-Za-z_]+)\s*\|\s*(safety|quality)\s*\|\s*(\d+)\s*\|\s*"
+    r"(\d+)\s*\|\s*([0-9.]+)\s*\|\s*$"
+)
+
+
+def last_committed_scorecard(docs_eval_dir: Path) -> Optional[Path]:
+    """The most recent committed ``docs/eval/<date>.md`` (lexical date order).
+
+    Files are named ``YYYY-MM-DD.md``; ISO dates sort lexically, so the last
+    name is the most recent. Returns ``None`` when the directory is absent or
+    empty (=> no baseline, no trend).
+    """
+    docs_eval_dir = Path(docs_eval_dir)
+    if not docs_eval_dir.is_dir():
+        return None
+    cards = sorted(
+        p for p in docs_eval_dir.glob("*.md")
+        if not p.name.startswith("_")
+        and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p.stem)
+    )
+    return cards[-1] if cards else None
+
+
+def parse_scorecard_rates(markdown: str) -> dict[str, float]:
+    """Extract ``{dimension: rate}`` from a rendered scorecard's dimension table.
+
+    Reads only the rendered rates -- the counts/ids/rates the renderer already
+    consumes -- so the trend is computed from committed numbers, never raw rows.
+    """
+    rates: dict[str, float] = {}
+    for line in markdown.splitlines():
+        m = _DIM_ROW.match(line.strip())
+        if m:
+            rates[m.group(1)] = float(m.group(5))
+    return rates
+
+
+def render_trend(sc: Scorecard, baseline_path: Optional[Path]) -> str:
+    """Render the trend block: current dimension rates vs the last committed card.
+
+    Class-1/2 only; missing baseline => an explicit "no trend" line (stated,
+    never silent). A quality regression past :data:`TREND_DELTA` is a WARNING
+    (tracked, not gated). Output is deterministic: dimensions in id order, fixed
+    precision -- two runs against the same baseline render byte-identical.
+    """
+    lines: list[str] = ["## Trend (class-1/2 only, tracked not gated)", ""]
+    if baseline_path is None:
+        lines.append(
+            "No committed baseline scorecard under docs/eval/ -- no trend. "
+            "(A missing baseline is stated, never silently treated as 'flat'.)")
+        lines.append("")
+        return "\n".join(lines)
+
+    try:
+        baseline = parse_scorecard_rates(
+            Path(baseline_path).read_text(encoding="utf-8"))
+    except OSError:
+        lines.append(
+            f"Baseline {Path(baseline_path).name} could not be read -- no "
+            f"trend (stated, not silently 'flat').")
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.append(f"Baseline: `{Path(baseline_path).name}`.")
+    lines.append("")
+    lines.append("| dimension | severity | baseline | current | direction |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    regressions: list[str] = []
+    for dim in sorted(sc.by_dimension):
+        cur = sc.by_dimension[dim].rate
+        sev = SEVERITY_BY_DIMENSION.get(dim, "quality")
+        if dim not in baseline:
+            direction = "new"
+            base_str = "--"
+        else:
+            base = baseline[dim]
+            base_str = f"{base:.4f}"
+            if cur > base + TREND_DELTA:
+                direction = "improving"
+            elif cur < base - TREND_DELTA:
+                direction = "regressing"
+                if sev == "quality":
+                    regressions.append(dim)
+            else:
+                direction = "flat"
+        lines.append(
+            f"| {dim} | {sev} | {base_str} | {cur:.4f} | {direction} |")
+    lines.append("")
+    if regressions:
+        lines.append(
+            "**WARNING (tracked, not gated):** quality regression in "
+            + ", ".join(sorted(regressions))
+            + ". This is a trend signal, NOT a CI failure -- the --ci gate "
+            "fires only on a safety floor breach.")
+    else:
+        lines.append(
+            "No quality regression past the trend delta. (Trends never gate "
+            "CI; only safety floor breaches do.)")
+    lines.append("")
     return "\n".join(lines)

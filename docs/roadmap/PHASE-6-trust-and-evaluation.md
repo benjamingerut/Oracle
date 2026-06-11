@@ -420,31 +420,61 @@ Summary of findings and where each landed:
 
 ## Definition of done
 
-- [ ] Harness scores a catalog deterministically; scorecard rendered + dated;
+- [x] Harness scores a catalog deterministically; scorecard rendered + dated;
       byte-identical across consecutive runs; derived severity; per-scenario
       root-copy isolation; import-boundary amendment + converse guard green;
       ≤ 60 s catalog budget held.
-- [ ] Leak, grounding, policy, gateway safety catalogs — composition-level,
+- [x] Leak, grounding, policy, gateway safety catalogs — composition-level,
       scenario→guarantee mapped, planted-marker discipline, each with a
       planted-fault proof (declared `fault_point` + reachability meta-test)
       or an honest `no_seam` entry. Embedding sink, MCP, email-auth,
       briefing-target, connector-credential scenarios included. P2
       minimized-receipt scenarios explicitly deferred to P2 re-entry.
-- [ ] Behavior pipeline-quality catalog (extractor recall per class, counted
+- [x] Behavior pipeline-quality catalog (extractor recall per class, counted
       repair convergence, pipeline refusal-correctness) with trend tracking;
-      no wall-clock numbers.
-- [ ] Usefulness catalog: `gold_hit_at_k`/`gold_mrr` on the P8 gold fixtures;
+      no wall-clock numbers. (P6-T5: `eval/scenarios/behavior.py`
+      EVAL-BEHAVIOR-001..003; trend renderer `harness.render_trend` reads the
+      last committed `docs/eval/*.md`, class-1/2 only, missing baseline stated;
+      `test_behavior_eval.py` asserts no wall-clock token in the rendered card.)
+- [x] Usefulness catalog: `gold_hit_at_k`/`gold_mrr` on the P8 gold fixtures;
       kernel-KPI definition-parity test on synthetic ledgers; hold-out
       consumption stamped convention-only + fresh hold-out regenerated;
       `eval/fixtures/connector_corpus/` shipped with count-based intake
-      throughput; tracked, not gated.
-- [ ] `oracle eval [--ci|--dimension|--write]`; the gate is the parametrized
+      throughput; tracked, not gated. (P6-T7: `eval/scenarios/usefulness.py`
+      EVAL-USEFUL-001/002, fixture-scoped names only — kernel KPI names
+      reserved; `test_usefulness_eval.py` feeds synthetic
+      retrieval_event/answer_event ledgers to the kernel `_kpi_retrieval` and
+      asserts hand-derived hit-rate=0.5 and TTFGA=4.0 days; hold-out 5/10/15/20/25
+      consumed + stamped in the rendered scorecard; `regen_retrieval_gold.py`
+      re-run reproduces the every-5th-rule fixture; `connector_corpus/corpus.json`
+      ships self-contained synthetic vectors, schema-checked + secret-scan clean.)
+- [x] `oracle eval [--ci|--dimension|--write]`; the gate is the parametrized
       pytest nodes inside `make check` (no new CI job); `--ci` writes
       nothing.
-- [ ] New guarantees registered in `security_map.GUARANTEES` pointing at
+- [x] New guarantees registered in `security_map.GUARANTEES` pointing at
       scenario pytest nodes; `docs/SECURITY.md` regenerated (drift test
-      green); `verify_enforcers()` empty.
-- [ ] `make check` green; CI green; `oracle eval --ci` green.
+      green); `verify_enforcers()` empty. (SH-080..106 back the leak/grounding/
+      gateway safety scenarios; behavior/usefulness are class-2 quality —
+      tracked-not-gated — and correctly carry NO new guarantee.)
+- [x] `make check` green; CI green; `oracle eval --ci` green.
+
+**Phase 6 code-complete 2026-06-11.** The full safety+quality catalog runs
+offline (scripted model, fake gateways, fake embedder) as parametrized pytest
+nodes inside `make check` — the single gate, no new CI job. Safety floor
+**18/18** at 100% (leak/grounding/policy/gateway); behavior 3/3 and usefulness
+2/2 are tracked-not-gated class-2 metrics with a committed `docs/eval/2026-06-11.md`
+baseline and a trend renderer. Honest caveats, by design: (1) **class-3 metrics
+are correctly absent from CI** — grounded-rate, refusal-correctness, latency, and
+the kernel-named traffic KPIs (`retrieval_hit_rate`, `time_to_first_grounded_answer`)
+cannot be computed honestly under fakes, so they enter only via the P2-T0
+local-run harness, the P3-T7 shadow capture, and the kernel scorecard on real
+ledgers — never the CI scorecard. (2) The gold fixture vectors are
+`synthetic-hash-v1` (P8 carry-over) pending a first real embedding endpoint; the
+usefulness numbers prove harness wiring + lexical-anchor non-regression, not real
+paraphrase recall. (3) The retrieval hold-out is convention-only (in-repo,
+world-readable, excluded from tuning) — its consumption is stamped, not secret.
+(4) P2 minimized-receipt leak scenarios remain deferred to P2 re-entry (no
+minimizer on `main`).
 
 ---
 
