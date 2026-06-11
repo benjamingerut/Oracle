@@ -462,17 +462,17 @@ def _gw_cred_run(ctx) -> Observation:
     import os
     from oracle_agent.agentloop.verbtools import _scrubbed_env
 
-    secret = "MYCONNECTOR_TOKEN"
+    scrubbed_var = "MYCONNECTOR_TOKEN"  # env-var NAME under test, not a value
     plain = "MYCONNECTOR_REGION"
-    os.environ[secret] = "EVALMARK-not-a-real-token"
+    os.environ[scrubbed_var] = "EVALMARK-not-a-real-token"
     os.environ[plain] = "us-east-1"
     try:
         env = _scrubbed_env()
     finally:
-        os.environ.pop(secret, None)
+        os.environ.pop(scrubbed_var, None)
         os.environ.pop(plain, None)
     return Observation(extras={
-        "secret_present": secret in env,
+        "secret_present": scrubbed_var in env,
         "plain_present": plain in env,
     })
 
