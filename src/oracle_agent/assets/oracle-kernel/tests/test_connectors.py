@@ -536,7 +536,7 @@ def _write_autonomy(
     d.mkdir(parents=True, exist_ok=True)
     text = (
         f"enabled: {'true' if enabled else 'false'}\n"
-        + _block("allowed_loops", ["connector-health"])
+        + _block("allowed_loops", ["connector-pull"])
         + _block("writable_lanes", writable_lanes)
         + _block("readonly_connectors", ["localfolder"])
         + "blast_radius_caps:\n"

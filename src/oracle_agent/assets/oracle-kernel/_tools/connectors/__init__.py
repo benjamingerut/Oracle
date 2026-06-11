@@ -72,30 +72,59 @@ __all__ = [
 # --------------------------------------------------------------------------- #
 # registry
 # --------------------------------------------------------------------------- #
-# Keyed by BOTH the reference connector id and its access_mode, so a manifest
-# can resolve either by a known id or by its declared access_mode=folder.
+# NEW connectors register by ID ONLY (P7S-6): keying on ``access_mode`` would
+# collide -- "api" across four connectors, "file_drop" across every future drop
+# connector. Unknown-id resolution falls back to the manifest's required
+# ``system`` field against SYSTEM_FACTORIES, so a second account
+# (id: gdrive-finance, system: gdrive) resolves to the gdrive class, never to
+# another "api" connector. The reference ``localfolder`` keeps its historical
+# access_mode key so existing localfolder manifests resolve unchanged.
 REGISTRY: dict[str, Callable[[dict], Connector]] = {
     "localfolder": LocalFolderConnector,
-    "folder": LocalFolderConnector,
+    "folder": LocalFolderConnector,  # legacy access_mode alias for the reference connector
 }
 
+# system -> factory map for the system-fallback resolution. Concrete remote
+# connectors (T2-T6) register here under their ``system`` value.
+SYSTEM_FACTORIES: dict[str, Callable[[dict], Connector]] = {}
 
-def register(key: str, factory: Callable[[dict], Connector]) -> None:
-    """Register a connector factory under ``key`` (id or access_mode)."""
+
+def register(key: str, factory: Callable[[dict], Connector], *, system: Optional[str] = None) -> None:
+    """Register a connector factory under ``key`` (the connector ID).
+
+    Pass ``system=`` to ALSO register the factory for system-fallback resolution
+    so a second account with a distinct id but the same ``system`` resolves to
+    this class.
+    """
     REGISTRY[str(key)] = factory
+    if system:
+        SYSTEM_FACTORIES[str(system)] = factory
+
+
+def register_system(system: str, factory: Callable[[dict], Connector]) -> None:
+    """Register a factory for system-fallback resolution only."""
+    SYSTEM_FACTORIES[str(system)] = factory
 
 
 def get_connector_class(manifest: dict) -> Callable[[dict], Connector]:
-    """Resolve the connector factory for a manifest by id, then access_mode."""
+    """Resolve the connector factory: by id, then by ``system`` fallback.
+
+    The reference connector also resolves by its legacy ``access_mode=folder``
+    alias. New remote connectors never resolve by ``access_mode`` (P7S-6).
+    """
     cid = str(manifest.get("id") or "")
     if cid in REGISTRY:
         return REGISTRY[cid]
+    system = str(manifest.get("system") or "")
+    if system in SYSTEM_FACTORIES:
+        return SYSTEM_FACTORIES[system]
+    # Legacy alias for the reference connector ONLY (folder access_mode).
     mode = str(manifest.get("access_mode") or "")
-    if mode in REGISTRY:
+    if mode == "folder" and mode in REGISTRY:
         return REGISTRY[mode]
     raise ConnectorError(
         f"no connector implementation registered for id={cid!r} / "
-        f"access_mode={mode!r}"
+        f"system={system!r}"
     )
 
 
@@ -130,14 +159,42 @@ def _positive_int(value, default: int = 0) -> int:
     return n if n > 0 else default
 
 
+#: The canonical gated-pull loop id (P7S-20). Admin allowlist entries, the scope
+#: declaration, and the scheduled-pull loop all use THIS id. It is deliberately
+#: NOT a member of actions.DETERMINISTIC_LOOPS -- credentialed network egress is
+#: not a level-1 deterministic loop; only an explicit allowed_loops entry admits
+#: it.
+CONNECTOR_PULL_LOOP = "connector-pull"
+
+# Fail-closed byte ceiling used when a probe cannot price the plan (unknown
+# never declares 0 -- declaring 0 would make every cap check pass spuriously;
+# P7S-17). 100 MiB mirrors remote._DEFAULT_MAX_BYTES.
+_FAIL_CLOSED_BYTES = 100 * 1024 * 1024
+
+
 def _planned_pull_scope(connector: Connector, ctx: ConnectorContext) -> dict:
     """Declare the pull's intended blast radius for the autonomy gate.
 
-    The connector's ``probe`` is read-only and gives the best available count
-    before any bytes are copied. If the manifest/CLI caps the pull, the declared
-    file count is clamped to that cap; otherwise the local connector default of
-    500 prevents an unbounded scope.
+    The canonical loop id is ``connector-pull`` -- the prior hardcoded
+    ``connector-health`` made every admin allowlist entry for ``connector-pull``
+    a permanent deny (P7S-20). Byte pricing is FAIL-CLOSED: when the probe
+    cannot price the plan, the declared bytes are the cap itself, never 0
+    (P7S-17). For a RemoteConnector the cap-derived scope (no probe network
+    call) is delegated to remote.planned_pull_scope.
     """
+    # A RemoteConnector authorizes from caps WITHOUT a probe network call
+    # (authorize-before-network; P7S-18) -- delegate to its scope builder.
+    try:
+        from connectors.remote import RemoteConnector, planned_pull_scope as _remote_scope
+    except Exception:  # pragma: no cover - package fallback
+        try:
+            from .remote import RemoteConnector, planned_pull_scope as _remote_scope  # type: ignore
+        except Exception:
+            RemoteConnector = None  # type: ignore
+            _remote_scope = None  # type: ignore
+    if RemoteConnector is not None and isinstance(connector, RemoteConnector):
+        return _remote_scope(connector, ctx)
+
     source = ctx.manifest.get("source") or {}
     if not isinstance(source, dict):
         source = {}
@@ -155,10 +212,15 @@ def _planned_pull_scope(connector: Connector, ctx: ConnectorContext) -> dict:
     planned_files = min(items, cap) if cap else items
 
     total_bytes = _positive_int(probe.get("total_bytes"), 0)
-    planned_bytes = total_bytes if planned_files == items else 0
+    # Fail closed: if the probe could not price the bytes, declare the cap, not 0.
+    if total_bytes > 0:
+        planned_bytes = total_bytes
+    else:
+        cap_bytes = _positive_int(source.get("max_bytes"), 0)
+        planned_bytes = cap_bytes if cap_bytes else _FAIL_CLOSED_BYTES
 
     return {
-        "loop": "connector-health",
+        "loop": CONNECTOR_PULL_LOOP,
         "connectors": [connector.id],
         "lanes": ["_INPUT"],
         "files": planned_files,

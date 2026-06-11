@@ -460,6 +460,46 @@ def set_env_secret(key: str, value: str) -> None:
     _atomic_write(env_path(), "\n".join(lines) + "\n", mode=0o600)
 
 
+def write_root_env_secret(root, key: str, value: str) -> None:
+    """Upsert ``KEY=VALUE`` into ``<root>/.env.nosync`` atomically at 0o600 (P7S-4).
+
+    Connector credentials must live in the ORACLE ROOT's own ``.env.nosync``, not
+    the profile ``.env``: the shell scrubs ``*_KEY``/``_TOKEN``/``_SECRET``/
+    ``_PASSWORD`` vars from every kernel subprocess env
+    (``verbtools._scrubbed_env``), so only the root's own file is visible to a
+    scheduled kernel pull. ``set_env_secret`` targets the profile ``.env`` and is
+    WRONG for connector creds.
+
+    Uses the same ``_atomic_write`` (0o600 under a 0o077 umask, temp+rename, no
+    chmod race) as the profile secret writer. The value is written verbatim and
+    is never logged. The whole root ``.env.nosync`` is rewritten via the
+    no-chmod-race path.
+    """
+    if not _ENV_NAME_RE.match(key):
+        raise ValueError(f"invalid env var name: {key!r}")
+    if "\n" in value or "\r" in value:
+        raise ValueError("secret value must not contain newlines")
+    env_file = Path(root).expanduser() / ".env.nosync"
+    existing: dict[str, str] = {}
+    if env_file.exists():
+        for raw in env_file.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            k = k.strip()
+            v = v.strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                v = v[1:-1]
+            if k:
+                existing[k] = v
+    existing[key] = value
+    lines = ["# Oracle connector secrets -- 0600, never committed, never logged."]
+    for k in sorted(existing):
+        lines.append(f"{k}={existing[k]}")
+    _atomic_write(env_file, "\n".join(lines) + "\n", mode=0o600)
+
+
 def resolve_secret(env_key: str) -> str | None:
     """Resolve a secret by env-var name: ``os.environ`` first, then ``.env``."""
     if not env_key:

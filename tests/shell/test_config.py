@@ -85,6 +85,58 @@ def test_set_env_secret_rejects_bad_name(profile):
         config.set_env_secret("not-a-valid-name", "x")
 
 
+# --------------------------------------------------------------------------- #
+# P7-T1 — write_root_env_secret targets the ROOT's .env.nosync (P7S-4)
+# --------------------------------------------------------------------------- #
+def test_write_root_env_secret_roundtrip_and_perms(profile, tmp_path):
+    root = tmp_path / "oracle_root"
+    root.mkdir()
+    config.write_root_env_secret(root, "TOY_TOKEN", "rotated-secret-value-xyz")
+    env_file = root / ".env.nosync"
+    assert env_file.exists()
+    mode = stat.S_IMODE(os.stat(env_file).st_mode)
+    assert mode == 0o600
+    text = env_file.read_text()
+    assert "TOY_TOKEN=rotated-secret-value-xyz" in text
+
+
+def test_write_root_env_secret_upserts(profile, tmp_path):
+    root = tmp_path / "oracle_root"
+    root.mkdir()
+    config.write_root_env_secret(root, "A_TOKEN", "first")
+    config.write_root_env_secret(root, "B_TOKEN", "second")
+    config.write_root_env_secret(root, "A_TOKEN", "updated")  # upsert, not append
+    text = (root / ".env.nosync").read_text()
+    assert "A_TOKEN=updated" in text
+    assert "B_TOKEN=second" in text
+    assert text.count("A_TOKEN=") == 1
+
+
+def test_write_root_env_secret_not_profile_env(profile, tmp_path):
+    """The root's .env.nosync is distinct from the profile .env -- a scheduled
+    kernel pull sees the root file, never the scrubbed profile env (P7S-4)."""
+    root = tmp_path / "oracle_root"
+    root.mkdir()
+    config.write_root_env_secret(root, "TOY_TOKEN", "root-only-secret")
+    # The profile .env is untouched / does not carry the connector secret.
+    profile_env = config.env_path()
+    assert (not profile_env.exists()) or "root-only-secret" not in profile_env.read_text()
+
+
+def test_write_root_env_secret_rejects_bad_name(profile, tmp_path):
+    root = tmp_path / "oracle_root"
+    root.mkdir()
+    with pytest.raises(ValueError):
+        config.write_root_env_secret(root, "not-a-valid-name", "x")
+
+
+def test_write_root_env_secret_rejects_newline(profile, tmp_path):
+    root = tmp_path / "oracle_root"
+    root.mkdir()
+    with pytest.raises(ValueError):
+        config.write_root_env_secret(root, "TOY_TOKEN", "line1\nline2")
+
+
 def test_register_instance_sets_default(profile, tmp_path):
     cfg = config.load_config()
     root = tmp_path / "r"

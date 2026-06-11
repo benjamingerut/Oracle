@@ -139,6 +139,28 @@ def test_items_enum_array():
     assert validate(["read_only", "bogus"], schema) != []
 
 
+def test_additional_properties_false_rejects_unknown_key():
+    """additionalProperties: false fails an unknown key (typo detection, P7S-13)."""
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"folder_ids": {"type": ["array", "null"]}},
+    }
+    assert validate({"folder_ids": ["a"]}, schema) == []
+    assert validate({"folder_ids": None}, schema) == []  # nullable tolerated
+    errs = validate({"folder_idz": ["a"]}, schema)
+    assert errs and any("folder_idz" in e for e in errs)
+
+
+def test_additional_properties_absent_or_true_is_permissive():
+    """Without an explicit false, unknown keys stay tolerated (no false-fails)."""
+    assert validate({"extra": 1}, {"type": "object", "properties": {}}) == []
+    assert validate(
+        {"extra": 1},
+        {"type": "object", "additionalProperties": True, "properties": {}},
+    ) == []
+
+
 # ---------------------------------------------------------------------------
 # A realistic compound schema (note frontmatter shape) round-trip.
 # ---------------------------------------------------------------------------

@@ -38,7 +38,10 @@ def test_shell_is_stdlib_only():
     # knowledge_index is the spawned root's OWN kernel module, imported
     # dynamically by spawn.seed_index after injecting <root>/_tools -- it is
     # kernel-local, not a third-party dependency.
-    allowed_local = {"oracle_agent", "knowledge_index"}
+    # truth_map is the same: the grounding gate (agentloop/grounding.py) reads
+    # the truth map via the VENDORED kernel reader, imported dynamically after
+    # injecting the vendored _tools dir onto sys.path. Kernel-local, stdlib-only.
+    allowed_local = {"oracle_agent", "knowledge_index", "truth_map"}
     offenders = []
     for f in _shell_files():
         for mod in _top_imports(f):

@@ -76,6 +76,45 @@ def test_answer_above_ceiling_is_withheld(spawned_root, monkeypatch):
     assert out.envelope is not None  # verdict still returned for the footer
 
 
+def test_withheld_envelope_carries_withheld_marker(spawned_root, monkeypatch):
+    # Phase 3 (P3S-1): an above-ceiling withheld answer must mark its envelope
+    # ``withheld: true`` so the grounding gate treats it as refused-class. The
+    # marker rides into TurnResult.envelopes unchanged.
+    d = _disp(spawned_root, max_sensitivity="public")
+    import oracle_agent.agentloop.verbtools as vt
+
+    def fake_run(self, argv):
+        if argv[0] == "answer":
+            env = ('{"business_object":"X","sensitivity_ceiling":"secret",'
+                   '"verdict":"grounded","exit_code":0,"suggested_fix":[]}')
+            return 0, env, ""
+        return 0, "", ""
+
+    monkeypatch.setattr(vt.Dispatcher, "_run", fake_run)
+    out = d.dispatch("oracle_answer", {"business_object": "X"})
+    assert out.envelope is not None
+    assert out.envelope.get("withheld") is True
+
+
+def test_below_ceiling_envelope_is_not_marked_withheld(spawned_root, monkeypatch):
+    # A within-ceiling answer must NOT carry the withheld marker -- only the
+    # above-ceiling withholding branch sets it.
+    d = _disp(spawned_root, max_sensitivity="secret")
+    import oracle_agent.agentloop.verbtools as vt
+
+    def fake_run(self, argv):
+        if argv[0] == "answer":
+            env = ('{"business_object":"X","sensitivity_ceiling":"public",'
+                   '"verdict":"grounded","exit_code":0,"suggested_fix":[]}')
+            return 0, env, ""
+        return 0, "", ""
+
+    monkeypatch.setattr(vt.Dispatcher, "_run", fake_run)
+    out = d.dispatch("oracle_answer", {"business_object": "X"})
+    assert out.envelope is not None
+    assert out.envelope.get("withheld") is not True
+
+
 def test_search_forces_ceiling(spawned_root, monkeypatch):
     captured = {}
     import oracle_agent.agentloop.verbtools as vt

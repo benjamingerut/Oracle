@@ -87,7 +87,7 @@ def _validate(obj, schema: dict, path: str, errors: list) -> None:
         except re.error as exc:
             errors.append(f"{path or '<root>'}: invalid pattern {schema['pattern']!r}: {exc}")
 
-    # object: required + properties
+    # object: required + properties (+ optional additionalProperties: false)
     if isinstance(obj, dict):
         for req in schema.get("required", []) or []:
             if req not in obj:
@@ -97,6 +97,17 @@ def _validate(obj, schema: dict, path: str, errors: list) -> None:
             if key in obj:
                 child_path = f"{path}.{key}" if path else key
                 _validate(obj[key], subschema, child_path, errors)
+        # additionalProperties: false -> any key not named in properties FAILS
+        # (typo detection, e.g. a misspelled allowlist key that would otherwise
+        # silently mean "missing"). Anything other than an explicit false is
+        # treated permissively, matching this validator's tolerant posture.
+        if schema.get("additionalProperties") is False:
+            for key in obj:
+                if key not in props:
+                    errors.append(
+                        f"{path or '<root>'}: unknown property {key!r} "
+                        f"(additionalProperties is false)"
+                    )
 
     # array: items
     if isinstance(obj, list) and "items" in schema:

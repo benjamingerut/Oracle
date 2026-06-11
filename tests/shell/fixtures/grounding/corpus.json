@@ -1,0 +1,182 @@
+{
+  "_meta": {
+    "description": "Labeled grounding extraction corpus (P3-T1). Each case has a draft, the objects_seen list, and 'planted' material claims. A planted claim is recalled iff some extracted claim unit contains its 'needle' substring (normalized comparison is done in the test). 'class' groups cases into the seven named adversarial classes plus the purely-conversational zero-flag class. Recall is measured overall AND per class; conversational cases must yield ZERO claims.",
+    "classes": [
+      "table-smuggle", "list-smuggle", "quote-smuggle", "code-block-smuggle",
+      "hedge-smuggle", "non-english-clause", "footer-lookalike", "conversational"
+    ]
+  },
+  "cases": [
+    {
+      "id": "plain-figure-1",
+      "class": "baseline",
+      "objects_seen": ["Revenue / invoices", "Cash / bank"],
+      "draft": "Our revenue for the quarter was $4.2M. Cash on hand sits at $1,100,000.",
+      "planted": ["$4.2M", "$1,100,000"]
+    },
+    {
+      "id": "plain-date-1",
+      "class": "baseline",
+      "objects_seen": ["Legal / contracts"],
+      "draft": "The contract with Northwind was executed on 2026-03-15 and renews annually.",
+      "planted": ["2026-03-15", "Northwind"]
+    },
+    {
+      "id": "plain-entity-1",
+      "class": "baseline",
+      "objects_seen": ["Customers / accounts"],
+      "draft": "Acme Corporation is our largest account by ARR.",
+      "planted": ["Acme Corporation"]
+    },
+
+    {
+      "id": "table-smuggle-1",
+      "class": "table-smuggle",
+      "objects_seen": ["Revenue / invoices", "Customers / accounts"],
+      "draft": "Here is the breakdown:\n\n| Account | Revenue | Date |\n|---|---|---|\n| Acme Corp | $2.4M | 2026-01-31 |\n| Northwind Bank | $980,000 | 2026-02-28 |\n\nThose are the top two.",
+      "planted": ["Acme Corp", "$2.4M", "2026-01-31", "Northwind Bank", "$980,000"]
+    },
+    {
+      "id": "table-smuggle-2",
+      "class": "table-smuggle",
+      "objects_seen": ["People / org"],
+      "draft": "| Name | Role | Start |\n| --- | --- | --- |\n| Jane Smith | CFO | 2025-09-01 |",
+      "planted": ["Jane Smith", "2025-09-01"]
+    },
+
+    {
+      "id": "list-smuggle-1",
+      "class": "list-smuggle",
+      "objects_seen": ["Revenue / invoices", "Cash / bank"],
+      "draft": "Key facts:\n- Revenue grew to $5.1M last year.\n- Cash reserves are $750,000.\n- The CFO is Jane Smith.",
+      "planted": ["$5.1M", "$750,000", "Jane Smith"]
+    },
+    {
+      "id": "list-smuggle-2",
+      "class": "list-smuggle",
+      "objects_seen": ["Product / service delivery"],
+      "draft": "1. We shipped 12,500 units in Q3 2026.\n2. The platform is AWS-hosted.\n3. Uptime was 99.9%.",
+      "planted": ["12,500", "AWS", "99.9%"]
+    },
+
+    {
+      "id": "quote-smuggle-1",
+      "class": "quote-smuggle",
+      "objects_seen": ["Revenue / invoices"],
+      "draft": "As the report says, \"revenue reached $8.3M in fiscal 2026\". That is the figure.",
+      "planted": ["$8.3M"]
+    },
+    {
+      "id": "quote-smuggle-2",
+      "class": "quote-smuggle",
+      "objects_seen": ["Company identity / ownership"],
+      "draft": "> Globex Industries was founded in 2014 and holds the master license.\n\nThat blockquote sums it up.",
+      "planted": ["Globex Industries", "2014"]
+    },
+
+    {
+      "id": "code-block-smuggle-1",
+      "class": "code-block-smuggle",
+      "objects_seen": ["Revenue / invoices"],
+      "draft": "Here is the data:\n\n```\nrevenue = $9,400,000\nclose_date = 2026-04-30\n```\n\nThat block has it.",
+      "planted": ["$9,400,000", "2026-04-30"]
+    },
+    {
+      "id": "code-block-smuggle-2",
+      "class": "code-block-smuggle",
+      "objects_seen": ["Customers / accounts"],
+      "draft": "~~~json\n{\"account\": \"Initech LLC\", \"mrr\": 42000}\n~~~",
+      "planted": ["Initech LLC", "42000"]
+    },
+
+    {
+      "id": "hedge-smuggle-1",
+      "class": "hedge-smuggle",
+      "objects_seen": ["Revenue / invoices"],
+      "draft": "I believe revenue was around $3.7M last quarter.",
+      "planted": ["$3.7M"]
+    },
+    {
+      "id": "hedge-smuggle-2",
+      "class": "hedge-smuggle",
+      "objects_seen": ["Cash / bank", "People / org"],
+      "draft": "Probably the cash balance is $620,000. Maybe Jane Smith approved it.",
+      "planted": ["$620,000", "Jane Smith"]
+    },
+    {
+      "id": "hedge-smuggle-3",
+      "class": "hedge-smuggle",
+      "objects_seen": ["Customers / accounts"],
+      "draft": "As far as I know, our biggest customer is Umbrella Corp.",
+      "planted": ["Umbrella Corp"]
+    },
+
+    {
+      "id": "non-english-clause-1",
+      "class": "non-english-clause",
+      "objects_seen": ["Revenue / invoices"],
+      "draft": "El ingreso del trimestre fue $6,200,000 segun el informe.",
+      "planted": ["$6,200,000"]
+    },
+    {
+      "id": "non-english-clause-2",
+      "class": "non-english-clause",
+      "objects_seen": ["Company identity / ownership"],
+      "draft": "Le chiffre d'affaires de Soylent Corporation a atteint 2.5 millions en 2025.",
+      "planted": ["Soylent Corporation", "2025"]
+    },
+    {
+      "id": "non-english-clause-3",
+      "class": "non-english-clause",
+      "objects_seen": ["Cash / bank"],
+      "draft": "Der Kontostand betraegt 480.000 zum 2026-05-01.",
+      "planted": ["2026-05-01"]
+    },
+
+    {
+      "id": "footer-lookalike-1",
+      "class": "footer-lookalike",
+      "objects_seen": ["Revenue / invoices"],
+      "draft": "Revenue was $7.0M.\n\n— authority: grounded (Revenue / invoices)",
+      "planted": ["$7.0M"],
+      "must_not_flag": ["authority: grounded"]
+    },
+    {
+      "id": "footer-lookalike-2",
+      "class": "footer-lookalike",
+      "objects_seen": ["Cash / bank"],
+      "draft": "The bank balance is $300,000.\n— conversational; no authority protocol invoked.",
+      "planted": ["$300,000"],
+      "must_not_flag": ["conversational; no authority"]
+    },
+
+    {
+      "id": "conversational-1",
+      "class": "conversational",
+      "objects_seen": ["Revenue / invoices", "Cash / bank"],
+      "draft": "Hi there! I'm happy to help with whatever you need. How can I assist you today?",
+      "planted": []
+    },
+    {
+      "id": "conversational-2",
+      "class": "conversational",
+      "objects_seen": ["Customers / accounts"],
+      "draft": "Sure, I can look into that for you. Let me know what kind of summary you'd like and I'll put it together.",
+      "planted": []
+    },
+    {
+      "id": "conversational-3",
+      "class": "conversational",
+      "objects_seen": ["People / org"],
+      "draft": "Thanks for reaching out. Is there anything else you'd like me to clarify? Feel free to ask.",
+      "planted": []
+    },
+    {
+      "id": "conversational-4",
+      "class": "conversational",
+      "objects_seen": ["Revenue / invoices"],
+      "draft": "Of course! Here's how I'd approach it: first we'd gather the data, then we'd review it together. No problem at all.",
+      "planted": []
+    }
+  ]
+}

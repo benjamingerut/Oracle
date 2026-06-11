@@ -732,6 +732,16 @@ def check_external_paths(
 # --------------------------------------------------------------------------- #
 # secrets
 # --------------------------------------------------------------------------- #
+# The ONE sanctioned connector-secret store (P7S-3): exactly the literal
+# root-relative path ``.env.nosync`` -- never a glob, never a directory, never a
+# nested ``*/.env.nosync``. It is written ONLY by the shell's
+# ``write_root_env_secret`` and the kernel's ``persist_rotated_token`` (contained,
+# atomic, 0o600). Without this, the first real connector token would turn
+# ``./oracle lint`` red forever. Enforced narrow by
+# ``tests/test_connectors_remote.py::test_lint_exempts_exactly_env_nosync``.
+SECRET_SCAN_EXEMPT_LITERAL = ".env.nosync"
+
+
 def check_secrets(
     root: Path, out: list[Violation], exclude: "Callable[[str], bool] | None" = None
 ) -> None:
@@ -739,6 +749,11 @@ def check_secrets(
         rel = f.get("file", "<tree>")
         # Never re-flag the linter's own pattern catalogue or the secret scanner.
         if rel in ("_tools/oracle_lint.py", "_tools/secret_scan.py"):
+            continue
+        # Exempt EXACTLY the root's own .env.nosync (the sanctioned connector
+        # secret store; P7S-3). The match is the literal root-relative path -- a
+        # nested ".env.nosync" under any subdir is still scanned.
+        if rel.replace("\\", "/") == SECRET_SCAN_EXEMPT_LITERAL:
             continue
         # Skip kernel dev/test/build machinery -- the shipped tests/ carry
         # deliberately-fake fixture credentials (test_secret_scan.py) that only

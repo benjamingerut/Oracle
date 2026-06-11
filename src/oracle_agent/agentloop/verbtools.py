@@ -325,6 +325,11 @@ class Dispatcher:
         # Ceiling enforcement (C1): withhold grounded payload above ceiling.
         ceiling = (envelope.get("sensitivity_ceiling") or "public")
         if self._rank(ceiling) > self._rank(self.max_sensitivity):
+            # Mark the envelope so the grounding gate (Phase 3, P3S-1) treats it
+            # as refused-class: the model never saw the grounded payload, so its
+            # grounded exit_code must not certify whatever it asserts about the
+            # object. The marking rides into TurnResult.envelopes unchanged.
+            envelope["withheld"] = True
             fix = envelope.get("suggested_fix") or []
             stub = (f"[withheld: this answer requires {ceiling} clearance, above the "
                     f"{self.max_sensitivity} ceiling for this provider]")

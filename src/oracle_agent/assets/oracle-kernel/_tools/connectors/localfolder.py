@@ -129,14 +129,21 @@ def _fallback_classify(path: Path, connector_default: str = "internal") -> str:
 
 
 def _classify(path: Path, connector_default: str, root: Path) -> str:
-    """Classify a file's intake sensitivity, preferring intake_classify."""
+    """Classify a file's intake sensitivity, preferring intake_classify.
+
+    Uses ``intake_classify.classify_file(path, connector_default=floor)`` -- the
+    real signature (P7S-16). The earlier ``classify(path, …)`` call raised a
+    TypeError that was silently swallowed, degrading every pull to the
+    filename-keyword fallback; the content-signal classifier is now actually
+    reached, with the connector default as the FLOOR.
+    """
     ic = _import_intake_classify()
-    if ic is not None and hasattr(ic, "classify"):
+    if ic is not None and hasattr(ic, "classify_file"):
         try:
-            result = ic.classify(path, connector_default=connector_default, root=root)
-            # intake_classify.classify may return a label or a dict carrying one.
+            result = ic.classify_file(path, connector_default=connector_default)
+            # classify_file returns a dict carrying the final label.
             if isinstance(result, dict):
-                label = result.get("sensitivity") or result.get("label")
+                label = result.get("label") or result.get("sensitivity")
             else:
                 label = result
             if label in _SENS_ORDER:

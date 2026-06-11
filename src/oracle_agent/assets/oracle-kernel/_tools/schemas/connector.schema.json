@@ -104,6 +104,88 @@
         }
       }
     },
+    "source": {
+      "type": "object",
+      "description": "Per-connector scope allowlist + pull policy. The schema's job is SHAPE/TYPO detection: unknown keys fail (additionalProperties: false) but empty/None values VALIDATE -- the template legitimately ships a bare 'key:'. Emptiness is enforced at PULL time by the default-deny allowlist gate: None/missing/[]/non-list all refuse (empty never means 'everything'; P7S-13). API base URLs are pinned in connector code, never here (P7S-5) -- the only manifest-supplied endpoint is the IMAP host.",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": ["string", "null"]
+        },
+        "default_sensitivity": {
+          "type": ["string", "null"],
+          "enum": [
+            "public",
+            "internal",
+            "confidential",
+            "restricted",
+            "secret",
+            null
+          ]
+        },
+        "max_files": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "max_bytes": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "cadence": {
+          "type": ["string", "null"],
+          "pattern": "^(hourly|daily|weekly|[0-9]+h|[0-9]+d)$"
+        },
+        "folder_ids": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string"
+          }
+        },
+        "sites": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string"
+          }
+        },
+        "drives": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string"
+          }
+        },
+        "page_ids": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string"
+          }
+        },
+        "database_ids": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string"
+          }
+        },
+        "host": {
+          "type": ["string", "null"]
+        },
+        "folders": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string"
+          }
+        },
+        "since_days": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "channels": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "schema": {
       "type": "object",
       "properties": {

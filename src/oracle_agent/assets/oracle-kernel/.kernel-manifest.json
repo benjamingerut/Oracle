@@ -1,5 +1,5 @@
 {
-  "aggregate_sha256": "740d0817f4bb7676f5b877ef1d3b8a1fce8d77732779f20cec5243db14d351e8",
+  "aggregate_sha256": "9d99189a632edef6f6e397fc6fc8e2e4cb5495fd951395475955a42f7b5be769",
   "files": {
     "_tools/KERNEL_VERSION": "eb0cd1f1d199956d3cb6a119202fe1c98f31b6ae513e4326d57ca1f9946f7a31",
     "_tools/_CONTEXT.md": "661ae48ec92ac8c7e0eda8f65fce86f0ffeae498fdde9de4d758774c4f7abd0d",
@@ -10,9 +10,10 @@
     "_tools/briefing.py": "4f78e4a255530c4aa512717cce36b09d0a98bd19ef0dc5bcd9a4207c2bcab42d",
     "_tools/capture.py": "fa93c751af9a7cebf0345ecccaed189260f91b4746dab9a5b01a31a605419932",
     "_tools/chunker.py": "6cacbf6c6791a59024b8d84071cc1c85a8d641eb033df60b2ebe3bb159d8675e",
-    "_tools/connectors/__init__.py": "b2ccae1e28a157458ab5ecbaad421304490e43d948af0d3b422788e8accae259",
+    "_tools/connectors/__init__.py": "05863921eea0a9b695e9d77e212613a56e7a0509ea98402739fdb7cbde639d65",
     "_tools/connectors/base.py": "e34c2a1263cd169aaaadd808c8097f14cd7091c94fe44b05dc6fb626fad3c303",
-    "_tools/connectors/localfolder.py": "457ddda76083ffd8aff164fc69f2c90fe980c8b02a73cf43b2eb644f6d02b257",
+    "_tools/connectors/localfolder.py": "d0721ee1595b3b6d49d882682f93f117f0cea46bbcf4cabfedacfa8ef627ab84",
+    "_tools/connectors/remote.py": "a3e2436a3327634342d1b10884e616680b03527238bf40e7e5baa5ec72ca379f",
     "_tools/contradiction.py": "a416a1179b702d83f92c0051e27330eb14717d2ed1cc22d84b5b08427ea7060d",
     "_tools/dashboard.py": "07ac5ea1e1d460d06e5a7f5d70265636c0ba5b67466d0e9b6fa633be01bdf6f6",
     "_tools/derive.py": "ade8cf73ae18d1fa89a357b38552b0c3dc30e1e1ce323ee27229fd01d85d7366",
@@ -35,15 +36,15 @@
     "_tools/migrations/0003_knowledge_index_dedup.py": "9f324588f62a9d0f640822dfc0b364ff5d7f46af8ef4519a6aa74f6aa3fb9fe3",
     "_tools/migrations/__init__.py": "d045715b83ea65a7899df248a834988a61d0d3ef05827d54f7447ed9aa35aa4f",
     "_tools/oracle_cli.py": "e07bbd72dd77c8895d0a2a198caa9fca80b11aa6859618ffd216e758b0889f02",
-    "_tools/oracle_lint.py": "7ca1b42075e139d00924b06e29e2c85b5f28dd4461126e70eb6a10726cc72c15",
+    "_tools/oracle_lint.py": "886398a8ab107f93ddc564e3cb60906d44469d68cb3c732922f0249ca45724aa",
     "_tools/oracle_status.py": "4ddd6ff23eee60b1cf84828d24bafeb10a3da73c439f8e0fde5997ce3b1ad4c3",
     "_tools/oracle_yaml.py": "201c4a57311d3e07b7bfb5ccfb2a168c6af5dc9f3145ac9607c194ae7977397c",
     "_tools/policy.py": "4c5a93e48d21811794741dcedc2614f934eed54396ac9797cc51fbba96ce1dae",
     "_tools/recommendation.py": "d2c316c846c0c0152d020697f6c23c0f0a842a5411b4ce541e6fb1422443bdee",
     "_tools/review_queue.py": "4cb2a44498ebcba95a2db8856c45440b985f14687bf0900856e6c0b8e1f4cbfa",
     "_tools/safe_paths.py": "b2419cec6500e2efd19c857b4f4bc2b4f49c9cb3034d5db3ba5a925561455ab6",
-    "_tools/schema_check.py": "019d1125c78e811e65eaf30836ecc17cb2a3c975f87840ff4259323fb0bd15d6",
-    "_tools/schemas/connector.schema.json": "e51be6a960828f654d741da98e19af9ddf50f6e5a8377e117bc3a4c7a587b377",
+    "_tools/schema_check.py": "9871b97996e4fd06e652fe0a63437640b1865a57d601db870aeeb824179e24e5",
+    "_tools/schemas/connector.schema.json": "723cbaaa4e21e6e94ad9df77ad30ea21b25a778915ba12926ee653c7944dfc6f",
     "_tools/schemas/contradiction.schema.json": "be930c583f1d5c3cf8c8791f68a70c0b2b343b964fc80dfda99c6b47e6ce435b",
     "_tools/schemas/export_event.schema.json": "083cbba28c4447b9ba6ebe2bb1f4f6a15e21c43ba662bdeef102741af223d0cd",
     "_tools/schemas/finding.schema.json": "d6a8dbd10c8dd54a5a2e8b20b44b8ad4a9e00bba01f6e57db472380dc3d7a845",
@@ -66,6 +67,6 @@
     "_tools/truth_map.py": "32f230610bc6764c7d46629142ad50844ead2c176f3de4027b26c31e3c7ac55f",
     "_tools/upgrade.py": "b4a0b49e7f2fa3eb8beacc2e5a6d024e95e514868b8c4b949d052b71481e2c3a"
   },
-  "generated": "2026-06-10T21:47:17",
+  "generated": "2026-06-10T22:07:30",
   "tools_version": "3.0.0"
 }
