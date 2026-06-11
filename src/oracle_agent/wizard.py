@@ -42,6 +42,7 @@ from pathlib import Path
 from . import config, doctor, spawn
 
 PRESETS = {
+    "nvidia": ("https://integrate.api.nvidia.com/v1", "meta/llama-3.3-70b-instruct", "ORACLE_LLM_API_KEY"),
     "anthropic": ("https://api.anthropic.com/v1", "claude-sonnet-4-6", "ORACLE_LLM_API_KEY"),
     "openai": ("https://api.openai.com/v1", "gpt-4o", "ORACLE_LLM_API_KEY"),
     "openrouter": ("https://openrouter.ai/api/v1", "anthropic/claude-sonnet-4-6", "ORACLE_LLM_API_KEY"),
@@ -614,19 +615,37 @@ def _count_ingested(text: str) -> int:
 # provider menu (quick flow). Numbered, layperson-friendly; maps to PRESETS.
 # --------------------------------------------------------------------------- #
 _PROVIDER_MENU = [
-    ("anthropic", "Claude by Anthropic (recommended)"),
+    ("nvidia", "NVIDIA — free API key, many open models, no install (recommended)"),
+    ("ollama", "Ollama — fully local & private, no account, free forever"),
+    ("anthropic", "Claude by Anthropic"),
     ("openai", "OpenAI"),
     ("openrouter", "OpenRouter"),
-    ("ollama", "Ollama — runs on this computer, private, no account needed"),
     ("custom", "Other (OpenAI-compatible endpoint)"),
 ]
 
 # Where to get an API key, by preset (printed before the hidden key prompt).
 _KEY_URLS = {
+    "nvidia": "https://build.nvidia.com",
     "anthropic": "https://console.anthropic.com/settings/keys",
     "openai": "https://platform.openai.com/api-keys",
     "openrouter": "https://openrouter.ai/keys",
 }
+
+# NVIDIA NIM (build.nvidia.com): one free key unlocks many OpenAI-compatible
+# open models. Offered as a short sub-menu when the operator picks NVIDIA so
+# they choose quality-vs-speed at setup time (P-setup-free).
+_NVIDIA_MODELS = [
+    ("meta/llama-3.3-70b-instruct",
+     "Llama 3.3 70B — strongest, best at the answer-protocol tool use (recommended)"),
+    ("meta/llama-3.1-8b-instruct",
+     "Llama 3.1 8B — faster, lighter on free credits"),
+]
+
+# Local Ollama (loopback → policy_bridge classifies it local_agent → may see up
+# to `internal`). Smart-detected at setup so the free local path is turnkey
+# when Ollama is already present.
+_OLLAMA_HOST = "http://localhost:11434"
+_OLLAMA_RECOMMENDED = "llama3.1"
 
 
 def _read_secret(*, stream_in, out, getpass_fn) -> str:
@@ -638,6 +657,101 @@ def _read_secret(*, stream_in, out, getpass_fn) -> str:
         return stream_in.readline().strip() if stream_in else ""
     except Exception:
         return ""
+
+
+def _pick_nvidia_model(*, stream_in, stream_out) -> str:
+    """Offer the NVIDIA model sub-menu (number, or a pasted model id). Returns a
+    usable model id; defaults to the strongest recommended model."""
+    out = stream_out or sys.stdout
+    default = _NVIDIA_MODELS[0][0]
+    out.write("\nWhich model? (all free on NVIDIA's hosted tier)\n")
+    for i, (_mid, label) in enumerate(_NVIDIA_MODELS, 1):
+        out.write(f"  {i}. {label}\n")
+    other = len(_NVIDIA_MODELS) + 1
+    out.write(f"  {other}. Other (paste a model id from build.nvidia.com)\n")
+    pick = _ask("Pick one (number or model id)", "1",
+                stream_in=stream_in, stream_out=stream_out).strip()
+    if pick.isdigit():
+        n = int(pick)
+        if 1 <= n <= len(_NVIDIA_MODELS):
+            return _NVIDIA_MODELS[n - 1][0]
+        if n == other:
+            return _ask("Model id", default,
+                        stream_in=stream_in, stream_out=stream_out).strip() or default
+        return default
+    # A non-numeric answer that looks like a model id is taken verbatim.
+    return pick if "/" in pick else default
+
+
+def _ollama_installed_models(timeout: float = 1.5):
+    """Return the list of installed Ollama model base-names if the local Ollama
+    server answers, else None (server down / not installed). Stdlib-only with a
+    short timeout so a missing Ollama never stalls setup."""
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(_OLLAMA_HOST + "/api/tags", timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None
+    names = []
+    for m in (data.get("models") or []):
+        base = (m.get("name") or "").split(":")[0]
+        if base:
+            names.append(base)
+    return names
+
+
+def _ollama_pull(model: str) -> bool:
+    """`ollama pull MODEL`, streaming progress to the terminal. True on success;
+    never raises (a missing binary / failed pull degrades to a printed hint)."""
+    import shutil
+    if not shutil.which("ollama"):
+        return False
+    try:
+        return subprocess.run(["ollama", "pull", model]).returncode == 0
+    except Exception:
+        return False
+
+
+def _configure_ollama(*, stream_in, stream_out) -> str:
+    """Smart-detect a local Ollama and return the model id to use, printing the
+    right guidance. On a real tty with Ollama running but empty, offer to pull
+    the recommended model. Always returns a usable default model id."""
+    import shutil
+    out = stream_out or sys.stdout
+    installed = _ollama_installed_models()
+    if installed is None:
+        if shutil.which("ollama"):
+            out.write("\nOllama is installed but not answering on localhost:11434.\n"
+                      "  Start it, then pull a model:\n"
+                      "    ollama serve &\n"
+                      f"    ollama pull {_OLLAMA_RECOMMENDED}\n")
+        else:
+            out.write("\nOllama runs locally — no API key, fully private.\n"
+                      "  Install it from https://ollama.com, then pull a model:\n"
+                      f"    ollama pull {_OLLAMA_RECOMMENDED}\n")
+        return _OLLAMA_RECOMMENDED
+    if installed:
+        chosen = _OLLAMA_RECOMMENDED if _OLLAMA_RECOMMENDED in installed else installed[0]
+        out.write(f"\nFound Ollama running with '{chosen}' — using it. No API key needed.\n")
+        return chosen
+    # Server up, but no models pulled yet.
+    out.write("\nOllama is running but has no models yet.\n")
+    if sys.stdin.isatty():
+        ans = _ask(f"Download {_OLLAMA_RECOMMENDED} now (~4.7GB)? (Y/n)", "Y",
+                   stream_in=stream_in, stream_out=stream_out).strip().lower()
+        if ans in ("", "y", "yes"):
+            out.write(f"Pulling {_OLLAMA_RECOMMENDED} (this can take a few minutes)...\n")
+            if _ollama_pull(_OLLAMA_RECOMMENDED):
+                out.write(f"  pulled {_OLLAMA_RECOMMENDED}.\n")
+            else:
+                out.write(f"  pull failed — run `ollama pull {_OLLAMA_RECOMMENDED}` manually.\n")
+        else:
+            out.write(f"  skipped — run `ollama pull {_OLLAMA_RECOMMENDED}` when ready.\n")
+    else:
+        out.write(f"  Run: ollama pull {_OLLAMA_RECOMMENDED}\n")
+    return _OLLAMA_RECOMMENDED
 
 
 def run(advanced: bool = False, *, stream_in=None, stream_out=None,
@@ -715,19 +829,28 @@ def run_quick(*, stream_in=None, stream_out=None,
         preset = pick
     base, model, key_env = PRESETS.get(preset, PRESETS["custom"])
 
-    # "custom" has no defaults: ask base URL + model id (only here).
+    # "custom" has no defaults: ask base URL + model id (only here). NVIDIA and
+    # Ollama get tailored sub-flows (model sub-menu / local smart-detect).
     if preset == "custom" or not base:
         base = _ask("Base URL (…/v1)", base or "",
                     stream_in=stream_in, stream_out=stream_out)
         model = _ask("Model id", model or "",
                      stream_in=stream_in, stream_out=stream_out)
+    elif preset == "nvidia":
+        model = _pick_nvidia_model(stream_in=stream_in, stream_out=stream_out)
+    elif preset == "ollama":
+        model = _configure_ollama(stream_in=stream_in, stream_out=stream_out)
 
     cfg["provider"].update({"name": preset, "base_url": base, "model": model,
                             "api_key_env": key_env})
 
+    # Ollama needs no key (its guidance was already printed by _configure_ollama).
     if key_env:
         url = _KEY_URLS.get(preset)
-        if url:
+        if preset == "nvidia":
+            out.write(f"\nGet a free API key here: {url}\n")
+            out.write("  (sign in, then 'Get API Key' — new accounts get free credits)\n")
+        elif url:
             out.write(f"\nGet an API key here: {url}\n")
         out.write("Paste your API key (hidden; press Enter to add it later): ")
         out.flush()
@@ -737,10 +860,6 @@ def run_quick(*, stream_in=None, stream_out=None,
             out.write("  key saved.\n")
         else:
             out.write("  (no key yet — add one later with `oracle model set`)\n")
-    elif preset == "ollama":
-        out.write("\nOllama runs locally — no API key needed.\n"
-                  "  Install it from https://ollama.com and pull a model, e.g.:\n"
-                  "    ollama pull llama3.1\n")
 
     config.save_config(cfg)
 
@@ -790,7 +909,7 @@ def run_advanced(*, stream_in=None, stream_out=None, getpass_fn=getpass.getpass)
     cfg = config.register_instance(cfg, name, root)
 
     # provider
-    preset = _ask("Provider preset (anthropic/openai/openrouter/ollama/custom)",
+    preset = _ask("Provider preset (nvidia/anthropic/openai/openrouter/ollama/custom)",
                   cfg.get("provider", {}).get("name", "anthropic"),
                   stream_in=stream_in, stream_out=stream_out)
     base, model, key_env = PRESETS.get(preset, PRESETS["custom"])

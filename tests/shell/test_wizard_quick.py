@@ -57,13 +57,14 @@ def _home(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 def test_quick_defaults_only_spawns_and_registers(profile, tmp_path, monkeypatch):
     """A newline-only stream completes rc 0, spawns under ~/oracles/main,
-    registers 'main', defaults provider to anthropic + claude, writes no key."""
+    registers 'main', defaults provider to the recommended free option (NVIDIA +
+    its default model), and writes no key."""
     _home(tmp_path, monkeypatch)
     # non-tty so the blank key answer is read from the stream, not getpass.
     monkeypatch.setattr(wizard.sys.stdin, "isatty", lambda: False, raising=False)
     out = io.StringIO()
-    # company, admin, provider, key  -> all blank (defaults).
-    inp = _Script(["", "", "", ""])
+    # company, admin, provider, nvidia-model, key  -> all blank (defaults).
+    inp = _Script(["", "", "", "", ""])
     rc = wizard.run(stream_in=inp, stream_out=out,
                     getpass_fn=lambda _: "")
     text = out.getvalue()
@@ -76,9 +77,9 @@ def test_quick_defaults_only_spawns_and_registers(profile, tmp_path, monkeypatch
     assert root == (tmp_path / "home" / "oracles" / "main").resolve()
 
     prov = cfg["provider"]
-    assert prov["name"] == "anthropic"
-    assert prov["model"] == "claude-sonnet-4-6"
-    assert prov["base_url"] == "https://api.anthropic.com/v1"
+    assert prov["name"] == "nvidia"
+    assert prov["model"] == "meta/llama-3.3-70b-instruct"
+    assert prov["base_url"] == "https://integrate.api.nvidia.com/v1"
 
     # No key written (blank answer).
     assert config.resolve_secret(prov["api_key_env"]) is None
@@ -101,9 +102,12 @@ def _adopt(spawned_root, monkeypatch):
 
 def test_quick_provider_menu_number_maps_ollama(profile, spawned_root, monkeypatch):
     _adopt(spawned_root, monkeypatch)
+    # Pin Ollama detection OFF so the test never hits a real localhost server
+    # (env-independent): smart-detect returns the install hint + default model.
+    monkeypatch.setattr(wizard, "_ollama_installed_models", lambda timeout=1.5: None)
     out = io.StringIO()
-    # company, admin, provider="4" (ollama). Ollama has no key prompt.
-    inp = _Script(["", "", "4"])
+    # company, admin, provider="2" (ollama in the new free-first menu). No key.
+    inp = _Script(["", "", "2"])
     rc = wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
     assert rc in (0, 1), out.getvalue()  # doctor may warn-only(0) — never crashes
     cfg = config.load_config()
@@ -111,7 +115,10 @@ def test_quick_provider_menu_number_maps_ollama(profile, spawned_root, monkeypat
     assert prov["name"] == "ollama"
     assert "localhost" in prov["base_url"]
     assert prov["api_key_env"] == ""
-    assert "ollama.com" in out.getvalue()
+    assert prov["model"] == "llama3.1"
+    # The pull command is printed on every not-ready branch (installed-or-not),
+    # so it's a stable assertion regardless of whether ollama is on this box.
+    assert "ollama pull llama3.1" in out.getvalue()
 
 
 def test_quick_provider_menu_name_maps_openai(profile, spawned_root, monkeypatch):
@@ -128,14 +135,85 @@ def test_quick_provider_menu_name_maps_openai(profile, spawned_root, monkeypatch
 
 
 # --------------------------------------------------------------------------- #
+# NVIDIA free preset: default model, sub-menu pick, custom id, key path
+# --------------------------------------------------------------------------- #
+def test_quick_nvidia_default_model_and_key(profile, spawned_root, monkeypatch):
+    """NVIDIA by name -> default 70B model; a scripted key lands in .env."""
+    _adopt(spawned_root, monkeypatch)
+    out = io.StringIO()
+    # company, admin, provider="nvidia", nvidia-model="" (default 70B), key.
+    inp = _Script(["", "", "nvidia", "", "nvapi-quicktest-0123456789"])
+    rc = wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
+    assert rc in (0, 1), out.getvalue()
+    prov = config.load_config()["provider"]
+    assert prov["name"] == "nvidia"
+    assert prov["base_url"] == "https://integrate.api.nvidia.com/v1"
+    assert prov["model"] == "meta/llama-3.3-70b-instruct"
+    assert config.resolve_secret(prov["api_key_env"]) == "nvapi-quicktest-0123456789"
+    assert "build.nvidia.com" in out.getvalue()
+
+
+def test_quick_nvidia_model_submenu_number(profile, spawned_root, monkeypatch):
+    """NVIDIA model sub-menu accepts a number (2 -> the 8B model)."""
+    _adopt(spawned_root, monkeypatch)
+    out = io.StringIO()
+    inp = _Script(["", "", "nvidia", "2", ""])
+    rc = wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
+    assert rc in (0, 1), out.getvalue()
+    assert config.load_config()["provider"]["model"] == "meta/llama-3.1-8b-instruct"
+
+
+def test_quick_nvidia_model_custom_id(profile, spawned_root, monkeypatch):
+    """A pasted model id (contains '/') is taken verbatim."""
+    _adopt(spawned_root, monkeypatch)
+    out = io.StringIO()
+    inp = _Script(["", "", "nvidia", "qwen/qwen2.5-7b-instruct", ""])
+    rc = wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
+    assert rc in (0, 1), out.getvalue()
+    assert config.load_config()["provider"]["model"] == "qwen/qwen2.5-7b-instruct"
+
+
+# --------------------------------------------------------------------------- #
+# Ollama smart-detect (detection monkeypatched; never hits a real server)
+# --------------------------------------------------------------------------- #
+def test_quick_ollama_uses_running_model(profile, spawned_root, monkeypatch):
+    """When Ollama is running with a model, the wizard adopts it silently."""
+    _adopt(spawned_root, monkeypatch)
+    monkeypatch.setattr(wizard, "_ollama_installed_models",
+                        lambda timeout=1.5: ["mistral", "llama3.1"])
+    out = io.StringIO()
+    inp = _Script(["", "", "ollama"])
+    rc = wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
+    assert rc in (0, 1), out.getvalue()
+    # Recommended model present -> preferred over the first listed.
+    assert config.load_config()["provider"]["model"] == "llama3.1"
+    assert "Found Ollama running" in out.getvalue()
+
+
+def test_quick_ollama_running_empty_non_tty_skips_pull(profile, spawned_root, monkeypatch):
+    """Server up but no models, non-tty: no pull attempted, prints the command."""
+    _adopt(spawned_root, monkeypatch)  # sets stdin non-tty
+    monkeypatch.setattr(wizard, "_ollama_installed_models", lambda timeout=1.5: [])
+    pulled = {"called": False}
+    monkeypatch.setattr(wizard, "_ollama_pull",
+                        lambda m: pulled.__setitem__("called", True) or True)
+    out = io.StringIO()
+    inp = _Script(["", "", "ollama"])
+    rc = wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
+    assert rc in (0, 1), out.getvalue()
+    assert pulled["called"] is False  # never auto-pulls without a tty
+    assert "ollama pull llama3.1" in out.getvalue()
+
+
+# --------------------------------------------------------------------------- #
 # key path -> profile .env
 # --------------------------------------------------------------------------- #
 def test_quick_key_lands_in_profile_env(profile, spawned_root, monkeypatch):
     _adopt(spawned_root, monkeypatch)
     out = io.StringIO()
-    # company, admin, provider=anthropic(default "1"), key (read from stream
-    # because non-tty; getpass_fn unused).
-    inp = _Script(["", "", "1", "sk-ant-quicktest-0123456789"])
+    # provider="anthropic" by NAME (a keyed preset with no sub-menu), then key
+    # (read from stream because non-tty; getpass_fn unused).
+    inp = _Script(["", "", "anthropic", "sk-ant-quicktest-0123456789"])
     rc = wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
     assert rc in (0, 1), out.getvalue()
     cfg = config.load_config()

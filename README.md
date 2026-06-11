@@ -50,8 +50,15 @@ oracle setup        # quick wizard (~1 min): name, provider, API key — then ch
 oracle doctor       # full health report
 ```
 
-`oracle setup` is the short, plain-language flow. For connectors, Telegram, and
-scheduling, run `oracle setup --advanced`.
+`oracle setup` is the short, plain-language flow: company name, your name, and a
+provider menu that leads with two **free, no-cost-to-start** options —
+**NVIDIA** (one free key from [build.nvidia.com](https://build.nvidia.com)
+unlocks many open models; no GPU, no install) and **Ollama** (fully local and
+private, auto-detected if already running). Paid APIs (Claude, OpenAI,
+OpenRouter) are right below. Note: a Claude Pro/Max *subscription* cannot drive
+Oracle — Anthropic's API only accepts a pay-per-use key, so the free NVIDIA or
+local Ollama paths are the zero-cost way to get started. For connectors,
+Telegram, and scheduling, run `oracle setup --advanced`.
 
 Layout: source + venv under `~/.oracle/`, command symlinked into
 `~/.local/bin`, secrets in `~/.oracle/.env` (0600), settings in

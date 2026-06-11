@@ -323,26 +323,42 @@ Instance resolution: explicit NAME > cwd inside a registered root >
 **S8.1 wizard.** Two flows, both stdin-scriptable, skippable, idempotent.
 
 *Quick flow* (the DEFAULT, `wizard.run_quick` via `wizard.run()`): company/team
-name → admin (your) name → provider as a NUMBERED menu
-(1 Claude/anthropic · 2 OpenAI · 3 OpenRouter · 4 Ollama-local · 5 custom;
-accepts the number OR the preset name, default 1) → API key (preset key URL
-printed first; via `set_env_secret`, `getpass` no-echo on tty; blank = add
-later; Ollama = no key, install-from-ollama.com note) → success banner.
+name → admin (your) name → provider as a FREE-FIRST numbered menu
+(1 NVIDIA · 2 Ollama-local · 3 Claude/anthropic · 4 OpenAI · 5 OpenRouter ·
+6 custom; accepts the number OR the preset name, default 1 = NVIDIA, the free
+no-install path) → provider-specific sub-flow → API key → success banner.
+Provider sub-flows:
+- **NVIDIA** (`integrate.api.nvidia.com/v1`, one free key from build.nvidia.com,
+  many OpenAI-compatible open models): a short model sub-menu (70B recommended ·
+  8B · paste any `vendor/model` id), then the free-key prompt. Cloud endpoint →
+  `external` → `public` ceiling.
+- **Ollama** (loopback → `local_agent` → up to `internal` ceiling): smart-detect
+  via `GET localhost:11434/api/tags` (stdlib, 1.5s timeout). Running with a
+  model → adopt it (prefer `llama3.1`); running but empty → on a tty offer
+  `ollama pull llama3.1` (~4.7GB), else print the command; not reachable → print
+  install-from-ollama.com / `ollama serve` guidance. No API key either way.
+- **anthropic/openai/openrouter**: preset key URL printed first, then the key.
+- **custom**: base URL + model id prompted.
+Key handling via `set_env_secret`, `getpass` no-echo on tty; blank = add later.
 NO instance-name/root/ingest/Telegram/connector/dream questions: the instance
 is fixed (`default_instance` or `main`), the root is the registered root for
 that instance else `~/oracles/<instance>` (adopt if `oracle.yml` exists, else
-spawn). The **full doctor report is printed ONLY when `worst_is_fail()`** (and
+spawn; the spawn machinery's stdout/stderr is captured and shown only on
+failure). The **full doctor report is printed ONLY when `worst_is_fail()`** (and
 returns 1); otherwise a one-line ready-to-chat banner names the pending warn
 count and points at `oracle chat`, `oracle ingest`, `oracle setup --advanced`,
-`oracle doctor` (rc 0). Enforcers: `test_quick_defaults_only_spawns_and_registers`,
-`test_quick_provider_menu_number_maps_ollama`,
+`oracle doctor` (rc 0). Enforcers: `test_quick_defaults_only_spawns_and_registers`
+(default → NVIDIA + 70B), `test_quick_provider_menu_number_maps_ollama`,
 `test_quick_provider_menu_name_maps_openai`, `test_quick_key_lands_in_profile_env`,
+`test_quick_nvidia_default_model_and_key`, `test_quick_nvidia_model_submenu_number`,
+`test_quick_nvidia_model_custom_id`, `test_quick_ollama_uses_running_model`,
+`test_quick_ollama_running_empty_non_tty_skips_pull`,
 `test_quick_banner_no_full_report_on_warn_only`, `test_quick_prints_report_on_fail`.
 
 *Advanced flow* (`wizard.run_advanced` via `oracle setup --advanced`, contract
 unchanged from the old S8.1): instance name → root path → company/admin name →
 spawn (or adopt existing root) → provider preset
-(anthropic/openai/openrouter/ollama/custom) → model id → API key (via
+(nvidia/anthropic/openai/openrouter/ollama/custom) → model id → API key (via
 `set_env_secret`, `getpass` no-echo on tty) → ingest roots → optional Telegram
 (token env + allowlist seed) → connector step → dream-actuator step → final
 `doctor` (full report). Enforcer: `test_advanced_walks_old_prompts` (the
