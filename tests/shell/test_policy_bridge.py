@@ -167,3 +167,166 @@ def test_builder_accepts_valid_ceiling_override(spawned_root):
     loop = build_loop(cfg, spawned_root, surface="chat",
                       ceiling_override="public")
     assert loop is not None
+
+
+# ---------------------------------------------------------------------------
+# C2 (P2S-2): egress veto -- loopback != processing locality
+# ---------------------------------------------------------------------------
+
+class _FakeResp:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _FakeOpener:
+    """Minimal urllib-opener stand-in. ``handler`` maps url -> body bytes or
+    raises if the url is not registered (simulating an unreachable endpoint)."""
+
+    def __init__(self, by_url: dict):
+        self._by_url = by_url
+        self.opened: list[str] = []
+
+    def open(self, req, timeout=None):
+        url = req.full_url if hasattr(req, "full_url") else req.get_full_url()
+        self.opened.append(url)
+        if url not in self._by_url:
+            raise OSError("connection refused")
+        return _FakeResp(self._by_url[url])
+
+
+def test_egress_veto_cloud_suffix_no_network():
+    """A ':cloud' model is vetoed without ANY network call."""
+    opener = _FakeOpener({})  # would raise if probed
+    reason = pb.egress_veto("http://127.0.0.1:11434/v1",
+                            "deepseek-v4-pro:cloud", opener=opener)
+    assert reason is not None
+    assert ":cloud" in reason or "cloud" in reason.lower()
+    assert opener.opened == []  # suffix rule short-circuits the probe
+
+
+def test_egress_veto_remote_host_in_tags_vetoes():
+    """A model whose /api/tags entry carries remote_host is vetoed, naming it."""
+    import json
+    tags = json.dumps({"models": [
+        {"name": "kimi-k2.6:cloud", "remote_host": "ollama.com"},
+        {"name": "qwen3.6-32k", "remote_host": ""},
+    ]}).encode()
+    opener = _FakeOpener({"http://127.0.0.1:11434/api/tags": tags})
+    reason = pb.egress_veto("http://127.0.0.1:11434/v1",
+                            "kimi-k2.6:cloud", opener=opener)
+    assert reason is not None
+    # A model that is NOT :cloud but carries remote_host must hit the /api/tags
+    # path and be vetoed by the remote_host marker.
+    tags2 = json.dumps({"models": [
+        {"name": "shadowmodel", "remote_host": "ollama.com"},
+    ]}).encode()
+    opener2 = _FakeOpener({"http://127.0.0.1:11434/api/tags": tags2})
+    reason3 = pb.egress_veto("http://127.0.0.1:11434/v1",
+                             "shadowmodel", opener=opener2)
+    assert reason3 is not None
+    assert "ollama.com" in reason3
+    assert opener2.opened == ["http://127.0.0.1:11434/api/tags"]
+
+
+def test_egress_veto_tags_absent_no_veto():
+    """If /api/tags is unreachable, no veto (genuine local vLLM/llama.cpp)."""
+    opener = _FakeOpener({})  # nothing registered -> open() raises
+    reason = pb.egress_veto("http://127.0.0.1:8000/v1", "local-model",
+                            opener=opener)
+    assert reason is None
+    assert opener.opened == ["http://127.0.0.1:8000/api/tags"]
+
+
+def test_egress_veto_model_listed_local_no_veto():
+    """A model listed with an empty/absent remote_host is NOT vetoed."""
+    import json
+    tags = json.dumps({"models": [
+        {"name": "qwen3.6-32k", "remote_host": ""},
+        {"name": "llama3"},
+    ]}).encode()
+    opener = _FakeOpener({"http://127.0.0.1:11434/api/tags": tags})
+    assert pb.egress_veto("http://127.0.0.1:11434/v1", "qwen3.6-32k",
+                          opener=opener) is None
+    assert pb.egress_veto("http://127.0.0.1:11434/v1", "llama3",
+                          opener=opener) is None
+
+
+def test_egress_veto_model_not_listed_no_veto():
+    """A model not present in /api/tags is NOT vetoed (case c)."""
+    import json
+    tags = json.dumps({"models": [
+        {"name": "qwen3.6-32k", "remote_host": "ollama.com"},
+    ]}).encode()
+    opener = _FakeOpener({"http://127.0.0.1:11434/api/tags": tags})
+    assert pb.egress_veto("http://127.0.0.1:11434/v1", "some-other-model",
+                          opener=opener) is None
+
+
+def test_egress_veto_latest_tag_match():
+    """A bare model name matches the ':latest'-tagged /api/tags entry."""
+    import json
+    tags = json.dumps({"models": [
+        {"name": "shadow:latest", "remote_host": "ollama.com"},
+    ]}).encode()
+    opener = _FakeOpener({"http://127.0.0.1:11434/api/tags": tags})
+    reason = pb.egress_veto("http://127.0.0.1:11434/v1", "shadow", opener=opener)
+    assert reason is not None and "ollama.com" in reason
+
+
+def test_egress_veto_empty_model_no_veto():
+    opener = _FakeOpener({})
+    assert pb.egress_veto("http://127.0.0.1:11434/v1", "", opener=opener) is None
+    assert opener.opened == []
+
+
+def _veto_cfg(model: str) -> dict:
+    return {
+        "provider": {
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": model,
+            "api_key_env": "",
+            "max_tokens": 256,
+        },
+        "chat": {"max_iterations": 2, "tool_result_max_chars": 1000,
+                 "history_max_chars": 10000},
+        "instances": {},
+        "ingest_roots": [],
+    }
+
+
+def test_egress_veto_in_build_loop_forces_external(spawned_root, capsys):
+    """A vetoed loopback model yields an external ceiling + schema in build_loop."""
+    from oracle_agent.agentloop.builder import build_loop
+
+    loop = build_loop(_veto_cfg("deepseek-v4-pro:cloud"), spawned_root,
+                      surface="chat")
+    # Reclassified external: ceiling drops to public, dispatcher env is external.
+    assert loop.dispatcher.environment == "external"
+    assert loop.dispatcher.max_sensitivity == "public"
+    # The LLM client environment is also external.
+    assert loop.client.environment == "external"
+    # System prompt reflects the external environment.
+    assert "`external` model" in loop.system_prompt
+    # A stderr warning naming the veto reason was surfaced.
+    err = capsys.readouterr().err
+    assert "egress veto" in err
+
+
+def test_no_egress_veto_keeps_local_agent(spawned_root, monkeypatch):
+    """A clean local model stays local_agent with the internal ceiling."""
+    from oracle_agent.agentloop.builder import build_loop
+
+    # Force egress_veto to return None (clean) regardless of host environment.
+    monkeypatch.setattr(pb, "egress_veto", lambda *a, **k: None)
+    loop = build_loop(_veto_cfg("qwen3.6-32k"), spawned_root, surface="chat")
+    assert loop.dispatcher.environment == "local_agent"
+    assert loop.dispatcher.max_sensitivity == "internal"

@@ -686,6 +686,22 @@ GUARANTEES: list[Guarantee] = [
         kind="advisory",
         source="SPEC-S4",
     ),
+
+    # ------------------------------------------------------------------
+    # C2 (P2S-2) -- egress veto: loopback != processing locality
+    # ------------------------------------------------------------------
+    Guarantee(
+        id="SH-058",
+        statement=(
+            "A loopback endpoint serving a provably cloud-proxied model (an Ollama "
+            "':cloud' model, or one whose /api/tags entry carries a non-empty "
+            "remote_host) is reclassified external by the egress veto, capping the "
+            "ceiling at public on every surface."
+        ),
+        enforcer="tests/shell/test_policy_bridge.py::test_egress_veto_in_build_loop_forces_external",
+        kind="test",
+        source="C2",
+    ),
 ]
 
 # ---------------------------------------------------------------------------

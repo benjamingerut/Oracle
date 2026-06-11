@@ -87,6 +87,34 @@ def _is_non_loopback_http(base_url: str) -> bool:
     return True
 
 
+def _is_ollama_tags_reachable(base_url: str) -> bool:
+    """Return True iff the base_url ORIGIN answers a parseable Ollama /api/tags.
+
+    Read-only, 3s budget. Used to distinguish "Ollama, egress veto clear" from
+    "non-Ollama loopback server we cannot vet" (STRESS C2). Any error -> False.
+    """
+    if not base_url:
+        return False
+    try:
+        parts = urllib.parse.urlsplit(base_url)
+    except ValueError:
+        return False
+    if not parts.scheme or not parts.hostname:
+        return False
+    host = parts.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = f"{host}:{parts.port}" if parts.port else host
+    url = f"{parts.scheme}://{netloc}/api/tags"
+    try:
+        with urllib.request.urlopen(url, timeout=3.0) as resp:
+            body = resp.read().decode("utf-8", "replace")
+        data = json.loads(body)
+    except (urllib.error.URLError, socket.timeout, OSError, ValueError):
+        return False
+    return isinstance(data, dict) and isinstance(data.get("models"), list)
+
+
 def _count_real_sources(root: Path) -> int:
     """Count non-template markdown files in ``Memory.nosync/Sources/``.
 
@@ -187,10 +215,27 @@ def run(instance: str | None = None) -> Report:
     prov = cfg.get("provider") or {}
     env_key = prov.get("api_key_env") or ""
     base_url = prov.get("base_url", "")
+    model = prov.get("model", "")
     environment = pb.environment_for(base_url)
     rep.add(OK, f"provider env: {environment} ({base_url})")
     if environment == "local_agent":
-        rep.add(OK, "local model: ceiling up to internal")
+        # Egress veto (STRESS C2 / P2S-2): a loopback listener is not a
+        # processing-locality guarantee. Verify the model is not provably
+        # cloud-proxied; read-only, 3s probe budget.
+        veto = pb.egress_veto(base_url, model, timeout=3.0)
+        if veto:
+            rep.add(FAIL,
+                    f"local model {model!r} is cloud-proxied: {veto}",
+                    "use a fully local model (e.g. qwen3.6-32k) or accept "
+                    "public-only")
+        elif _is_ollama_tags_reachable(base_url):
+            rep.add(OK, "local model: ceiling up to internal (egress veto clear)")
+        else:
+            rep.add(WARN,
+                    "cannot verify processing locality of loopback endpoint "
+                    "(non-Ollama server?) — loopback != no forwarding (STRESS C2)",
+                    "if this is Ollama, ensure /api/tags is reachable; otherwise "
+                    "confirm the server does not forward off-box")
     else:
         rep.add(OK, "external model: ceiling public (confidential+ withheld)")
     # non-https non-loopback endpoint is a hard FAIL

@@ -29,6 +29,10 @@ from urllib.parse import urlsplit
 CANONICAL_ORDER = ["public", "internal", "confidential", "restricted", "secret"]
 _LOOPBACK_NAMES = {"localhost"}
 
+# Egress-veto network probe budget (STRESS C2 follow-up / P2S-2). Deliberately
+# short so neither build_loop nor doctor stalls on an unresponsive endpoint.
+_EGRESS_PROBE_TIMEOUT = 3.0
+
 
 def _is_loopback_addr(addr: str) -> bool:
     try:
@@ -68,6 +72,102 @@ def environment_for(base_url: str) -> str:
     if not host:
         return "external"
     return "local_agent" if _is_literal_loopback_host(host) else "external"
+
+
+def egress_veto(base_url: str, model: str, *, timeout: float = _EGRESS_PROBE_TIMEOUT,
+                opener=None) -> str | None:
+    """Veto a loopback endpoint that is PROVABLY proxying content off-box.
+
+    Network locality is not processing locality (STRESS C2 / P2S-2). Ollama
+    serves ``*:cloud`` models from a loopback listener that forwards the full
+    prompt to ``ollama.com``; classifying such an endpoint ``local_agent`` would
+    egress internal-ceiling content unminimized. This check catches that case.
+
+    Returns a human-readable reason string if the model is provably proxying,
+    else ``None``. It is deliberately **veto-only**: it never blocks a genuine
+    local server. Logic:
+
+      (a) model name ends with ``:cloud`` -> veto (no network call needed);
+      (b) GET ``{scheme}://{host:port}/api/tags`` (Ollama-native API, derived
+          from the base_url ORIGIN, not the ``/v1`` path) with a short timeout
+          and the same no-redirect urllib discipline as ``llm/client.py``; if a
+          models list comes back and the configured model's entry carries a
+          non-empty ``remote_host`` (or ``remote_model``) -> veto, naming the
+          remote host;
+      (c) ``/api/tags`` unreachable, malformed, or model not listed -> NO veto
+          (non-Ollama local servers such as vLLM / llama.cpp have no such API;
+          the veto must not break them).
+
+    Never raises: any unexpected error fails toward NO veto for (b)/(c) since
+    the suffix rule (a) already covers the provable cloud case fail-safe, and a
+    transport failure cannot prove proxying. ``opener`` is injectable for tests.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    if not model:
+        return None
+    # (a) Provable cloud model by suffix -- no network call.
+    if model.lower().endswith(":cloud"):
+        return (
+            f"model {model!r} is a cloud-proxied model (':cloud' suffix); a "
+            "loopback Ollama listener forwards the full prompt to ollama.com"
+        )
+
+    # (b) Probe the Ollama-native /api/tags on the base_url ORIGIN.
+    try:
+        parts = urlsplit(base_url)
+    except ValueError:
+        return None
+    if not parts.scheme or not parts.hostname:
+        return None
+    netloc = parts.hostname
+    if parts.port:
+        netloc = f"{netloc}:{parts.port}"
+    elif parts.netloc and "@" in parts.netloc:
+        # userinfo present but no port; fall back to the host portion only.
+        netloc = parts.hostname
+    # Bracket literal IPv6 for the URL.
+    if ":" in parts.hostname and not parts.hostname.startswith("["):
+        netloc = f"[{parts.hostname}]"
+        if parts.port:
+            netloc = f"[{parts.hostname}]:{parts.port}"
+    tags_url = f"{parts.scheme}://{netloc}/api/tags"
+
+    if opener is None:
+        from ..llm.client import _NoRedirect  # same no-redirect discipline
+        opener = urllib.request.build_opener(_NoRedirect())
+
+    try:
+        req = urllib.request.Request(tags_url, method="GET")
+        with opener.open(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", "replace")
+        data = _json.loads(body)
+    except Exception:
+        # Unreachable / malformed / non-Ollama server -> no veto (case c).
+        return None
+
+    models = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(models, list):
+        return None
+    want = model.lower()
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or entry.get("model") or "").lower()
+        # Match exact, or model without an implicit ":latest" tag.
+        if name == want or name == f"{want}:latest" or f"{name}" == f"{want}":
+            remote_host = entry.get("remote_host") or entry.get("remote_model")
+            if remote_host:
+                return (
+                    f"model {model!r} is served by a loopback Ollama listener "
+                    f"that proxies to remote host {str(remote_host)!r} "
+                    "(/api/tags carries remote_host) — content would egress off-box"
+                )
+            return None  # listed, but local -> no veto
+    # Model not listed by /api/tags -> no veto (case c).
+    return None
 
 
 def validate_sensitivity_label(label: str, order: list[str] | None = None) -> str:

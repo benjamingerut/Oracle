@@ -248,17 +248,69 @@ def test_doctor_non_https_non_loopback_fails(profile, spawned_root):
     assert "cleartext" in text or "http://" in text
 
 
-def test_doctor_loopback_http_ok(profile, spawned_root):
+def test_doctor_loopback_http_ok(profile, spawned_root, monkeypatch):
     """http://localhost is allowed (not a FAIL)."""
     _register(spawned_root, "main")
     cfg = config.load_config()
     cfg["provider"]["base_url"] = "http://localhost:11434/v1"
     config.save_config(cfg)
+    # Keep the egress probe deterministic/offline: clean veto, Ollama reachable.
+    monkeypatch.setattr(doctor.pb, "egress_veto", lambda *a, **k: None)
+    monkeypatch.setattr(doctor, "_is_ollama_tags_reachable", lambda url: True)
     rep = doctor.run("main")
     # Should not fail due to http loopback
     rows = [(lvl, msg) for lvl, msg, _ in rep.rows
             if "cleartext" in msg or "plain http" in msg.lower()]
     assert not rows, f"Unexpected http-loopback fail: {rows}"
+
+
+def test_doctor_egress_veto_cloud_model_fails(profile, spawned_root, monkeypatch):
+    """A loopback provider serving a ':cloud' model is a FAIL (egress veto)."""
+    _register(spawned_root, "main")
+    cfg = config.load_config()
+    cfg["provider"]["base_url"] = "http://127.0.0.1:11434/v1"
+    cfg["provider"]["model"] = "deepseek-v4-pro:cloud"
+    config.save_config(cfg)
+    rep = doctor.run("main")
+    assert rep.worst_is_fail()
+    text = rep.render()
+    assert "cloud-proxied" in text
+    assert "deepseek-v4-pro:cloud" in text
+    assert "qwen3.6-32k" in text  # fix line names a fully-local alternative
+
+
+def test_doctor_egress_unverifiable_loopback_warns(profile, spawned_root, monkeypatch):
+    """A loopback endpoint whose /api/tags is unreachable raises a WARN, not FAIL."""
+    _register(spawned_root, "main")
+    cfg = config.load_config()
+    cfg["provider"]["base_url"] = "http://127.0.0.1:8000/v1"  # e.g. vLLM
+    cfg["provider"]["model"] = "local-model"
+    config.save_config(cfg)
+    # Clean veto + unreachable /api/tags.
+    monkeypatch.setattr(doctor.pb, "egress_veto", lambda *a, **k: None)
+    monkeypatch.setattr(doctor, "_is_ollama_tags_reachable", lambda url: False)
+    rep = doctor.run("main")
+    text = rep.render()
+    assert "cannot verify processing locality" in text
+    assert "STRESS C2" in text
+    # WARN, not FAIL (genuine local server must not be blocked).
+    rows = [lvl for lvl, msg, _ in rep.rows if "cannot verify" in msg]
+    assert rows == [doctor.WARN]
+
+
+def test_doctor_egress_clean_ollama_ok(profile, spawned_root, monkeypatch):
+    """A clean Ollama loopback model (veto clear, /api/tags reachable) is OK."""
+    _register(spawned_root, "main")
+    cfg = config.load_config()
+    cfg["provider"]["base_url"] = "http://127.0.0.1:11434/v1"
+    cfg["provider"]["model"] = "qwen3.6-32k"
+    config.save_config(cfg)
+    monkeypatch.setattr(doctor.pb, "egress_veto", lambda *a, **k: None)
+    monkeypatch.setattr(doctor, "_is_ollama_tags_reachable", lambda url: True)
+    rep = doctor.run("main")
+    assert not rep.worst_is_fail()
+    text = rep.render()
+    assert "egress veto clear" in text
 
 
 def test_doctor_upgrade_suggestion_has_from_kernel(profile, spawned_root, monkeypatch):

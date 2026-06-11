@@ -7,6 +7,7 @@ policy bridge and ceiling logic are applied identically on every surface.
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from .. import config
@@ -29,7 +30,22 @@ def build_loop(cfg: dict, root: Path, *, surface: str,
     """
     prov = cfg.get("provider") or {}
     base_url = prov.get("base_url", "")
+    model = prov.get("model", "")
     environment = pb.environment_for(base_url)
+    # Egress veto (STRESS C2 / P2S-2): a loopback listener serving a provably
+    # cloud-proxied model (e.g. an Ollama ``*:cloud`` model that forwards to
+    # ollama.com) is treated as EXTERNAL for every downstream decision. Network
+    # locality is not processing locality. Fail toward the stricter outcome;
+    # egress_veto never raises.
+    if environment == "local_agent":
+        veto = pb.egress_veto(base_url, model)
+        if veto:
+            print(
+                f"oracle: egress veto — loopback endpoint reclassified as "
+                f"external: {veto}",
+                file=sys.stderr,
+            )
+            environment = "external"
     order = pb.sensitivity_order(root)
     # NOTE: local_is_confined was removed (S1 remediation — dead security knob).
     # A real confidential-tier confinement mechanism lands in roadmap Phase 2.
