@@ -64,6 +64,17 @@ DEFAULT_CONFIG: dict = {
         # beyond the reach of config. Local default is "observe" until the P3-T7
         # budget gate passes, then flips to "enforce" (one change, here).
         "grounding_default": "observe",
+        # Phase 3 (P3S-10): operator consent for the P3-T7 shadow-mode FP/latency
+        # measurement. When true AND the local chat is in OBSERVE, each flagged
+        # claim-unit is appended (claim text + verdict + timing) to a local-only
+        # grounding_shadow.jsonl under profile_dir() for the budget evaluation.
+        # Default OFF -- capture never happens without the operator opting in.
+        # This is a TELEMETRY consent, NOT a security key: it is intentionally
+        # absent from SECURITY_KEYS (a migration may freely toggle it off; the
+        # default-off invariant is the safe direction). It can never reach the
+        # gateway (no gateway grounding keys at all, P3S-11) and the capture
+        # call site exists ONLY on the local-OBSERVE branch of the loop.
+        "grounding_shadow": False,
     },
     "serve": {"tick_seconds": 300},
     "gateway": {

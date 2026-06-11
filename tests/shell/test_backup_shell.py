@@ -169,6 +169,13 @@ class TestSecretDenyList:
         assert not _is_shell_secret(Path("config.json"))
         assert not _is_shell_secret(Path("ledger.md"))
 
+    def test_grounding_shadow_jsonl_denied(self):
+        """P3-T7 / P3S-10 (G5): the shadow capture file (claim text) must NEVER
+        land in any shell-produced archive."""
+        from oracle_agent.backup_shell import _is_shell_secret, DENY_EXACT_NAMES
+        assert "grounding_shadow.jsonl" in DENY_EXACT_NAMES
+        assert _is_shell_secret(Path("grounding_shadow.jsonl"))
+
 
 # ---------------------------------------------------------------------------
 # Profile backup: no .env
@@ -202,6 +209,34 @@ class TestProfileBackup:
             if f.is_file():
                 assert f.name != ".env", f"profile backup must not contain .env; found {f}"
                 assert ".env." not in f.name, f"profile backup must not contain .env.* variants; found {f}"
+
+    def test_profile_backup_excludes_grounding_shadow(self, profile, tmp_path):
+        """Profile backup must never contain grounding_shadow.jsonl even when one
+        exists in the profile dir (P3-T7 / P3S-10, G5 interplay)."""
+        from oracle_agent import config, cli
+
+        pdir = config.profile_dir()
+        pdir.mkdir(parents=True, exist_ok=True)
+        cfg = config.load_config()
+        config.save_config(cfg)
+
+        # Plant a shadow capture file (holds flagged claim TEXT).
+        shadow = pdir / "grounding_shadow.jsonl"
+        shadow.write_text(
+            '{"claim": "Revenue was $1M.", "verdict": "unbacked"}\n',
+            encoding="utf-8",
+        )
+        assert shadow.exists()
+
+        out_dir = tmp_path / "profile_shadow_bk"
+        rc = cli.main(["backup", "--profile", "--out", str(out_dir)])
+        assert rc == 0, "profile backup should succeed"
+
+        for f in out_dir.rglob("*"):
+            if f.is_file():
+                assert f.name != "grounding_shadow.jsonl", (
+                    f"profile backup must not contain grounding_shadow.jsonl; found {f}"
+                )
 
     def test_profile_backup_contains_config_json(self, profile, tmp_path):
         """Profile backup should contain config.json."""

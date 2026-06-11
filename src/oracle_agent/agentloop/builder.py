@@ -133,10 +133,18 @@ def build_loop(cfg: dict, root: Path, *, surface: str,
     # ceiling so a repair storm cannot stall the serve loop (P3S-7). Local chat
     # has no wall-clock ceiling (the operator owns the terminal).
     turn_wall_clock = _GATEWAY_TURN_WALL_CLOCK if surface == "gateway" else None
+    # P3-T7 shadow capture (P3S-10): consent is read from config ONLY for a LOCAL
+    # surface. The gateway NEVER gets shadow capture -- structurally it is
+    # ENFORCE (never reaches the OBSERVE branch where capture lives) and here the
+    # consent is hard-forced False for any non-local surface, so claim text can
+    # never land in a file on a gateway-built loop.
+    shadow_consent = (surface == "local"
+                      and bool(chat_cfg.get("grounding_shadow", False)))
     return AgentLoop(
         client, dispatcher, system_prompt,
         grounding=grounding,
         turn_wall_clock=turn_wall_clock,
+        shadow_consent=shadow_consent,
         max_iterations=int(chat_cfg.get("max_iterations", 20)),
         history_max_chars=int(chat_cfg.get("history_max_chars", 400000)),
         max_tokens=int(prov.get("max_tokens", 4096)),

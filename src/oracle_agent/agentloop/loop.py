@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import enum
 import json
+import os
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..llm.client import ChatResponse, LLMClient, LLMError, chat_with_retry
@@ -73,6 +75,19 @@ _REDACT_NOTICE = (
 _GATE_ERROR_NOTICE = (
     "[reply withheld: the grounding gate could not verify this answer]"
 )
+
+# P3-T7 shadow capture file (P3S-10): a local-only, operator-consented sink for
+# flagged claim-units captured under LOCAL OBSERVE traffic, used by the budget
+# gate. It lives under profile_dir(), holds claim TEXT (so it is excluded from
+# backups -- see backup_shell.DENY_EXACT_NAMES), and is NEVER written on any
+# gateway path.
+SHADOW_FILENAME = "grounding_shadow.jsonl"
+
+
+def _shadow_path() -> Path:
+    """Absolute path to the local-only grounding shadow file (P3-T7)."""
+    from .. import config
+    return config.profile_dir() / SHADOW_FILENAME
 
 
 def _line_content(stripped: str) -> str:
@@ -162,6 +177,7 @@ class AgentLoop:
                  max_iterations: int = 20,
                  history_max_chars: int = 400_000, max_tokens: int | None = None,
                  max_repair: int = 2, turn_wall_clock: float | None = None,
+                 shadow_consent: bool = False,
                  retry_kwargs: dict | None = None, clock=time.monotonic):
         if not isinstance(grounding, GroundingPolicy):
             raise TypeError(
@@ -183,6 +199,14 @@ class AgentLoop:
         # Per-turn wall-clock ceiling (gateway: 120s, aligned with
         # Dispatcher.timeout). None = no wall-clock ceiling (local default).
         self.turn_wall_clock = turn_wall_clock
+        # P3-T7 shadow capture (P3S-10): when the operator has CONSENTED and the
+        # policy is OBSERVE on a LOCAL surface, each flagged claim-unit is
+        # appended to a local-only grounding_shadow.jsonl for the budget gate.
+        # This is a measurement aid, structurally bounded to the local-OBSERVE
+        # branch (see ``_observe_release``); it can never fire on the gateway
+        # (gateway is ENFORCE -- it never reaches ``_observe_release`` -- and the
+        # builder never sets consent for the gateway surface).
+        self.shadow_consent = bool(shadow_consent)
         self._clock = clock
         self.retry_kwargs = retry_kwargs or {}
         # The loop owns ONE message list, mutated only by append + eviction.
@@ -217,7 +241,8 @@ class AgentLoop:
                 self.messages.append({"role": "assistant", "content": draft})
                 # --- grounding gate on the DRAFT, BEFORE the footer (P3S-14) -
                 if self.grounding is GroundingPolicy.OBSERVE:
-                    return self._observe_release(draft, envelopes, iterations, repairs)
+                    return self._observe_release(draft, envelopes, iterations,
+                                                 repairs, self._clock() - start)
                 # ENFORCE: check the draft.
                 try:
                     check = self._check(draft, envelopes)
@@ -264,7 +289,8 @@ class AgentLoop:
         text = resp.content or "[no answer produced within the iteration budget]"
         self.messages.append({"role": "assistant", "content": text})
         if self.grounding is GroundingPolicy.OBSERVE:
-            return self._observe_release(text, envelopes, iterations, repairs)
+            return self._observe_release(text, envelopes, iterations, repairs,
+                                         self._clock() - start)
         try:
             return self._redact_release(text, envelopes, iterations, repairs)
         except GateError:
@@ -384,18 +410,27 @@ class AgentLoop:
         return check_grounding(draft, list(envelopes), objects_seen=objects_seen)
 
     def _observe_release(self, draft: str, envelopes: list[dict],
-                         iterations: int, repairs: int) -> TurnResult:
+                         iterations: int, repairs: int,
+                         added_seconds: float = 0.0) -> TurnResult:
         """OBSERVE: record the gate verdict, release the prose untouched.
 
         The footer is appended exactly as in v1. A gate exception is recorded
         as metadata but, in OBSERVE, must NOT withhold the operator's raw
         output (OBSERVE is the explicit raw-output mode); the prose still
         ships. ``unbacked_count`` is best-effort.
+
+        P3-T7 shadow capture (P3S-10): when the operator has CONSENTED and this
+        is a LOCAL surface, the flagged claim-units (text + verdict + timing)
+        are appended to a local-only ``grounding_shadow.jsonl`` for the budget
+        gate. This is the ONLY capture call site, structurally bounded to the
+        OBSERVE branch -- the gateway (ENFORCE) never reaches it.
         """
         unbacked = 0
         try:
             check = self._check(draft, envelopes)
             unbacked = len(check.unbacked) + len(check.mismatched)
+            self._shadow_capture(check, envelopes, iterations, repairs,
+                                 added_seconds)
         except GateError:
             unbacked = -1  # gate could not run; recorded, prose still released
         return TurnResult(
@@ -403,6 +438,80 @@ class AgentLoop:
             grounding=self.grounding.value, repairs=repairs,
             unbacked_count=unbacked,
         )
+
+    def _shadow_capture(self, check, envelopes: list[dict], iterations: int,
+                        repairs: int, added_seconds: float) -> None:
+        """Append flagged claim-units to the local-only shadow file (P3-T7).
+
+        Fires ONLY when (a) the policy is OBSERVE (guaranteed: this is reachable
+        only from ``_observe_release``), (b) the surface is local (NEVER the
+        gateway path), and (c) the operator consented (``shadow_consent``). Each
+        flagged claim-unit (every ``check.unbacked`` and ``check.mismatched``
+        claim -- the ones a human reviewer labels for the false-positive budget)
+        becomes one append-only JSONL line: claim text + verdict + object_guess
+        + turn timing metadata. Best-effort: a write failure is swallowed (it is
+        measurement telemetry, never load-bearing for the reply).
+
+        The verdict recorded is the governing envelope's verdict for the claim's
+        object when one exists (so a mismatched claim records WHY it was flagged
+        -- refused/withheld); a claim with no covering envelope records
+        ``"unbacked"``.
+        """
+        if not self.shadow_consent:
+            return
+        if getattr(self.dispatcher, "surface", None) != "local":
+            # Structural double-layer: the capture NEVER writes on a non-local
+            # surface even if consent were somehow set (the gateway is ENFORCE
+            # and never reaches OBSERVE, but this guards a hypothetical config).
+            return
+        flagged = list(check.unbacked) + list(check.mismatched)
+        if not flagged:
+            return
+        by_object = _grounding._latest_per_object(list(envelopes or []))
+        ts = datetime.now(timezone.utc).isoformat()
+        lines: list[str] = []
+        for claim in flagged:
+            obj = getattr(claim, "object_guess", None)
+            verdict = "unbacked"
+            if obj is not None:
+                env = by_object.get(_grounding._normalize_object(obj))
+                if env is not None:
+                    code = env.get("exit_code")
+                    if isinstance(code, bool):
+                        code = None
+                    if isinstance(code, int):
+                        verdict = _VERDICT_LABEL.get(code, str(code))
+                    else:
+                        verdict = str(env.get("verdict", "")) or "unknown"
+                    if env.get("withheld") is True:
+                        verdict = "withheld"
+            row = {
+                "ts": ts,
+                "surface": "local",
+                "claim": getattr(claim, "text", ""),
+                "object_guess": obj,
+                "verdict": verdict,
+                "iterations": int(iterations),
+                "repairs": int(repairs),
+                "added_seconds": round(float(added_seconds), 4),
+            }
+            lines.append(json.dumps(row, sort_keys=True))
+        try:
+            path = _shadow_path()
+            blob = ("\n".join(lines) + "\n").encode("utf-8")
+            # Append-only, 0600, atomic-ish single os.write (jsonl line append).
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(fd, blob)
+            finally:
+                os.close(fd)
+            # Defensively re-assert 0600 (umask could widen O_CREAT mode).
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        except OSError:
+            pass  # measurement telemetry; never block the reply
 
     def _redact_release(self, draft: str, envelopes: list[dict],
                         iterations: int, repairs: int) -> TurnResult:

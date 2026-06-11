@@ -1,14 +1,32 @@
 """wizard.py -- interactive first-run setup (SPEC S8.1).
 
 Walks the operator through: instance + root, spawn (or adopt), provider preset,
-model, API key (stored to .env, never echoed), optional Telegram. Idempotent:
+model, API key (stored to .env, never echoed), optional Telegram, and an
+optional "Connect knowledge sources?" connector step (P7-T8/T11). Idempotent:
 re-running updates rather than duplicates. Every prompt is skippable.
+
+Connector step (P7-T8): pick a connector type, render its manifest from the
+shipped template into the instance root's Connectors/<id>/, prompt EXPLICIT scope
+allowlists (default-deny stays if skipped -- empty NEVER means "everything"),
+collect secrets via getpass into <root>/.env.nosync (via
+config.write_root_env_secret -- never config.json, never the profile .env that
+the kernel subprocess cannot see), print provider-specific provisioning
+instructions, then show a DRY-RUN plan BEFORE any bytes move. On confirmation the
+first pull + ingest runs UNDER THE PER-ROOT FLOCK (P7S-22) so it cannot race a
+serve tick on the same root. First-run experience (P7-T11): progress counts
+(ingested / skipped / refused), the doctor zero-sources warning clearing, and a
+note that review-inbox authority proposals carry connector provenance.
+
+In a non-TTY run (no real terminal) the connector step is skipped with a printed
+note -- the secret prompts (getpass) need a controlling terminal, and a scripted
+stream drives the rest of the wizard.
 
 Stdlib only.
 """
 from __future__ import annotations
 
 import getpass
+import subprocess
 import sys
 from pathlib import Path
 
@@ -34,6 +52,421 @@ def _ask(prompt: str, default: str = "", *, stream_in=None, stream_out=None) -> 
         return default
     line = line.strip()
     return line or default
+
+
+# --------------------------------------------------------------------------- #
+# connector step (P7-T8 / P7-T11)
+# --------------------------------------------------------------------------- #
+#
+# Catalog of the connectors the wizard can set up. Each entry pins (frozen by the
+# kernel manifests + RemoteConnector scope keys):
+#   id            -- the connector id == the Connectors/<id>/ folder + manifest
+#   label         -- a short human label
+#   allowlists    -- ordered list of (source.<key>, prompt, kind) where kind is
+#                    "list" (comma-separated -> YAML block list) or "scalar"
+#                    (a single string value, e.g. the IMAP host / slack zip path).
+#                    The scope allowlist is prompted EXPLICITLY; a blank answer
+#                    leaves the bare key (default-deny -> refuses the pull).
+#   secrets       -- env-var NAMES collected via getpass into <root>/.env.nosync
+#   auth_flow     -- "loopback" (gdrive) | "device" (msgraph) | None (static)
+#   provisioning  -- the provider-app provisioning lines printed before secrets
+#
+# Provider base URLs / endpoints are PINNED IN THE KERNEL CONNECTOR CODE, never
+# here and never in the manifest (P7S-5) -- the wizard only writes the scope
+# allowlist, the auth var NAMES (already in the shipped template), and the
+# secret VALUES into the root's .env.nosync.
+_CONNECTORS = {
+    "gdrive": {
+        "label": "Google Drive",
+        "allowlists": [("folder_ids", "Drive folder ids to pull (comma-separated)", "list")],
+        "secrets": ["GDRIVE_CLIENT_ID", "GDRIVE_CLIENT_SECRET", "GDRIVE_REFRESH_TOKEN"],
+        "auth_flow": "loopback",
+        "provisioning": [
+            "Google Drive setup (one-time, in the Google Cloud Console):",
+            "  1. Create / pick a GCP project; enable the Google Drive API.",
+            "  2. Configure the OAuth consent screen (Internal if Workspace).",
+            "  3. Create an OAuth client of type 'Desktop app'; note the client",
+            "     id + secret -- you'll paste them next.",
+            "  4. The wizard runs a loopback browser flow to capture the offline",
+            "     refresh token (Google's device flow cannot grant Drive scopes).",
+        ],
+    },
+    "msgraph": {
+        "label": "Microsoft 365 (SharePoint / OneDrive)",
+        "allowlists": [
+            ("sites", "SharePoint site ids to pull (comma-separated, blank=none)", "list"),
+            ("drives", "OneDrive drive ids to pull (comma-separated, blank=none)", "list"),
+        ],
+        "secrets": ["MSGRAPH_CLIENT_ID", "MSGRAPH_REFRESH_TOKEN"],
+        "auth_flow": "device",
+        "provisioning": [
+            "Microsoft 365 setup (one-time, in Azure / Entra ID):",
+            "  1. Register an application (Microsoft Entra ID > App registrations).",
+            "  2. Add delegated read scopes (Files.Read.All / Sites.Read.All).",
+            "  3. Enable the public-client / device-code flow for the app.",
+            "  4. Note the Application (client) id -- you'll paste it next; the",
+            "     wizard runs the device-code flow to capture the refresh token.",
+        ],
+    },
+    "notion": {
+        "label": "Notion",
+        "allowlists": [
+            ("page_ids", "Notion page ids to pull (comma-separated, blank=none)", "list"),
+            ("database_ids", "Notion database ids to pull (comma-separated, blank=none)", "list"),
+        ],
+        "secrets": ["NOTION_TOKEN"],
+        "auth_flow": None,
+        "provisioning": [
+            "Notion setup (one-time):",
+            "  1. Create an internal integration at notion.so/my-integrations;",
+            "     copy its Internal Integration Token -- you'll paste it next.",
+            "  2. SHARE each allowlisted page/database WITH the integration",
+            "     (the integration only sees pages explicitly shared with it).",
+        ],
+    },
+    "imap-mailbox": {
+        "label": "IMAP mailbox",
+        "allowlists": [
+            ("host", "IMAP server host (e.g. imap.gmail.com)", "scalar"),
+            ("folders", "Mailbox folders to pull (comma-separated)", "list"),
+        ],
+        "secrets": ["IMAP_USERNAME", "IMAP_APP_PASSWORD"],
+        "auth_flow": None,
+        "provisioning": [
+            "IMAP mailbox setup (one-time):",
+            "  1. Generate an APP PASSWORD at your mail provider (Gmail / O365",
+            "     have retired basic auth except app passwords).",
+            "  2. The connector uses certificate-verified IMAP4_SSL and opens",
+            "     folders read-only (EXAMINE) -- it never mutates flags.",
+        ],
+    },
+    "slack-export": {
+        "label": "Slack workspace export",
+        "allowlists": [
+            ("path", "Path to the Slack export .zip", "scalar"),
+            ("channels", "Channel names to pull (comma-separated)", "list"),
+        ],
+        "secrets": [],
+        "auth_flow": None,
+        "provisioning": [
+            "Slack export setup (one-time, no token, no network):",
+            "  1. A workspace admin downloads the export zip from",
+            "     <workspace>.slack.com/services/export.",
+            "  2. Point source.path at that .zip -- the connector reads it offline.",
+        ],
+    },
+}
+
+# Connectors that carry a scheduled cadence line in their source block (the
+# pinned grammar hourly|daily|weekly|<N>h|<N>d; default daily). Used when
+# rendering the manifest's source block.
+_CADENCE_CONNECTORS = {"gdrive", "msgraph", "notion", "imap-mailbox"}
+
+
+def _slug_yaml(value: str) -> str:
+    """Render a scalar source value as a safe double-quoted YAML scalar."""
+    s = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{s}"'
+
+
+def _render_manifest(cid: str, *, sensitivity: str, scope: dict) -> str:
+    """Render a schema-valid manifest for *cid* from the shipped template shape.
+
+    ``scope`` maps source.<key> -> a value: a list (block list) or a scalar
+    string. A blank/empty list answer is RENDERED AS A BARE KEY (default-deny:
+    the kernel refuses the pull -- empty never means 'everything', P7S-13). The
+    auth var NAMES come from the catalog (values live only in .env.nosync).
+    """
+    spec = _CONNECTORS[cid]
+    system = {"gdrive": "gdrive", "msgraph": "msgraph", "notion": "notion",
+              "imap-mailbox": "imap", "slack-export": "slack"}[cid]
+    access_mode = "file_drop" if cid == "slack-export" else "api"
+    lines = [
+        f"# {cid} -- rendered by the Oracle setup wizard (P7-T8). Pull-only.",
+        "# Scope allowlist below is default-deny: a bare 'key:' refuses the pull",
+        "# (empty NEVER means 'everything'; I4 / P7S-13). Auth var NAMES only --",
+        "# secret VALUES live in <root>/.env.nosync (0600), never here.",
+        "# ROTATION = re-run the wizard step (upsert). REVOCATION = remove the var",
+        "# AND revoke at the provider (removing the var disables the connector",
+        "# here; the upstream token stays valid until revoked there -- P7S-6).",
+        f"id: {cid}",
+        f"system: {system}",
+        "status: active",
+        f"access_mode: {access_mode}",
+        "locality: external_only" if access_mode == "api" else "locality: snapshot_local",
+        "capture_tier: snapshot",
+    ]
+    # auth block.
+    if spec["secrets"]:
+        lines.append("auth:")
+        lines.append(f"  method: {'oauth' if spec['auth_flow'] else 'token'}")
+        lines.append("  vars:")
+        for var in spec["secrets"]:
+            lines.append(f"    - {var}")
+    else:
+        lines.append("auth:")
+        lines.append("  method: none")
+    lines += [
+        "permissions: read_only",
+        "freshness:",
+        "  class: api" if access_mode == "api" else "  class: snapshot",
+        "  expected_decay_days: 7",
+        "schema_refresh:",
+        "  enabled: false",
+        "  remote_probe: false",
+        "source:",
+    ]
+    for key, _prompt, kind in spec["allowlists"]:
+        val = scope.get(key)
+        if kind == "list":
+            if isinstance(val, list) and val:
+                lines.append(f"  {key}:")
+                for item in val:
+                    lines.append(f"    - {item}")
+            else:
+                lines.append(f"  {key}:")  # bare key -> default-deny refuse
+        else:  # scalar
+            if val:
+                lines.append(f"  {key}: {_slug_yaml(val)}")
+            else:
+                lines.append(f"  {key}:")
+    if cid == "imap-mailbox":
+        lines.append("  since_days: 30")
+    lines.append(f"  default_sensitivity: {sensitivity}")
+    lines.append("  max_files: 500")
+    if cid in _CADENCE_CONNECTORS:
+        lines.append("  cadence: daily")
+    return "\n".join(lines) + "\n"
+
+
+def _parse_list(raw: str) -> list[str]:
+    return [p.strip() for p in (raw or "").split(",") if p.strip()]
+
+
+def _kernel(root: Path, argv: list[str], timeout: float = 120.0):
+    """Run ``<root>/oracle <argv...>`` as a SCRUBBED-ENV argv subprocess.
+
+    The scrubbed env drops every *_KEY/_TOKEN/_SECRET/_PASSWORD var (P7S-4), so
+    the kernel pull can resolve its auth ONLY from the root's own .env.nosync --
+    proving the wizard wrote the secret where a scheduled kernel pull can read it
+    (the profile .env would be invisible). Returns (rc, stdout, stderr).
+    """
+    from .agentloop.verbtools import _scrubbed_env
+
+    oracle = Path(root) / "oracle"
+    proc = subprocess.run(
+        [sys.executable, str(oracle), *argv],
+        cwd=str(root), capture_output=True, text=True,
+        timeout=timeout, env=_scrubbed_env(),
+    )
+    return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
+def _pull_counts(results: list) -> dict:
+    """Tally a pull result list into the first-run progress shape (P7-T11)."""
+    counts = {"ingested": 0, "planned": 0, "skipped_policy": 0,
+              "skipped_out_of_scope": 0, "refused": 0, "failed": 0, "skipped": 0}
+    for r in results or []:
+        action = r.get("action") if isinstance(r, dict) else None
+        if action in counts:
+            counts[action] += 1
+    return counts
+
+
+def connector_step(root: Path, name: str, *, stream_in=None, stream_out=None,
+                   getpass_fn=getpass.getpass) -> None:
+    """Optional 'Connect knowledge sources?' wizard step (P7-T8 / P7-T11).
+
+    Idempotent and fully skippable. In a non-TTY run the step is skipped with a
+    printed note (the getpass secret prompts need a controlling terminal).
+    """
+    out = stream_out or sys.stdout
+
+    want = _ask("Connect a knowledge source now? (y/N)", "N",
+                stream_in=stream_in, stream_out=stream_out).lower()
+    if not want.startswith("y"):
+        out.write("  note: no connector configured. Run setup again any time to add one.\n")
+        return
+
+    # Secret prompts (getpass) need a controlling terminal; a scripted non-TTY
+    # run cannot safely echo-suppress, so skip the step with a printed note.
+    if not sys.stdin.isatty() and stream_in is None:
+        out.write("  note: connector setup needs an interactive terminal — skipped.\n")
+        return
+
+    options = list(_CONNECTORS)
+    out.write("Connector types:\n")
+    for i, cid in enumerate(options, 1):
+        out.write(f"  {i}) {cid} — {_CONNECTORS[cid]['label']}\n")
+    pick = _ask("Pick a connector (number or id, blank to skip)", "",
+                stream_in=stream_in, stream_out=stream_out).strip()
+    if not pick:
+        out.write("  note: no connector picked — skipped.\n")
+        return
+    cid = None
+    if pick.isdigit() and 1 <= int(pick) <= len(options):
+        cid = options[int(pick) - 1]
+    elif pick in _CONNECTORS:
+        cid = pick
+    if cid is None:
+        out.write(f"  warning: unknown connector {pick!r} — skipped.\n")
+        return
+
+    spec = _CONNECTORS[cid]
+    out.write(f"\nConfiguring connector: {cid} ({spec['label']})\n")
+
+    # Provider-specific provisioning instructions (printed BEFORE secrets).
+    for ln in spec["provisioning"]:
+        out.write(ln + "\n")
+
+    # Explicit scope allowlist prompts (default-deny if skipped).
+    scope: dict = {}
+    for key, prompt, kind in spec["allowlists"]:
+        raw = _ask("  " + prompt, "", stream_in=stream_in, stream_out=stream_out)
+        if kind == "list":
+            scope[key] = _parse_list(raw)
+        else:
+            scope[key] = raw.strip()
+
+    # Sensitivity floor: confidential for mail (presumptively sensitive), else
+    # internal. Ambiguity always classifies UP downstream (I4).
+    sensitivity = "confidential" if cid == "imap-mailbox" else "internal"
+
+    # Render + write the manifest into Connectors/<id>/<id>.manifest.yaml.
+    manifest_dir = Path(root) / "Connectors" / cid
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    manifest_text = _render_manifest(cid, sensitivity=sensitivity, scope=scope)
+    (manifest_dir / f"{cid}.manifest.yaml").write_text(manifest_text, encoding="utf-8")
+    out.write(f"  manifest written: Connectors/{cid}/{cid}.manifest.yaml\n")
+
+    # Collect secrets via getpass into the ROOT's .env.nosync (never config.json,
+    # never the profile .env -- the kernel subprocess can only see the root file).
+    for var in spec["secrets"]:
+        out.write(f"  {var} (stored to <root>/.env.nosync; never echoed; blank to skip): ")
+        out.flush()
+        try:
+            if sys.stdin.isatty():
+                secret = getpass_fn("")
+            elif stream_in is not None:
+                secret = stream_in.readline().strip()
+            else:
+                secret = ""
+        except Exception:
+            secret = ""
+        if secret:
+            config.write_root_env_secret(root, var, secret)
+            out.write("  saved.\n")
+        else:
+            out.write("  (skipped)\n")
+
+    # Auth-flow note (the loopback / device flow is run by the kernel connector
+    # at first pull when the refresh token is absent; the wizard documents it).
+    if spec["auth_flow"] == "loopback":
+        out.write("  note: gdrive uses a loopback browser OAuth flow to mint the "
+                  "refresh token on first authorize.\n")
+    elif spec["auth_flow"] == "device":
+        out.write("  note: msgraph uses the device-code flow to mint the refresh "
+                  "token on first authorize.\n")
+
+    # Validate the manifest via the kernel (health loads + schema-validates it).
+    rc, hout, herr = _kernel(root, ["connector", "--json", "health", cid])
+    if rc == 2:  # ConnectorError: manifest invalid / failed to load
+        out.write(f"  warning: connector health could not load {cid}: "
+                  f"{(herr or hout).strip()[:200]}\n")
+
+    # DRY-RUN plan BEFORE any bytes move (P7-T8 acceptance).
+    out.write("\nDry-run plan (no bytes move yet):\n")
+    rc, dout, derr = _kernel(root, ["connector", "--json", "pull", cid, "--dry-run"])
+    plan = _parse_pull_payload(dout)
+    if plan is None:
+        out.write(f"  could not plan the pull: {(derr or dout).strip()[:200]}\n")
+        out.write("  (fix the allowlist / credentials, then re-run setup)\n")
+        return
+    pcounts = _pull_counts(plan.get("results", []))
+    out.write(f"  planned items: {pcounts['planned']}  "
+              f"out-of-scope: {pcounts['skipped_out_of_scope']}  "
+              f"refused: {pcounts['refused']}\n")
+
+    proceed = _ask("Proceed with the first pull + ingest now? (y/N)", "N",
+                   stream_in=stream_in, stream_out=stream_out).lower()
+    if not proceed.startswith("y"):
+        out.write("  note: first pull deferred. Re-run setup or pull later to fetch.\n")
+        return
+
+    _first_pull_and_ingest(root, name, cid, stream_out=out)
+
+
+def _parse_pull_payload(text: str):
+    import json
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _first_pull_and_ingest(root: Path, name: str, cid: str, *, stream_out) -> None:
+    """Run the confirmed first pull + ingest UNDER THE PER-ROOT FLOCK (P7S-22).
+
+    The flock (``~/.oracle/locks/<instance>.lock``) is held across BOTH the pull
+    and the ingest so the first-run sequence cannot race a ``serve`` tick on the
+    same root (SQLite contention / lost loop-note updates). A direct kernel-CLI
+    pull by an admin is inherently OUTSIDE the shell's locks -- documented,
+    admin-at-own-risk (P7-T8).
+    """
+    out = stream_out
+    from .service.scheduler import root_lock
+
+    out.write("\nFirst pull + ingest (holding the per-root lock):\n")
+    out.write("  note: a direct kernel-CLI pull by an admin runs OUTSIDE this "
+              "lock (admin-at-own-risk).\n")
+    with root_lock(name):
+        rc, pout, perr = _kernel(root, ["connector", "--json", "pull", cid])
+        payload = _parse_pull_payload(pout)
+        if payload is None:
+            out.write(f"  pull failed: {(perr or pout).strip()[:200]}\n")
+            return
+        results = payload.get("results", [])
+        counts = _pull_counts(results)
+        out.write(f"  pulled: ingested={counts['ingested']}  "
+                  f"skipped-by-policy={counts['skipped_policy']}  "
+                  f"skipped-out-of-scope={counts['skipped_out_of_scope']}  "
+                  f"refused={counts['refused']}  failed={counts['failed']}\n")
+
+        # Ingest the freshly landed _INPUT/<id>/ files (still under the lock).
+        landed_dir = Path(root) / "Workproduct.nosync" / "_INPUT" / cid
+        floor = "confidential" if cid == "imap-mailbox" else "internal"
+        ingested_n = 0
+        if counts["ingested"] > 0 and landed_dir.is_dir():
+            rc, iout, ierr = _kernel(
+                root, ["ingest", "batch", str(landed_dir),
+                       "--connector", cid, "--sensitivity", floor])
+            if rc != 0 and "--connector" in (ierr or ""):
+                # older ingest CLI without --connector: retry plain.
+                rc, iout, ierr = _kernel(root, ["ingest", "batch", str(landed_dir)])
+            ingested_n = _count_ingested(iout)
+            out.write(f"  ingested into the corpus: {ingested_n} source record(s)\n")
+        else:
+            out.write("  nothing new landed to ingest.\n")
+
+    # First-run experience (P7-T11): show the corpus growing + review note.
+    n_sources = doctor._count_real_sources(Path(root))
+    if n_sources > 0:
+        out.write(f"  corpus now holds {n_sources} ingested source(s) "
+                  "(the 'no ingested sources' warning has cleared).\n")
+    out.write("  review-inbox authority proposals from these documents carry "
+              f"their connector tag ({cid}) so attacker-supplied material is "
+              "visibly attributable. Run 'oracle review' to triage them.\n")
+
+
+def _count_ingested(text: str) -> int:
+    """Parse 'batch: ingested=N failed=M' from the ingest CLI text output."""
+    import re
+    m = re.search(r"ingested=(\d+)", text or "")
+    return int(m.group(1)) if m else 0
 
 
 def run(*, stream_in=None, stream_out=None, getpass_fn=getpass.getpass) -> int:
@@ -139,7 +572,18 @@ def run(*, stream_in=None, stream_out=None, getpass_fn=getpass.getpass) -> int:
                     "role": "user", "instance": name}
 
     config.save_config(cfg)
-    out.write("\nConfig saved. Running doctor ...\n\n")
+
+    # optional connector step (P7-T8 / P7-T11) -- pick a source, render its
+    # manifest, collect creds into the root's .env.nosync, dry-run plan, then a
+    # first pull + ingest under the per-root flock. Fully skippable + idempotent.
+    out.write("\nConnect knowledge sources\n-------------------------\n")
+    try:
+        connector_step(root, name, stream_in=stream_in, stream_out=stream_out,
+                       getpass_fn=getpass_fn)
+    except Exception as exc:  # a connector misstep never aborts setup
+        out.write(f"  warning: connector step error (skipped): {exc}\n")
+
+    out.write("\nRunning doctor ...\n\n")
     rep = doctor.run(name)
     out.write(rep.render() + "\n")
     return 1 if rep.worst_is_fail() else 0

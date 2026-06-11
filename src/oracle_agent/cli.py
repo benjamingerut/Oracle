@@ -13,6 +13,7 @@
     oracle upgrade self --from-dir DIR   maintainer re-vendor (git checkout only)
     oracle backup [NAME] [--out DIR] [--tier TIER]   backup instance (or --profile)
     oracle restore NAME --from PATH [--allow-cross-origin] [--trust-archive]
+    oracle grounding-report [--json] [--shadow PATH] [--labels PATH]
     oracle version
 
 Instance resolution: explicit NAME > cwd inside a registered root >
@@ -40,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
         "chat": _cmd_chat, "serve": _cmd_serve, "doctor": _cmd_doctor,
         "model": _cmd_model, "kernel": _cmd_kernel, "version": _cmd_version,
         "upgrade": _cmd_upgrade, "backup": _cmd_backup, "restore": _cmd_restore,
+        "grounding-report": _cmd_grounding_report,
     }.get(cmd)
     if handler is None:
         print(f"oracle: unknown command {cmd!r} (try `oracle help`)", file=sys.stderr)
@@ -321,6 +323,12 @@ def _cmd_backup(rest: list[str]) -> int:
 def _cmd_restore(rest: list[str]) -> int:
     from .backup_shell import cmd_restore_dispatch
     return cmd_restore_dispatch(rest)
+
+
+def _cmd_grounding_report(rest: list[str]) -> int:
+    """oracle grounding-report -- evaluate P3-T7 shadow capture vs the budgets."""
+    from .grounding_report import cmd_grounding_report
+    return cmd_grounding_report(rest)
 
 
 def _cmd_version(rest: list[str]) -> int:

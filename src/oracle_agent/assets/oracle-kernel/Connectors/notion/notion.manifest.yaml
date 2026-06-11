@@ -1,0 +1,111 @@
+# notion -- the Notion workspace connector template (P7-T4). Pull-only.
+#
+# Copy this dir to Connectors/<id>/ (one dir per integration; the id MUST match
+# the folder name) and fill in the scope allowlist + auth var name. Pulls pages
+# and databases reachable from an admin-allowlisted set of page/database ids
+# (source.page_ids / source.database_ids -- the default-deny scope allowlist)
+# into Workproduct.nosync/_INPUT/ through the shared RemoteConnector safety core:
+# gate-first authorization, default-deny scope, blast caps + a runtime byte
+# counter, content classification, the policy gate, containment, stable landing
+# names, an atomic last_edited_time cursor, and redaction. Scope is parent-chain:
+# an item is in scope iff its parent chain reaches an allowlisted root via
+# child_page / child_block edges; link_to_page, mentions, and linked databases
+# are NEVER followed (P7S-10). Runtime: _tools/connectors/notion.py (list_items +
+# fetch_item only; pull is the FINAL core template).
+#
+# Block-style YAML only: one '- item' per line; no anchors, aliases, tags, flow
+# ([] / {}), or multi-doc. Empty OPTIONAL fields are OMITTED (a bare 'key:'
+# parses to null and the schema types these fields, so it would fail lint).
+# Validated against _tools/schemas/connector.schema.json.
+
+# id MUST match the folder name and the runtime's connector id. For a second
+# workspace use a distinct id (e.g. notion-eng) -- it resolves to this class via
+# the registry's system-fallback.
+id: notion
+
+system: notion
+
+# planned until the admin sets the scope allowlist + the integration token var
+# and shares the allowlisted pages with the integration.
+status: planned
+
+# REST over HTTPS+JSON via the shared http_json / http_download primitives.
+access_mode: api
+
+# A point-in-time snapshot is rendered to markdown + ingested; re-run pull (the
+# last_edited_time cursor makes it incremental) to refresh.
+locality: external_only
+capture_tier: snapshot
+
+# auth: reference variable NAME only -- never the secret value. The value (a
+# static Notion internal-integration token) lives in the root's .env.nosync
+# (0600, never logged), written by the wizard via write_root_env_secret. The
+# 'vars:' list is left OFF this pristine scaffold (a scaffold has no creds yet --
+# its first health gap is the empty default-deny allowlist below); the wizard's
+# rendered manifest ADDS the var when the admin configures the connector:
+#   vars:
+#     - NOTION_TOKEN
+# ROTATION = re-run the wizard step (upsert). REVOCATION = remove the var AND
+# revoke the integration token in Notion (removing the var disables the connector
+# here; the upstream token stays valid until revoked there -- P7S-6).
+auth:
+  method: token
+
+# Read-only: the core refuses to run a read_write connector as a pull. Every
+# Notion call this connector makes is a read (search/list/block-children).
+permissions: read_only
+
+# Freshness SLA: a snapshot is considered stale after ~1 day; re-pull to refresh.
+# Freshness is derived from the cursor's last_success_ts (a pull never rewrites
+# this manifest; P7S-23). last_verified is omitted until the first pull.
+freshness:
+  class: api
+  expected_decay_days: 1
+
+# Source authority (feeds TRUTH-MAP.md): primary only for the pages/databases
+# inside the admin-allowlisted Notion roots.
+authoritative_for:
+  - pages and databases under the allowlisted Notion roots
+cannot_prove:
+  - content outside the allowlisted parent chain
+
+# Guardrails.
+forbidden_uses:
+  - pulling a page/database the admin has not added to the allowlist
+  - following link_to_page / mentions / linked databases outside the chain
+  - any write back to Notion (read-only; pull-only)
+biases:
+  - reflects only the roots the admin chose to allowlist
+
+# Health: confirm the allowlist is set, the token resolves, and the connector is
+# read-only.
+health_check:
+  cadence: daily
+  checks:
+    - source.page_ids or source.database_ids is a non-empty allowlist
+    - NOTION_TOKEN resolves in <root>/.env.nosync
+    - last pull within freshness SLA
+
+# No remote schema to re-probe (the grain is "pages under the allowlisted roots").
+schema_refresh:
+  enabled: false
+  remote_probe: false
+
+# Runtime-specific block (read by _tools/connectors/notion.py). The schema's job
+# here is shape/typo detection; EMPTINESS is enforced at pull time by the
+# default-deny allowlist gate (None/missing/[]/non-list all refuse -- empty never
+# means 'everything'; P7S-13). API base URLs are pinned in the connector code,
+# never here (P7S-5).
+#   page_ids            -- allowlisted Notion page ids (roots of the scope chain).
+#   database_ids        -- allowlisted Notion database ids (roots of the chain).
+#   max_files           -- blast-radius cap per pull (also bounded by actions caps).
+#   default_sensitivity -- classification FLOOR (ambiguity classifies UP).
+#   cadence             -- scheduled-pull grammar: hourly|daily|weekly|<N>h|<N>d.
+# At least ONE of page_ids / database_ids MUST be a non-empty list (default-deny).
+# Bare until the admin sets the allowlist; the connector refuses to pull otherwise.
+source:
+  page_ids:
+  database_ids:
+  max_files: 500
+  default_sensitivity: internal
+  cadence: daily

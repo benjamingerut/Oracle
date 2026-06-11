@@ -61,6 +61,12 @@ from .service.scheduler import root_lock
 DENY_EXACT_NAMES: frozenset[str] = frozenset({
     ".env",
     ".env.nosync",
+    # P3-T7 / P3S-10 (G5 interplay): the forced-grounding shadow capture file
+    # holds flagged CLAIM TEXT from local OBSERVE-mode traffic. It is local-only,
+    # operator-consented telemetry and must NEVER land in a profile (or any)
+    # backup -- excluding it keeps claim bodies out of archives the same way
+    # .env keeps secrets out.
+    "grounding_shadow.jsonl",
 })
 
 # Sub-strings that, if found in a filename, also deny it.
