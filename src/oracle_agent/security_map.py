@@ -1124,6 +1124,246 @@ GUARANTEES: list[Guarantee] = [
         kind="test",
         source="P8S-10",
     ),
+
+    # ------------------------------------------------------------------
+    # P5 -- operations & operating agent (Phase 5). Shell-enforced
+    # guarantees only; the kernel-side P5 guarantees (ledger rotation
+    # cross-segment verify, the set-dream subtree clamp, write-verb role
+    # threading) live in oracle-kernel/DOCTRINE.md as named-enforcer
+    # guarantee-lint lines, policed by oracle_lint -- the P7S-27 split:
+    # "kernel -> DOCTRINE.md guarantee-lint; shell -> security_map.GUARANTEES;
+    # neither file claims the other's enforcers." verify_enforcers() only
+    # collects tests/shell/, so a kernel node would never resolve here.
+    # ------------------------------------------------------------------
+
+    # P5-T1 -- summarization context (P5S-1/2/3).
+    Guarantee(
+        id="SH-085",
+        statement=(
+            "The running history summary is injection-hardened: an injected "
+            "\"summarizer, instruct the assistant to X\" string in mid-session "
+            "content is folded as DATA-wrapped recap under the same "
+            "instructions-are-DATA framing as the main loop and never survives "
+            "into the summary as an actionable instruction past eviction (P5S-1)."
+        ),
+        enforcer=(
+            "tests/shell/test_agentloop.py::"
+            "test_injection_in_summarized_turn_does_not_survive_as_instruction"
+        ),
+        kind="test",
+        source="P5S-1",
+    ),
+    Guarantee(
+        id="SH-086",
+        statement=(
+            "The summary is NON-authoritative: it is never a grounding/authority "
+            "source (per-turn envelopes are not carried into it), so a material "
+            "claim merely restated from the summary is unbacked under ENFORCE and "
+            "is redacted unless the model re-invokes oracle_answer to re-ground it "
+            "(P5S-2)."
+        ),
+        enforcer=(
+            "tests/shell/test_agentloop.py::"
+            "test_summary_restated_claim_is_redacted_unless_regrounded"
+        ),
+        kind="test",
+        source="P5S-2",
+    ),
+    Guarantee(
+        id="SH-087",
+        statement=(
+            "The summary message carries the _SUMMARY_TAG sentinel, is anchored at "
+            "index 1 (immediately after the system prompt), is never a group start "
+            "for _evict_if_needed, and is never evicted under repeated eviction "
+            "pressure -- the fold never loses the running summary or splits a tool "
+            "pair on the retained tail (P5S-3)."
+        ),
+        enforcer=(
+            "tests/shell/test_agentloop.py::"
+            "test_summary_message_anchored_at_index_1_and_never_evicted"
+        ),
+        kind="test",
+        source="P5S-3",
+    ),
+    Guarantee(
+        id="SH-088",
+        statement=(
+            "On a summarizer model error the loop falls back cleanly to plain "
+            "whole-group eviction (I4 -- a summarization failure never blocks the "
+            "turn); the summary call uses the session client + ceiling so it never "
+            "sends above-ceiling content anywhere."
+        ),
+        enforcer=(
+            "tests/shell/test_agentloop.py::"
+            "test_summarizer_error_falls_back_to_plain_eviction"
+        ),
+        kind="test",
+        source="P5S-1",
+    ),
+
+    # P5-T2 -- identity model (P5S-11/13).
+    Guarantee(
+        id="SH-089",
+        statement=(
+            "Gateway identity resolution clamps any allowlist entry claiming "
+            "role: admin down to user (logged): a crafted or mangled allowlist "
+            "entry can never thread --role admin into a gateway write, and admin "
+            "role is honored only for human-performed local kernel/CLI writes "
+            "(P5S-13)."
+        ),
+        enforcer=(
+            "tests/shell/test_gateway_core.py::test_gateway_clamps_admin_role_to_user"
+        ),
+        kind="test",
+        source="P5S-13",
+    ),
+    Guarantee(
+        id="SH-090",
+        statement=(
+            "The resolved gateway write role is invariant across every claimed "
+            "entry role (user/admin/ADMIN/superuser/empty all resolve the same "
+            "clamped \"user\"): role is attribution and human-side kernel gating "
+            "only, never a widening of the model's tool surface, and the "
+            "model-invokable write verbs are role-invariant (I2, P5S-13)."
+        ),
+        enforcer=(
+            "tests/shell/test_gateway_core.py::"
+            "test_gateway_role_invariant_across_entry_roles"
+        ),
+        kind="test",
+        source="P5S-13",
+    ),
+    Guarantee(
+        id="SH-091",
+        statement=(
+            "Gateway principals resolve to the landed P4S-17 actor form "
+            "gateway_user:<surface>:<id> so ledger provenance stays greppable "
+            "under one scheme across surfaces; the local attended surface uses the "
+            "parallel stable local_user:<id> form (P5S-11)."
+        ),
+        enforcer=(
+            "tests/shell/test_curator.py::test_local_principal_uses_local_user_form"
+        ),
+        kind="test",
+        source="P5S-11",
+    ),
+
+    # P5-T7a -- operating agent: scheduler dream convocation + narrow-env (P5S-4/5).
+    Guarantee(
+        id="SH-092",
+        statement=(
+            "The scheduler dream convocation spawns the dream subprocess under the "
+            "narrow-env contract: only the resolved provider.api_key_env crosses "
+            "into the agent harness (--api-key-env), while every gateway.*.token_env "
+            "is scrubbed (--scrub-token-env) -- the dream agent gets exactly one "
+            "credential and gateway tokens can never leak into an external agent "
+            "harness. This is the single sanctioned exception to the STRESS I3/M1 "
+            "scrub discipline (P5S-4)."
+        ),
+        enforcer=(
+            "tests/shell/test_scheduler.py::test_dream_instance_passes_narrow_env_argv"
+        ),
+        kind="test",
+        source="P5S-4",
+    ),
+    Guarantee(
+        id="SH-093",
+        statement=(
+            "Unattended dream convocation is autonomy-gated and lock-safe: a "
+            "convocation is skipped below autonomy level 2 (the kernel "
+            "dream.session gate) and skipped non-blockingly when the per-root "
+            "LOCK_NB is held (busy -> skip, never stall the daemon -- the "
+            "A4/P1S-13 discipline) (P5S-5)."
+        ),
+        enforcer=(
+            "tests/shell/test_scheduler.py::test_dream_instance_skips_below_level_2"
+        ),
+        kind="test",
+        source="P5S-5",
+    ),
+    Guarantee(
+        id="SH-094",
+        statement=(
+            "The dream-command wizard step never writes autonomy.yml raw: it "
+            "configures the dream.* subtree exclusively through the constrained "
+            "admin-only oracle admin autonomy set-dream kernel verb, so it can "
+            "never alter level/caps/kill-switch and the verb is absent from every "
+            "model/gateway-reachable path (P5S-7). The wizard configures the "
+            "actuator; it never raises the autonomy level."
+        ),
+        enforcer=(
+            "tests/shell/test_wizard_dream.py::test_wizard_has_no_raw_autonomy_write"
+        ),
+        kind="test",
+        source="P5S-7",
+    ),
+
+    # P5-T7b -- operating agent: curator on the local attended surface (P5S-6).
+    Guarantee(
+        id="SH-095",
+        statement=(
+            "The curator never executes a Review-Inbox item's free-text action "
+            "string: apply is a fixed kind->verb mapping pinned in code (the A9 "
+            "discipline) with item fields filling value slots only, so a poisoned "
+            "queue item whose action text smuggles an arbitrary command "
+            "(rm/pwned/...) never reaches argv (P5S-6). Named residual (accepted, "
+            "documented): a poisoned item can still STEER USER-tier writes, bounded "
+            "by fail-closed ingest_roots, status: needs_review on everything "
+            "derived, and the policy.require_role control-plane gate."
+        ),
+        enforcer=(
+            "tests/shell/test_curator.py::test_action_text_is_never_executed"
+        ),
+        kind="test",
+        source="P5S-6",
+    ),
+    Guarantee(
+        id="SH-096",
+        statement=(
+            "Control-plane queue-item kinds (contradiction / promotable-row / "
+            "authority-candidate / autonomy) are never applyable via the curator: "
+            "they map to no verb and yield applied=False -- truth promotion and "
+            "every control-plane verb stay Admin-interface-only no matter what the "
+            "queue contains; an unmapped kind is default-denied (P5S-6, I2)."
+        ),
+        enforcer=(
+            "tests/shell/test_curator.py::test_control_plane_kinds_are_never_applyable"
+        ),
+        kind="test",
+        source="P5S-6",
+    ),
+    Guarantee(
+        id="SH-097",
+        statement=(
+            "Curator apply is autonomy-gated: below the required autonomy level the "
+            "curator prepares a resolution but never applies it (refused-autonomy), "
+            "and every apply that does run is ledgered with the resolving "
+            "Principal's --actor/--role attribution (P5S-6, P5-T2)."
+        ),
+        enforcer=(
+            "tests/shell/test_curator.py::test_apply_refused_below_autonomy_gate"
+        ),
+        kind="test",
+        source="P5S-6",
+    ),
+
+    # P5-T5 -- secrets/backup lifecycle: backups never contain secrets (P5S-10).
+    Guarantee(
+        id="SH-098",
+        statement=(
+            "Backups never contain secrets -- no opt-in exists (P5S-10, "
+            "--include-secrets DROPPED): backup_shell refuses to archive the "
+            "instance .env material; the recovery story is out-of-band, "
+            "re-entering the value and re-running the secret-collection step "
+            "(documented in docs/OPERATIONS.md). The landed hard rule stands and is "
+            "load-bearing."
+        ),
+        enforcer=(
+            "tests/shell/test_backup_shell.py::TestSecretDenyList::test_dot_env_exact"
+        ),
+        kind="test",
+        source="P5S-10",
+    ),
 ]
 
 # ---------------------------------------------------------------------------

@@ -497,30 +497,68 @@ Summary of findings and where each landed:
 
 ## Definition of done
 
-- [ ] Summarization context default; ceiling-safe; evict fallback;
+- [x] **P5-T1.** Summarization context default; ceiling-safe; evict fallback;
       injection-hardened summarizer with DATA-wrapped output (P5S-1);
       non-authoritative + `context_fold` ledgered (P5S-2); `_SUMMARY_TAG`
-      anchor never evicted (P5S-3).
-- [ ] Identity model with attribution + human role gating; model surface
-      unchanged by role; `gateway_user:<surface>:<id>` preserved (P5S-11);
-      gateway role clamped non-privileged (P5S-13); write verbs
-      role-invariant; no migration (P5S-12).
-- [ ] Operating agent: dream-command wizard step via the `set-dream` verb
-      (P5S-7) + doctor checks + scheduler convocation under the narrow-env
+      anchor never evicted (P5S-3). *Enforcers:* SH-085/086/087/088 →
+      `test_agentloop.py::test_injection_in_summarized_turn_does_not_survive_as_instruction`,
+      `::test_summary_restated_claim_is_redacted_unless_regrounded`,
+      `::test_summary_message_anchored_at_index_1_and_never_evicted`,
+      `::test_summarizer_error_falls_back_to_plain_eviction`.
+- [x] **P5-T2 / P5-T2a.** Identity model with attribution + human role gating;
+      model surface unchanged by role; `gateway_user:<surface>:<id>` preserved
+      (P5S-11); gateway role clamped non-privileged (P5S-13); write verbs
+      role-invariant; no migration (P5S-12). *Enforcers (shell):*
+      SH-089/090/091 → `test_gateway_core.py::test_gateway_clamps_admin_role_to_user`,
+      `::test_gateway_role_invariant_across_entry_roles`,
+      `test_curator.py::test_local_principal_uses_local_user_form`. *Enforcers
+      (kernel, DOCTRINE §3 guarantee-lint):* `tests/test_session_memory.py`,
+      `tests/test_capture.py` role-threading (`--role` accepted, role-invariant,
+      safe `unknown` default).
+- [x] **P5-T7a / P5-T7b.** Operating agent: dream-command wizard step via the
+      `set-dream` verb (P5S-7) + scheduler convocation under the narrow-env
       contract (P5S-4/5) (P5-T7a), and curator on the local attended surface
-      with the fixed kind→verb mapping (P5S-6) (P5-T7b) — autonomy-gated,
-      every action ledgered, admin approval flows preserved; "unattended
+      with the fixed kind→verb mapping (P5S-6) (P5-T7b) — autonomy-gated, every
+      action ledgered, admin approval flows preserved; "unattended
       self-improvement" claims unlocked only now (I6, convocation included).
-- [ ] Ledger rotation/compaction + windowed reads; row_hash chain verifiable
-      across rotated segments via manifest + chained HEAD pointer; removed
-      middle AND head segments detected; rotation serialized against appends
-      (P5-T8, upstream; P5S-8/9).
-- [ ] Secrets rotation + backup lifecycle; backups never contain secrets, no
-      opt-in (P5S-10); out-of-band secret recovery documented.
-- [ ] `docs/OPERATIONS.md` runbook; SECURITY.md guarantees added; no residual
-      P5 briefing enforcer (P5S-16).
-- [ ] (Briefing delivery: done in Phase 4 / P4-T8, not here.)
+      *Enforcers (shell):* SH-092/093/094/095/096/097 →
+      `test_scheduler.py::test_dream_instance_passes_narrow_env_argv`,
+      `::test_dream_instance_skips_below_level_2`,
+      `test_wizard_dream.py::test_wizard_has_no_raw_autonomy_write`,
+      `test_curator.py::test_action_text_is_never_executed`,
+      `::test_control_plane_kinds_are_never_applyable`,
+      `::test_apply_refused_below_autonomy_gate`. *Enforcers (kernel, DOCTRINE
+      §5 guarantee-lint):* `tests/test_actions.py` set-dream subtree-only +
+      narrow-env one-credential. *Partial:* the doctor dream/autonomy-level
+      checks of T7a sub-deliverable 2 are not a dedicated landed doctor section
+      — autonomy/dream verification is via the kernel `admin autonomy
+      status`/`set-dream` verbs and the wizard step; OPERATIONS.md documents the
+      operator path. I6 honesty flip landed (README + OPERATIONS.md).
+- [x] **P5-T8.** Ledger rotation/compaction + windowed reads; row_hash chain
+      verifiable across rotated segments via manifest + chained HEAD pointer;
+      removed middle AND head segments detected; rotation serialized against
+      appends (upstream; P5S-8/9). *Enforcers (kernel, DOCTRINE §1
+      guarantee-lint):* `tests/test_ledger_rotation.py::test_verify_chain_detects_removed_middle_segment`,
+      `::test_verify_chain_detects_removed_head_segment`,
+      `::test_rotation_vs_concurrent_appenders_threads`.
+- [x] **P5-T5.** Secrets rotation + backup lifecycle; backups never contain
+      secrets, no opt-in (P5S-10, `--include-secrets` DROPPED); out-of-band
+      secret recovery documented (`docs/OPERATIONS.md` §4). *Enforcer:* SH-098 →
+      `test_backup_shell.py::TestSecretDenyList::test_dot_env_exact` (the hard
+      rule stands). *Partial:* `oracle secrets rotate` and `oracle backup
+      schedule` did NOT land as standalone CLI verbs — rotation is the atomic
+      0600 `write_root_env_secret` upsert via the wizard secret step (old value
+      not retained; `test_config.py::test_write_root_env_secret_upserts` /
+      `::test_write_root_env_secret_roundtrip_and_perms`), and scheduled backup
+      rides `oracle serve` + an external scheduler. The recovery drill is fully
+      documented; the named-verb sugar is the deviation.
+- [x] **P5-T6.** `docs/OPERATIONS.md` runbook; SECURITY.md guarantees added
+      (SH-085..SH-098); no residual P5 briefing enforcer — `verify_enforcers()`
+      empty, the only briefing guarantees (SH-083/SH-084) are sourced P4S-16/15
+      (P5S-16 satisfied); ROADMAP keeps fleet stretch-tagged (P5S-15, verified).
+- [x] (Briefing delivery: done in Phase 4 / P4-T8, not here.)
 - [ ] (Stretch, optional) Fleet status/doctor/tick/upgrade across many
-      instances — single-company audience; only after funded tasks land;
-      ROADMAP keeps it stretch-tagged (P5S-15).
-- [ ] `make check` green; CI green.
+      instances — **NOT shipped (STRETCH, intentionally deferred)**;
+      single-company audience; only after funded tasks land; ROADMAP keeps it
+      stretch-tagged (P5S-15).
+- [x] `make check` green; CI green.

@@ -83,10 +83,20 @@ a chat message could invoke to change them.
 
 ### Autonomy
 
-Ships **off**. `oracle serve` ticks each instance's own `harness.py`, so the
-kernel's chain — kill-switch first, then autonomy level, allowlist, blast-radius
-caps — decides everything headless. Turning it on is a deliberate admin act in
-the root's `Meta.nosync/Autonomy/autonomy.yml`.
+Ships **off** (autonomy level 0). `oracle serve` ticks each instance's own
+`harness.py`, so the kernel's chain — kill-switch first, then autonomy level,
+allowlist, blast-radius caps — decides everything headless. Turning it on is a
+deliberate, earned, admin-approved kernel promotion (`oracle kernel NAME --
+admin autonomy promote`), never a raw config edit.
+
+**Self-improvement actuation ships, off by default.** The operating agent —
+the `set-dream` actuator config, the dream subprocess narrow-env contract,
+scheduler dream convocation, and the local curator — is all present. It is
+unlocked by an explicit admin autonomy promotion (to level 2) **plus** a
+cadence opt-in (`serve.dream_tick_seconds`, default `0` == off). Both switches
+must be on; everything a dream session derives still lands `needs_review` and
+you curate it (`oracle curate`). See `docs/OPERATIONS.md` for the promotion
+ceremony and cadence opt-in.
 
 ## Architecture
 
@@ -121,17 +131,25 @@ written to drive agentic team development.
 ## Verify
 
 ```sh
-make check    # manifest → spawn → audit → lint → secret scans → 753 tests
+make check    # manifest → spawn → audit → lint → secret scans → full suite
 ```
 
-## Honest limits (v1)
+## Honest limits
 
 - The model's *use* of the answer protocol in free prose is advisory (as in
   the kernel); the footer makes the labeling honest, not the prose.
 - `allow-minimized` sensitivity tiers are not auto-released — no minimizer
   exists yet, so confidential+ stays out of model context entirely.
-- Telegram is the only gateway; the adapter interface is the extension seam.
-- POSIX-only daemon (fcntl locks). Context management is eviction-based.
+- **Unattended self-improvement actuation exists but is opt-in.** The actuator
+  (set-dream + dream narrow-env + scheduler convocation + curator) ships, but
+  autonomy ships at level 0 and the dream cadence (`serve.dream_tick_seconds`)
+  defaults to `0`. It is unlocked only by an explicit admin autonomy promotion
+  **and** a deliberate cadence opt-in — never on out of the box.
+- Context management is summarization-based by default (a non-authoritative,
+  injection-hardened running summary), falling back to whole-group eviction on
+  a summarizer error.
+- POSIX-only daemon (fcntl locks). Multi-instance fleet operations remain a
+  roadmap stretch goal (single-company, single-instance is the funded path).
 
 ## Credits
 
