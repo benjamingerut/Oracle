@@ -50,6 +50,25 @@ from pathlib import Path
 MODEL_ID = "synthetic-hash-v1"
 DIM = 64
 
+
+# --------------------------------------------------------------------------- #
+# Version-proof summation (P8S-12 determinism).
+#
+# The builtin ``sum()`` over floats switched to Neumaier compensated summation
+# in CPython 3.12 (gh-100425), so ``sum(v*v for v in xs)`` yields a DIFFERENT
+# (off-by-1-ULP) result on 3.10/3.11 than on 3.12+. That ULP escapes into the
+# L2 norm and shifts every component, breaking the byte-for-byte reproducibility
+# this vendored fixture promises. We therefore NEVER use builtin ``sum`` /
+# ``math.fsum`` / ``math.sumprod`` here -- a plain left-to-right ``+=`` loop is
+# naive ordered summation that is bit-identical on every supported interpreter
+# (floor 3.10). Keep a SINGLE accumulation order everywhere in this module.
+# --------------------------------------------------------------------------- #
+def _ordered_sum(values) -> float:
+    acc = 0.0
+    for v in values:
+        acc += v
+    return acc
+
 # --------------------------------------------------------------------------- #
 # concept vocabulary: surface word -> concept id. This is what lets a paraphrase
 # query ("number of people working here") match a chunk that says "headcount"
@@ -119,7 +138,7 @@ def _seeded_unit(seed: str) -> list[float]:
             if len(vals) >= DIM:
                 break
         counter += 1
-    n = math.sqrt(sum(v * v for v in vals)) or 1.0
+    n = math.sqrt(_ordered_sum(v * v for v in vals)) or 1.0
     return [v / n for v in vals]
 
 
@@ -142,7 +161,7 @@ def synthetic_embedding(text: str) -> list[float]:
         basis = _seeded_unit(f"token:{t}")
         for i in range(DIM):
             acc[i] += 0.5 * basis[i]
-    n = math.sqrt(sum(v * v for v in acc))
+    n = math.sqrt(_ordered_sum(v * v for v in acc))
     if n == 0.0:
         # No concept and no token (degenerate) -> seed off the raw text so we
         # never emit a zero vector (the kernel rejects zero-norm).

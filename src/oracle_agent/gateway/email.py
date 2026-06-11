@@ -54,11 +54,13 @@ Stdlib only.
 from __future__ import annotations
 
 import email
+import email.header
 import email.message
 import email.utils
 import html.parser
 import json
 import os
+import re
 import tempfile
 import time
 from email.message import EmailMessage
@@ -115,6 +117,39 @@ def _html_to_text(raw_html: str) -> str:
     except Exception:
         return ""
     return parser.text()
+
+
+# --------------------------------------------------------------------------- #
+# Message-ID normalization (loop-guard, version-proof)
+# --------------------------------------------------------------------------- #
+def _normalize_msgid_field(value) -> str:
+    """Canonicalize a Message-ID / References header value for comparison.
+
+    The own-References loop guard (P4S-11) compares our emitted Message-IDs
+    against the inbound ``References`` header. Older interpreters (the 3.10/3.11
+    CI floor) fold/encode long structured headers DIFFERENTLY from 3.12+: a long
+    ``References`` value comes back wrapped (a leading ``"\\n "`` fold) or even
+    RFC 2047 encoded-word-escaped (``=?utf-8?q?...?=``) by the default
+    ``EmailMessage`` policy, so a naive ``mid in references`` substring check
+    matches on 3.12+ but MISSES on 3.10 -- letting our own reply loop back in.
+
+    Normalize fail-closed and version-agnostically: decode any RFC 2047
+    encoded-words, strip ALL whitespace (unfolds every CFWS the parser inserted),
+    and lowercase (Message-IDs compare case-insensitively per RFC 5322 once the
+    angle-bracketed addr-spec is in hand). The angle brackets are preserved so a
+    bare token can never accidentally substring-match a different id.
+    """
+    if not value:
+        return ""
+    try:
+        parts = email.header.decode_header(str(value))
+        decoded = "".join(
+            (b.decode(cs or "ascii", "replace") if isinstance(b, (bytes, bytearray)) else b)
+            for b, cs in parts
+        )
+    except Exception:
+        decoded = str(value)
+    return re.sub(r"\s+", "", decoded).lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -406,8 +441,14 @@ class EmailAdapter:
         if prec in ("bulk", "list", "auto_reply"):
             self.logger(f"gateway[email]: dropped Precedence:{prec} (loop guard)")
             return None
-        references = (msg.get("References") or "")
-        if any(mid and mid in references for mid in self._own_message_ids):
+        # Loop guard: our own Message-ID appearing in References means this is a
+        # reply to one of our replies. Normalize both sides so the comparison is
+        # robust to header folding / RFC 2047 encoding the older-interpreter
+        # parsers apply to long References values (see _normalize_msgid_field).
+        references = _normalize_msgid_field(msg.get("References"))
+        if references and any(
+                norm and norm in references
+                for norm in (_normalize_msgid_field(mid) for mid in self._own_message_ids)):
             self.logger("gateway[email]: dropped our-own References (loop guard)")
             return None
 
