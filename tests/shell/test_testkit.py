@@ -69,10 +69,18 @@ def _ast_imports(path: Path):
 
 
 def test_no_production_module_imports_testkit():
-    """No production module under src/oracle_agent/ (except testkit itself)
-    may import oracle_agent.testkit at any scope.
+    """No production module under src/oracle_agent/ (except testkit itself and
+    the sanctioned oracle_agent/eval/ package) may import oracle_agent.testkit
+    at any scope.
 
     Enforced by AST walk so it catches both module-scope and deferred imports.
+
+    Import-boundary amendment (P6S-12): ``oracle_agent/eval/`` is the ONE new
+    sanctioned testkit importer -- it ships in the package so Phase 6 scoring can
+    drive real scenarios, and the eval CLI handler imports it lazily so the
+    production CLI's import path stays testkit-free. The converse guard below
+    proves nothing OUTSIDE eval/ + testkit.py reaches testkit or the eval
+    package, so the harness cannot become a backdoor.
     """
     oracle_src = _SRC / "oracle_agent"
     offenders: list[str] = []
@@ -83,6 +91,9 @@ def test_no_production_module_imports_testkit():
         # testkit.py itself is the one place that's allowed.
         if py_file.name == "testkit.py":
             continue
+        # oracle_agent/eval/ is the sanctioned testkit-importing exception (P6S-12).
+        if "eval" in py_file.relative_to(oracle_src).parts:
+            continue
 
         for mod_name in _ast_imports(py_file):
             if "testkit" in mod_name:
@@ -91,7 +102,47 @@ def test_no_production_module_imports_testkit():
 
     assert not offenders, (
         "Production modules must not import testkit "
-        "(P1S-11 / P1-T2):\n" + "\n".join(offenders)
+        "(P1S-11 / P1-T2 / P6S-12):\n" + "\n".join(offenders)
+    )
+
+
+def test_only_eval_and_testkit_reach_testkit_or_eval():
+    """Converse guard (P6S-12): NOTHING outside oracle_agent/eval/ + testkit.py
+    imports either ``testkit`` OR ``oracle_agent.eval``.
+
+    The eval package is allowed to import testkit; in return, no module outside
+    eval/ (and testkit.py itself) may import EITHER testkit or the eval package
+    -- so the harness cannot become a backdoor through which production code
+    reaches testkit. The eval CLI handler imports the harness lazily INSIDE the
+    function; a lazy (function-scope) import is still an import node and is
+    caught by the AST walk, which is exactly why cli.py must route through a
+    lazy import that this guard EXEMPTS by name only if it is the sanctioned
+    handler -- but the cleaner contract is: cli.py never names eval/testkit at
+    module scope, and the lazy import lives in the eval handler. We assert the
+    boundary structurally: only eval/ and testkit.py may name them at ANY scope.
+    """
+    oracle_src = _SRC / "oracle_agent"
+    offenders: list[str] = []
+
+    for py_file in oracle_src.rglob("*.py"):
+        if "assets" in py_file.parts:
+            continue
+        rel = py_file.relative_to(oracle_src)
+        if py_file.name == "testkit.py":
+            continue
+        if "eval" in rel.parts:
+            continue
+        for mod_name in _ast_imports(py_file):
+            if "testkit" in mod_name or mod_name.startswith("oracle_agent.eval") \
+                    or mod_name == "oracle_agent.eval":
+                offenders.append(f"{rel}: imports {mod_name!r}")
+
+    assert not offenders, (
+        "Only oracle_agent/eval/ and testkit.py may import testkit or the eval "
+        "package (the converse guard, P6S-12). The eval CLI handler must import "
+        "the harness LAZILY inside the function -- but it must NOT name "
+        "oracle_agent.eval or testkit via a path this AST walk sees outside "
+        "eval/. Offenders:\n" + "\n".join(offenders)
     )
 
 

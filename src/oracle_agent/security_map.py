@@ -1364,6 +1364,123 @@ GUARANTEES: list[Guarantee] = [
         kind="test",
         source="P5S-10",
     ),
+
+    # ------------------------------------------------------------------
+    # P6 -- trust & evaluation (Phase 6). NET-NEW composition-level safety
+    # guarantees: each is enforced by a parametrized eval-catalog pytest node
+    # (P6S-4), so `make check` gates it with NO new CI job. GUARANTEES remains
+    # the SOLE registry; the catalog is enforcer SUPPLY. Each scenario follows
+    # the planted-marker + reachability-control discipline (leak) or a
+    # parity/structural composition (gateway/grounding); the planted-fault
+    # meta-tests live in test_eval_faults.py. These are NET-NEW (composition /
+    # cross-surface), never a copy of an existing SH-xxx at the same level
+    # (P6S-9).
+    # ------------------------------------------------------------------
+    Guarantee(
+        id="SH-099",
+        statement=(
+            "Confidential corpus content never reaches the model context via a "
+            "chat-driven search on the EXTERNAL surface: a planted above-ceiling "
+            "marker is absent from user_visible AND every chat message, while a "
+            "reachability control proves the marker IS retrievable once the "
+            "ceiling is raised (so the pass is not vacuous). Composition-level "
+            "through the real AgentLoop (STRESS C1)."
+        ),
+        enforcer="tests/shell/test_eval_catalog.py::test_scenario[EVAL-LEAK-001]",
+        kind="test",
+        source="P6S-8",
+    ),
+    Guarantee(
+        id="SH-100",
+        statement=(
+            "An above-ceiling chunk never egresses to the EMBEDDING sink during "
+            "a public-ceiling backfill: a planted marker is absent from every "
+            "embedding request (FakeEmbedClient.all_texts), with a "
+            "confidential-ceiling reachability control proving the chunk is "
+            "embeddable. The embedding endpoint is the second C1 egress channel "
+            "(P8)."
+        ),
+        enforcer="tests/shell/test_eval_catalog.py::test_scenario[EVAL-LEAK-002]",
+        kind="test",
+        source="P6S-8",
+    ),
+    Guarantee(
+        id="SH-101",
+        statement=(
+            "An above-ceiling oracle_answer grounded payload is structurally "
+            "withheld from the model context on the EXTERNAL surface (the "
+            "withhold stub fires; the grounded internal-ceiling envelope never "
+            "enters context), with a confidential-ceiling reachability control "
+            "proving the payload is otherwise reachable. Composition-level "
+            "through the real AgentLoop (STRESS C1)."
+        ),
+        enforcer="tests/shell/test_eval_catalog.py::test_scenario[EVAL-LEAK-003]",
+        kind="test",
+        source="P6S-8",
+    ),
+    Guarantee(
+        id="SH-102",
+        statement=(
+            "An ungrounded material claim is REDACTED under ENFORCE through the "
+            "real AgentLoop -- the claim text never reaches user_visible -- with "
+            "an OBSERVE reachability control proving the claim text is real and "
+            "the gate is what removes it (P3 composition-level, not the "
+            "extractor unit)."
+        ),
+        enforcer="tests/shell/test_eval_catalog.py::test_scenario[EVAL-GROUND-001]",
+        kind="test",
+        source="P6S-9",
+    ),
+    Guarantee(
+        id="SH-103",
+        statement=(
+            "Every corpus.json smuggle class (table / list / quote / code-block "
+            "/ hedge / non-english / footer-lookalike) is caught END-TO-END: the "
+            "smuggled figure never survives into the user reply when the draft is "
+            "replayed as a model turn under ENFORCE through the full loop "
+            "(composition-level replay, not a copy of the extractor unit tests)."
+        ),
+        enforcer="tests/shell/test_eval_catalog.py::test_scenario[EVAL-GROUND-002]",
+        kind="test",
+        source="P6S-9",
+    ),
+    Guarantee(
+        id="SH-104",
+        statement=(
+            "Every loop built by the gateway path is ENFORCE (the fail-closed "
+            "surface invariant), so an ungrounded claim can never ship over a "
+            "transport: driven through the real GatewayCore.handle, no ungrounded "
+            "claim reaches a sent reply (cross-surface composition proof)."
+        ),
+        enforcer="tests/shell/test_eval_catalog.py::test_scenario[EVAL-GROUND-003]",
+        kind="test",
+        source="P6S-9",
+    ),
+    Guarantee(
+        id="SH-105",
+        statement=(
+            "An unknown sender is denied silently by GatewayCore (no reply, no "
+            "loop built -- no model turn for a denied principal), while an "
+            "allowlisted sender is served (reachability control). The "
+            "deny-by-default authorization gate, exercised cross-surface through "
+            "the real core."
+        ),
+        enforcer="tests/shell/test_eval_catalog.py::test_scenario[EVAL-GATEWAY-001]",
+        kind="test",
+        source="P6S-9",
+    ),
+    Guarantee(
+        id="SH-106",
+        statement=(
+            "An access-change request is refused by GatewayCore without building "
+            "a loop (the control-plane-from-chat hole stays closed), while a "
+            "normal message is served (reachability control). Composition-level "
+            "through the real core."
+        ),
+        enforcer="tests/shell/test_eval_catalog.py::test_scenario[EVAL-GATEWAY-003]",
+        kind="test",
+        source="P6S-9",
+    ),
 ]
 
 # ---------------------------------------------------------------------------
