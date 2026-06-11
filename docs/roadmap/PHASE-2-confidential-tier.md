@@ -394,8 +394,19 @@ dangerous variant the question missed was the *loopback proxy*, P2S-1.
 
 ## Definition of done
 
-- [ ] P2-T0 usefulness validation run with real local models; go/no-go verdict
-      recorded in this spec (it gates everything below).
+> **GATE RESULT (2026-06-11): P2-T0 ran — provisional NO-GO.** 22/40 (55%)
+> answerable-correctly vs the 70% bar on `qwen3.6-32k` (zero conclusion
+> leaks; legal_ma worst at 40%). Full report + human-spot-check queue:
+> `docs/eval/p2-t0/REPORT.md`. Per this spec's own gate, **P2-T1…T6 do not
+> proceed**; the phase stays open behind the gate with three re-entry paths
+> (stronger local model, revised minimization rules preserving relational
+> structure, or the enterprise tier). P2-T7 was delivered independently:
+> `docs/adr/adr-2026-06-11-enterprise-environment-tier.md`. The pre-phase
+> remediation (egress veto) shipped ahead of the gate and stands regardless.
+
+- [x] P2-T0 usefulness validation run with real local models; go/no-go verdict
+      recorded in this spec (it gates everything below). **Verdict: NO-GO
+      (provisional, pending human spot-check).**
 - [ ] Kernel minimizer + `--minimize-to` + ledger + lint (upstream, re-vendored).
 - [ ] Shell ceiling split; external stays public/public under all inputs; a
       loopback proxy-to-cloud model never unlocks `minimized` (veto +
@@ -407,6 +418,7 @@ dangerous variant the question missed was the *loopback proxy*, P2S-1.
       opt-in only; `SECURITY_KEYS` extended (migrations preserve the
       confinement fields).
 - [ ] SECURITY.md guarantees added and backed.
-- [ ] P2-T7 `enterprise`-tier ADR + matrix-column spec merged (decision only,
-      default-off/fail-closed; zero code).
+- [x] P2-T7 `enterprise`-tier ADR + matrix-column spec merged (decision only,
+      default-off/fail-closed; zero code):
+      `docs/adr/adr-2026-06-11-enterprise-environment-tier.md`.
 - [ ] `make check` green incl. new kernel + shell tests; CI green.
