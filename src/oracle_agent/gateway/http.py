@@ -56,6 +56,13 @@ _MAX_BODY_BYTES = 256 * 1024
 # single-threaded listener forever.
 _SOCKET_TIMEOUT = 30.0
 
+# Bounded drain slack: when a body is over-cap we read AT MOST cap + this many
+# bytes (in chunks) before replying 413, so a well-behaved client finishes its
+# send and reads the status cleanly instead of being RST mid-write. The drain is
+# always bounded -- never an unbounded read -- so the DoS protection holds.
+_DRAIN_SLACK_BYTES = 64 * 1024
+_DRAIN_CHUNK_BYTES = 64 * 1024
+
 
 def validate_bind(bind: str) -> str:
     """Return ``bind`` iff it parses as a literal loopback IP, else raise (P4S-7).
@@ -263,13 +270,35 @@ class HTTPAdapter:
 
             # No CORS headers are EVER emitted (P4S-7); _send writes only the
             # minimal set below.
-            def _send(self, status: int, obj: dict) -> None:
+            def _send(self, status: int, obj: dict, *, close: bool = False) -> None:
                 body = json.dumps(obj).encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
+                # Connection: close lets us refuse an over-cap body without
+                # honoring HTTP/1.1 keep-alive (we won't read the rest of it).
+                if close:
+                    self.close_connection = True
+                    self.send_header("Connection", "close")
                 self.end_headers()
                 self.wfile.write(body)
+
+            def _drain(self, length: int) -> None:
+                """Read AT MOST ``min(length, cap + slack)`` bytes in chunks and
+                discard them, so a well-behaved client can finish its send and
+                read our status instead of being RST mid-write. Always bounded --
+                never an unbounded read -- so the DoS protection holds. Best
+                effort: a dead/closed peer just ends the drain early."""
+                to_read = min(length, _MAX_BODY_BYTES + _DRAIN_SLACK_BYTES)
+                try:
+                    while to_read > 0:
+                        chunk = self.rfile.read(min(to_read, _DRAIN_CHUNK_BYTES))
+                        if not chunk:
+                            break
+                        to_read -= len(chunk)
+                except OSError:
+                    # Peer already gone / reset: nothing left to drain.
+                    return
 
             def _guard(self) -> bool:
                 """Host + auth guard, run on every route. Returns False (and
@@ -289,7 +318,13 @@ class HTTPAdapter:
                     self._send(400, {"error": "bad content-length"})
                     return None
                 if length > _MAX_BODY_BYTES:
-                    self._send(413, {"error": "request entity too large"})
+                    # Bounded-drain BEFORE replying: read up to cap+slack so the
+                    # client finishes its (over-cap) send and can read the 413
+                    # cleanly, instead of the kernel RSTing it mid-write. Then
+                    # close the connection (we won't consume the rest).
+                    self._drain(length)
+                    self._send(413, {"error": "request entity too large"},
+                               close=True)
                     return None
                 if length <= 0:
                     return b""
