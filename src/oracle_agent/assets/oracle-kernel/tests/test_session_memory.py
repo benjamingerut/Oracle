@@ -193,3 +193,83 @@ def test_memory_matriculation_runner_owns_dreaming_without_extra_core_loop(tmp_p
     assert result["kind"] == "builtin:memory-matriculation"
     assert result["outcome"]["processed"] == 1
     assert not (root / "Meta.nosync" / "Loops" / "loop-memory-dreaming.md").exists()
+
+
+# --------------------------------------------------------------------------- #
+# P5-T2a: --role threading (attribution only; role-invariant).
+# --------------------------------------------------------------------------- #
+def test_capture_session_threads_role_into_ledger_and_note(tmp_path, minimal_oracle):
+    root = minimal_oracle(tmp_path)
+    now = datetime(2026, 6, 8, 12, 0, 0)
+    res = session_memory.capture_session(
+        root,
+        user_request="Why is churn rising?",
+        answer_summary="Reviewed signals.",
+        actor="gateway_user:telegram:123",
+        role="user",
+        now=now,
+    )
+    rows, warnings = ledger.load(root / "Meta.nosync" / "ledgers" / "session_memory.jsonl")
+    assert warnings == []
+    assert rows[0]["role"] == "user"
+    assert rows[0]["actor"] == "gateway_user:telegram:123"
+    text = (root / res["note_path"]).read_text(encoding="utf-8")
+    assert "role: user" in text
+
+
+def test_capture_session_role_defaults_to_unknown(tmp_path, minimal_oracle):
+    root = minimal_oracle(tmp_path)
+    now = datetime(2026, 6, 8, 12, 0, 0)
+    res = session_memory.capture_session(
+        root, user_request="Bare kernel-CLI write.", now=now,
+    )
+    rows, _ = ledger.load(root / "Meta.nosync" / "ledgers" / "session_memory.jsonl")
+    assert rows[0]["role"] == "unknown"
+    text = (root / res["note_path"]).read_text(encoding="utf-8")
+    assert "role: unknown" in text
+
+
+def test_capture_session_is_role_invariant(tmp_path, minimal_oracle):
+    """Same inputs under different roles produce identical records except for the
+    recorded role attribution (role is attribution, never capability -- P5S-13)."""
+    root_a = minimal_oracle(tmp_path / "a")
+    root_b = minimal_oracle(tmp_path / "b")
+    now = datetime(2026, 6, 8, 12, 0, 0)
+    kwargs = dict(
+        user_request="Identical request",
+        answer_summary="Identical answer",
+        business_objects=["Churn"],
+        learned_claims=["A claim."],
+        actor="someone",
+        now=now,
+    )
+    res_user = session_memory.capture_session(root_a, role="user", **kwargs)
+    res_admin = session_memory.capture_session(root_b, role="admin", **kwargs)
+
+    rows_a, _ = ledger.load(root_a / "Meta.nosync" / "ledgers" / "session_memory.jsonl")
+    rows_b, _ = ledger.load(root_b / "Meta.nosync" / "ledgers" / "session_memory.jsonl")
+    # Strip the attribution-only fields and the per-write id; everything else
+    # (the captured business memory) must be identical regardless of role.
+    def _strip(row):
+        skip = ("role", "drop_id", "row_hash", "prev_hash")
+        return {k: v for k, v in row.items() if k not in skip}
+    assert _strip(rows_a[0]) == _strip(rows_b[0])
+    assert rows_a[0]["role"] == "user"
+    assert rows_b[0]["role"] == "admin"
+    # The session note bodies (the decomposable content) are identical.
+    body_a = (root_a / res_user["note_path"]).read_text(encoding="utf-8")
+    body_b = (root_b / res_admin["note_path"]).read_text(encoding="utf-8")
+    assert body_a.replace("role: user", "ROLE") == body_b.replace("role: admin", "ROLE")
+
+
+def test_capture_session_cli_accepts_role(tmp_path, minimal_oracle):
+    root = minimal_oracle(tmp_path)
+    rc = session_memory.main(
+        ["--root", str(root), "capture",
+         "--user-request", "CLI role test",
+         "--actor", "local_user:operator", "--role", "admin"]
+    )
+    assert rc == 0
+    rows, _ = ledger.load(root / "Meta.nosync" / "ledgers" / "session_memory.jsonl")
+    assert rows[0]["role"] == "admin"
+    assert rows[0]["actor"] == "local_user:operator"

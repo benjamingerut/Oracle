@@ -93,7 +93,7 @@ def _line_sha256(raw_line: str) -> str:
 NO_ID = object()
 
 
-def append(path: Path, row: dict, *, id_prefix=None) -> str:
+def append(path: Path, row: dict, *, id_prefix=None, auto_rotate: bool = False) -> str:
     """Append a single JSON object as one line, durably.
 
     Acquires an exclusive advisory lock for the duration of the write, emits a
@@ -112,6 +112,17 @@ def append(path: Path, row: dict, *, id_prefix=None) -> str:
     identity is ``ts`` + ``row_hash``. This deliberately SKIPS the id-collision
     scan, which is what keeps the per-search retrieval ledger off the quadratic
     path (P8S-8). Returns the final ``drop_id`` ('' when NO_ID is used).
+
+    Auto-rotation (P5-T8 / P5S-9): when ``auto_rotate=True`` the appender, while
+    *already holding* ``LOCK_EX`` on ``path``, checks whether the current open
+    segment has crossed the size/age threshold and, if so, closes it (writing a
+    rotation marker as the final row) and opens a fresh segment BEFORE writing
+    the caller's row -- so the row always lands in the open segment and no row
+    can ever follow a rotation marker (the no-row-after-marker invariant). The
+    rotation happens under the exact same lock the append takes, eliminating the
+    TOCTOU window that a rotation decided outside the lock would create. The
+    audit-critical ledgers (``action_event``, ``dream_session``,
+    ``gateway_event``) append with ``auto_rotate=True``.
     """
     path = Path(path)
     if not isinstance(row, dict):
@@ -127,6 +138,15 @@ def append(path: Path, row: dict, *, id_prefix=None) -> str:
     with open(path, "a+", encoding="utf-8") as f:  # noqa: SAFEPATHS  # safe_paths-internal
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         try:
+            if auto_rotate and _should_rotate_locked(f, path):
+                # Seal the current open segment IN PLACE under THIS lock: its
+                # rows (plus a rotation marker) are flushed to a sealed segment
+                # file and recorded in the manifest, then the open file is
+                # truncated and re-anchored. The caller's row is then written
+                # into the freshly-anchored open segment -- so it can never
+                # follow a rotation marker in a closed segment (P5S-9). The fd
+                # (and its lock) are never released or swapped.
+                _rotate_in_place_locked(f, path)
             if prefix:
                 payload["drop_id"] = _next_id_locked(f, prefix)
             # Compute hash chain: read the last row_hash from disk (under the
@@ -197,6 +217,590 @@ def _last_row_hash_locked(f) -> str:
     except OSError:  # pragma: no cover - defensive
         pass
     return last_hash
+
+
+# --------------------------------------------------------------------------- #
+# rotation / compaction (P5-T8, P5S-8/9) -- audit-critical ledgers only
+# --------------------------------------------------------------------------- #
+#
+# Layout for a rotated ledger ``<name>`` living in ``<dir>``:
+#   <dir>/<name>.jsonl              -- the LIVE open segment (appenders lock this)
+#   <dir>/<name>.seg-NNNN.jsonl     -- sealed (closed) segments, NNNN zero-padded
+#   <dir>/<name>.manifest.jsonl     -- tamper-evident hash-chained segment manifest
+#
+# The manifest is the ONLY discovery mechanism (never a filesystem glob,
+# P5S-8): each sealed segment contributes one chained ``segment`` row, and a
+# trailing ``head`` row names the open segment. Because the manifest is itself
+# a hash chain AND records each sealed segment's terminal ``row_hash`` plus the
+# open segment's expected anchor hash, deleting/renumbering/reordering ANY
+# segment -- a middle one OR the newest sealed one OR the open HEAD -- is
+# detectable by ``verify_chain``.
+#
+# Auto-rotation thresholds (module constants, overridable per-call):
+ROTATE_MAX_BYTES = 8 * 1024 * 1024   # seal the open segment past ~8 MiB
+ROTATE_MAX_AGE_DAYS = 90             # ...or once its first row is this old
+#: Ledger *names* (basenames without ``.jsonl``) that are audit-critical and
+#: therefore append with cross-segment rotation enabled. ``retrieval_event-*``
+#: is deliberately absent: it keeps its fresh-chain-per-file telemetry design
+#: (P5S-8) and is NOT rotated through this protocol.
+AUDIT_CRITICAL_LEDGERS = ("action_event", "dream_session", "gateway_event")
+
+#: Marker drop_id sealing a closed segment (mirrors REWRITE-MARKER precedent).
+ROTATION_MARKER = "ROTATION-MARKER"
+#: drop_id of the first row in a freshly opened segment, recording its
+#: predecessor segment name + terminal row_hash so the chain re-anchors visibly.
+ROTATION_ANCHOR = "ROTATION-ANCHOR"
+
+
+def _seg_name(name: str, seq: int) -> str:
+    return f"{name}.seg-{seq:04d}.jsonl"
+
+
+def _manifest_path(ledger_dir: Path, name: str) -> Path:
+    return Path(ledger_dir) / f"{name}.manifest.jsonl"
+
+
+def _open_segment_path(ledger_dir: Path, name: str) -> Path:
+    return Path(ledger_dir) / f"{name}.jsonl"
+
+
+def _manifest_canonical(entry: dict) -> str:
+    stripped = {k: v for k, v in entry.items() if k != "manifest_hash"}
+    return json.dumps(stripped, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _compute_manifest_hash(entry: dict, prev_hash: str) -> str:
+    material = _manifest_canonical(entry) + prev_hash
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _read_rows_from_handle(f) -> list[dict]:
+    """Parse all dict rows from an already-locked open file handle (from pos 0)."""
+    rows: list[dict] = []
+    try:
+        f.seek(0)
+        for raw_line in f:
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            try:
+                obj = json.loads(raw_line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(obj, dict):
+                rows.append(obj)
+    except OSError:  # pragma: no cover - defensive
+        pass
+    return rows
+
+
+def _first_row_ts(rows: list[dict]) -> str:
+    for r in rows:
+        ts = r.get("ts")
+        if ts:
+            return str(ts)
+    return ""
+
+
+def _ts_age_days(ts: str) -> float:
+    """Best-effort age in days of an ISO-8601 (seconds) timestamp; 0 on parse fail."""
+    if not ts:
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(ts)
+    except (ValueError, TypeError):
+        return 0.0
+    now = datetime.now(parsed.tzinfo) if parsed.tzinfo else datetime.now()
+    return max(0.0, (now - parsed).total_seconds() / 86400.0)
+
+
+def _should_rotate_locked(f, path: Path, *, max_bytes=None, max_age_days=None) -> bool:
+    """Decide, under the append lock, whether the open segment crossed threshold.
+
+    Size is the byte length of the open file; age is the wall-clock age of the
+    segment's first row. An empty segment never rotates (nothing to seal).
+    """
+    mb = ROTATE_MAX_BYTES if max_bytes is None else max_bytes
+    md = ROTATE_MAX_AGE_DAYS if max_age_days is None else max_age_days
+    try:
+        size = os.fstat(f.fileno()).st_size
+    except OSError:  # pragma: no cover - defensive
+        size = 0
+    if size <= 0:
+        return False
+    if mb is not None and size >= mb:
+        return True
+    if md is not None:
+        rows = _read_rows_from_handle(f)
+        if rows and _ts_age_days(_first_row_ts(rows)) >= md:
+            return True
+    return False
+
+
+def _load_manifest(ledger_dir: Path, name: str) -> list[dict]:
+    """Return the manifest entries (segment rows then a trailing head row).
+
+    Corruption-tolerant like ``load``: unparseable lines are skipped. An absent
+    manifest yields an empty list (a never-rotated / legacy ledger).
+    """
+    mpath = _manifest_path(ledger_dir, name)
+    entries: list[dict] = []
+    if not mpath.exists():
+        return entries
+    try:
+        raw = mpath.read_text(encoding="utf-8", errors="replace")
+    except OSError:  # pragma: no cover - defensive
+        return entries
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(obj, dict):
+            entries.append(obj)
+    return entries
+
+
+def _manifest_segments(entries: list[dict]) -> list[dict]:
+    return [e for e in entries if e.get("kind") == "segment"]
+
+
+def _manifest_head(entries: list[dict]) -> dict | None:
+    for e in reversed(entries):
+        if e.get("kind") == "head":
+            return e
+    return None
+
+
+def _next_seq(entries: list[dict]) -> int:
+    segs = _manifest_segments(entries)
+    if not segs:
+        return 1
+    return max(int(e.get("seq", 0)) for e in segs) + 1
+
+
+def _write_manifest_atomic(ledger_dir: Path, name: str, entries: list[dict]) -> None:
+    """Rewrite the manifest atomically (temp + os.replace) in the ledger dir."""
+    mpath = _manifest_path(ledger_dir, name)
+    _ensure_parent(mpath)
+    lines = [json.dumps(e, ensure_ascii=False) for e in entries]
+    body = ("\n".join(lines) + "\n") if lines else ""
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=mpath.name + ".", suffix=".tmp", dir=str(mpath.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tf:  # safe_paths-internal
+            tf.write(body)
+            tf.flush()
+            os.fsync(tf.fileno())
+        os.replace(tmp_name, str(mpath))  # safe_paths-internal: atomic manifest swap
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    dir_fd = os.open(str(mpath.parent), os.O_DIRECTORY)  # safe_paths-internal
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _write_segment_atomic(seg_path: Path, rows: list[dict]) -> None:
+    """Write a sealed segment file atomically (temp + os.replace)."""
+    _ensure_parent(seg_path)
+    lines = [json.dumps(r, ensure_ascii=False) for r in rows]
+    body = ("\n".join(lines) + "\n") if lines else ""
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=seg_path.name + ".", suffix=".tmp", dir=str(seg_path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tf:  # safe_paths-internal
+            tf.write(body)
+            tf.flush()
+            os.fsync(tf.fileno())
+        os.replace(tmp_name, str(seg_path))  # safe_paths-internal: atomic segment seal
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    dir_fd = os.open(str(seg_path.parent), os.O_DIRECTORY)  # safe_paths-internal
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _rotate_in_place_locked(f, path: Path) -> None:
+    """Seal the open segment and re-anchor it, all under the caller's LOCK_EX.
+
+    The caller holds LOCK_EX on ``f`` (the open ``<name>.jsonl``). Steps:
+
+    1. Read the open segment's rows; append a ROTATION-MARKER row chained onto
+       the segment's terminal ``row_hash``. The marker's hash is the sealed
+       segment's terminal hash.
+    2. Write those rows (incl. the marker) to a fresh ``<name>.seg-NNNN.jsonl``
+       atomically. NO row can follow the marker in this closed file.
+    3. Extend the manifest with a chained ``segment`` entry (filename, terminal
+       hash, predecessor hash, row count) and rewrite the trailing ``head``
+       entry to point at the open segment with its expected anchor hash.
+    4. Truncate the open file in place and write a ROTATION-ANCHOR first row
+       that chains off the sealed segment's terminal hash and records the
+       predecessor segment name -- so the row chain visibly re-anchors and the
+       open segment is provably the continuation of the sealed one.
+
+    The fd is never closed and the lock is never released, so concurrent
+    appenders stay blocked until the open segment is re-anchored. Returns None;
+    the caller continues appending into the same fd.
+    """
+    name = path.name[: -len(".jsonl")] if path.name.endswith(".jsonl") else path.name
+    ledger_dir = path.parent
+
+    rows = _read_rows_from_handle(f)
+    if not rows:  # pragma: no cover - guarded by _should_rotate_locked
+        return
+
+    prev_terminal = ""
+    for r in rows:
+        if r.get("row_hash"):
+            prev_terminal = str(r["row_hash"])
+
+    entries = _load_manifest(ledger_dir, name)
+    seg_entries_existing = _manifest_segments(entries)
+    seq = _next_seq(entries)
+    seg_filename = _seg_name(name, seq)
+    # The hash this segment's FIRST row anchored onto: the predecessor segment's
+    # terminal hash, or "" for the very first segment (genesis / legacy prefix).
+    # This is what ``verify_chain`` walks for cross-segment continuity.
+    anchor_prev_hash = (
+        str(seg_entries_existing[-1].get("terminal_row_hash", ""))
+        if seg_entries_existing
+        else ""
+    )
+
+    # 1. Seal with a rotation marker chained onto the segment tail.
+    marker: dict = {
+        "drop_id": ROTATION_MARKER,
+        "ts": _now_iso(),
+        "event": "ledger_rotation",
+        "segment": seg_filename,
+        "seq": seq,
+        "rows": len(rows),
+    }
+    marker["row_hash"] = _compute_row_hash(marker, prev_terminal)
+    sealed_rows = rows + [marker]
+    terminal_hash = marker["row_hash"]
+
+    # 2. Write the sealed segment atomically.
+    _write_segment_atomic(ledger_dir / seg_filename, sealed_rows)
+
+    # 3. Extend the hash-chained manifest + rewrite the HEAD entry.
+    seg_entries = seg_entries_existing
+    prev_manifest_hash = ""
+    if seg_entries:
+        prev_manifest_hash = str(seg_entries[-1].get("manifest_hash", ""))
+    seg_entry: dict = {
+        "kind": "segment",
+        "seq": seq,
+        "segment": seg_filename,
+        "terminal_row_hash": terminal_hash,
+        "predecessor_row_hash": anchor_prev_hash,
+        "rows": len(sealed_rows),
+        "ts": _now_iso(),
+    }
+    seg_entry["manifest_hash"] = _compute_manifest_hash(seg_entry, prev_manifest_hash)
+    head_entry: dict = {
+        "kind": "head",
+        "open_segment": path.name,
+        "last_sealed_seq": seq,
+        "last_sealed_terminal_hash": terminal_hash,
+        "open_anchor_prev_hash": terminal_hash,
+        "ts": _now_iso(),
+    }
+    head_entry["manifest_hash"] = _compute_manifest_hash(
+        head_entry, seg_entry["manifest_hash"]
+    )
+    new_entries = seg_entries + [seg_entry, head_entry]
+    _write_manifest_atomic(ledger_dir, name, new_entries)
+
+    # 4. Truncate the open file and write the re-anchoring first row.
+    anchor: dict = {
+        "drop_id": ROTATION_ANCHOR,
+        "ts": _now_iso(),
+        "event": "ledger_segment_open",
+        "seq": seq + 1,
+        "predecessor_segment": seg_filename,
+        "predecessor_row_hash": terminal_hash,
+    }
+    anchor["row_hash"] = _compute_row_hash(anchor, terminal_hash)
+    f.seek(0)
+    f.truncate(0)
+    f.write(json.dumps(anchor, ensure_ascii=False) + "\n")
+    f.flush()
+    os.fsync(f.fileno())
+
+
+def rotate(path: Path, *, max_bytes=None, max_age_days=None) -> dict:
+    """Explicitly close the open segment and open a fresh one, if warranted.
+
+    Takes LOCK_EX on ``path`` (the open ``<name>.jsonl``) -- the SAME lock
+    ``append`` takes -- evaluates the size/age threshold, and rotates in place
+    if crossed. With ``max_bytes=0`` rotation is forced for any non-empty
+    segment (used by tests). Returns a report dict ``{rotated, segment, seq,
+    terminal_row_hash}``.
+
+    This is the manual / cadence-driven entrypoint; the appender also rotates
+    inline via ``append(..., auto_rotate=True)`` when it observes the threshold
+    while already holding the lock (P5S-9), so no separate scheduler is required.
+    """
+    path = Path(path)
+    _ensure_parent(path)
+    name = path.name[: -len(".jsonl")] if path.name.endswith(".jsonl") else path.name
+    report = {"rotated": False, "segment": None, "seq": None, "terminal_row_hash": None}
+    # safe_paths-internal: rotation holds the append lock on the open segment
+    with open(path, "a+", encoding="utf-8") as f:  # noqa: SAFEPATHS  # safe_paths-internal
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            if not _should_rotate_locked(
+                f, path, max_bytes=max_bytes, max_age_days=max_age_days
+            ):
+                return report
+            _rotate_in_place_locked(f, path)
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    # Re-read the manifest (outside the lock) to report the sealed segment.
+    entries = _load_manifest(path.parent, name)
+    segs = _manifest_segments(entries)
+    if segs:
+        last = segs[-1]
+        report.update(
+            rotated=True,
+            segment=last.get("segment"),
+            seq=last.get("seq"),
+            terminal_row_hash=last.get("terminal_row_hash"),
+        )
+    return report
+
+
+def _verify_rows_from_anchor(rows: list[dict], anchor_prev_hash: str) -> bool:
+    """Validate a row list's internal row_hash chain starting from an anchor.
+
+    A re-anchored segment's first hashed row commits to its predecessor
+    segment's terminal hash, NOT to the genesis empty string -- so the plain
+    ``verify`` (which assumes ``prev=""``) cannot validate a sealed/open segment
+    past seq 1. This walks the chain from ``anchor_prev_hash`` and returns True
+    iff every hashed row's stored hash matches and there are no gaps. A legacy
+    unhashed prefix (rows with no ``row_hash`` before the chain begins) is
+    tolerated exactly as ``verify`` tolerates it.
+    """
+    prev_hash = str(anchor_prev_hash)
+    chain_started = False
+    for r in rows:
+        stored = r.get("row_hash")
+        if not stored:
+            if chain_started:
+                return False  # unhashed row inside the chain = break
+            continue  # legacy prefix
+        if str(stored) != _compute_row_hash(r, prev_hash):
+            return False
+        prev_hash = str(stored)
+        chain_started = True
+    return True
+
+
+def verify_chain(ledger_dir: Path, name: str) -> dict:
+    """Cross-SEGMENT chain verification driven by the manifest (P5S-8).
+
+    Discovers segments via the tamper-evident manifest ONLY (never a filesystem
+    glob), validates:
+      * the manifest's own hash chain (edit/reorder/removal of a manifest entry),
+      * each sealed segment's internal row_hash chain (via ``verify``),
+      * that each sealed segment's terminal row_hash matches its manifest entry
+        (a removed/renumbered/swapped segment fails here),
+      * that each segment re-anchors onto its predecessor's terminal hash
+        (cross-segment continuity -- a removed MIDDLE segment breaks this),
+      * that the open HEAD segment exists, anchors onto the last sealed
+        segment's terminal hash, and that the HEAD manifest entry is present
+        (a removed HEAD/latest segment fails here -- P5S-8).
+
+    Returns a report dict; ``ok`` is True only when every check passes. A ledger
+    with NO manifest (never rotated / legacy single file) is treated as a single
+    open segment and validated with ``verify`` -- backward compatible.
+    """
+    ledger_dir = Path(ledger_dir)
+    open_path = _open_segment_path(ledger_dir, name)
+    report: dict[str, Any] = {
+        "name": name,
+        "dir": str(ledger_dir),
+        "segments": [],
+        "open_segment": str(open_path),
+        "manifest_breaks": [],
+        "segment_breaks": [],
+        "anchor_breaks": [],
+        "missing_segments": [],
+        "head_ok": True,
+        "ok": True,
+    }
+    entries = _load_manifest(ledger_dir, name)
+
+    # No manifest => never rotated. Validate the single open file (legacy path).
+    if not entries:
+        single = verify(open_path)
+        report["segments"] = []
+        report["legacy_single_file"] = True
+        report["open_ok"] = single["ok"]
+        report["ok"] = single["ok"]
+        return report
+
+    segs = _manifest_segments(entries)
+    head = _manifest_head(entries)
+
+    # 1. Validate the manifest's own hash chain (segment rows, then head).
+    prev_mhash = ""
+    for e in segs:
+        expected = _compute_manifest_hash(e, prev_mhash)
+        if e.get("manifest_hash") != expected:
+            report["manifest_breaks"].append(int(e.get("seq", -1)))
+        prev_mhash = str(e.get("manifest_hash", ""))
+    if head is not None:
+        expected_head = _compute_manifest_hash(head, prev_mhash)
+        if head.get("manifest_hash") != expected_head:
+            report["manifest_breaks"].append("head")
+    else:
+        # Manifest exists but carries no HEAD pointer -- cannot vouch for the
+        # open segment's existence/anchoring; treat as a head break.
+        report["head_ok"] = False
+        report["manifest_breaks"].append("head-missing")
+
+    # 2. Validate each sealed segment: it must exist, verify internally, its
+    #    terminal hash must match the manifest, and it must anchor onto its
+    #    predecessor's terminal hash.
+    prev_terminal = ""
+    for e in segs:
+        seq = int(e.get("seq", -1))
+        seg_file = ledger_dir / str(e.get("segment", ""))
+        rep = {"seq": seq, "segment": e.get("segment"), "ok": True}
+        if not seg_file.exists():
+            report["missing_segments"].append(e.get("segment"))
+            report["segment_breaks"].append(seq)
+            rep["ok"] = False
+            report["segments"].append(rep)
+            # Cannot continue the cross-segment anchor walk past a gap.
+            prev_terminal = str(e.get("terminal_row_hash", ""))
+            continue
+        seg_rows, _ = load(seg_file)
+        # Cross-segment continuity: this segment's chain must anchor onto its
+        # predecessor's terminal hash. seq 1 anchors off "" (genesis / legacy
+        # prefix); seq N onto seg N-1's terminal. The recorded predecessor must
+        # equal what the walk says, AND the rows must actually validate from it.
+        recorded_pred = str(e.get("predecessor_row_hash", ""))
+        if recorded_pred != prev_terminal:
+            report["anchor_breaks"].append(seq)
+            rep["ok"] = False
+        # Internal chain validation FROM the anchor (a re-anchored segment does
+        # not validate under the genesis-prev assumption of plain ``verify``).
+        if not _verify_rows_from_anchor(seg_rows, prev_terminal):
+            report["segment_breaks"].append(seq)
+            rep["ok"] = False
+        # Terminal hash must match the manifest's record for this segment.
+        actual_terminal = ""
+        for r in seg_rows:
+            if r.get("row_hash"):
+                actual_terminal = str(r["row_hash"])
+        if actual_terminal != str(e.get("terminal_row_hash", "")):
+            report["segment_breaks"].append(seq)
+            rep["ok"] = False
+        report["segments"].append(rep)
+        prev_terminal = str(e.get("terminal_row_hash", ""))
+
+    # 3. Validate the open HEAD segment: it must exist, verify internally, and
+    #    its anchor row must chain off the last sealed segment's terminal hash.
+    if head is not None:
+        if not open_path.exists():
+            report["head_ok"] = False
+            report["missing_segments"].append(open_path.name)
+        else:
+            open_rows, _ = load(open_path)
+            expected_anchor = str(head.get("open_anchor_prev_hash", ""))
+            # The open segment re-anchors onto the last sealed terminal hash, so
+            # validate its internal chain FROM that anchor (not genesis-prev).
+            if not _verify_rows_from_anchor(open_rows, expected_anchor):
+                report["head_ok"] = False
+            anchor_row = next(
+                (r for r in open_rows if r.get("drop_id") == ROTATION_ANCHOR), None
+            )
+            if anchor_row is None:
+                report["head_ok"] = False
+            elif str(anchor_row.get("predecessor_row_hash", "")) != expected_anchor:
+                report["head_ok"] = False
+            # The last sealed segment's terminal hash must equal what HEAD claims.
+            if segs and str(head.get("last_sealed_terminal_hash", "")) != prev_terminal:
+                report["head_ok"] = False
+
+    report["ok"] = (
+        not report["manifest_breaks"]
+        and not report["segment_breaks"]
+        and not report["anchor_breaks"]
+        and not report["missing_segments"]
+        and report["head_ok"]
+    )
+    return report
+
+
+def load_window(ledger_dir: Path, name: str, *, since) -> tuple[list[dict], list[str]]:
+    """Windowed read: rows with ``ts >= since``, newest segments first, bounded.
+
+    Reads the open segment, then walks sealed segments newest-first via the
+    manifest, stopping as soon as a whole segment lies entirely before
+    ``since`` -- so a year of history is never fully parsed to answer a
+    recent-window query. ``since`` is an ISO-8601 string compared
+    lexicographically (ISO-8601 seconds sort chronologically). Returns
+    ``(rows, warnings)`` in chronological (oldest-first) order, EXCLUDING the
+    rotation marker / anchor bookkeeping rows. Result equals a full ``load``
+    of every segment filtered to ``ts >= since``.
+    """
+    ledger_dir = Path(ledger_dir)
+    since_s = str(since)
+    warnings: list[str] = []
+    collected: list[dict] = []
+
+    def _keep(r: dict) -> bool:
+        if r.get("drop_id") in (ROTATION_MARKER, ROTATION_ANCHOR):
+            return False
+        return str(r.get("ts", "")) >= since_s
+
+    # Open segment (always the newest rows).
+    open_path = _open_segment_path(ledger_dir, name)
+    open_rows, w = load(open_path)
+    warnings.extend(w)
+    collected.extend(r for r in open_rows if _keep(r))
+
+    # Sealed segments, newest-first; stop once an entire segment predates since.
+    entries = _load_manifest(ledger_dir, name)
+    for e in reversed(_manifest_segments(entries)):
+        seg_file = ledger_dir / str(e.get("segment", ""))
+        if not seg_file.exists():
+            warnings.append(f"missing segment {e.get('segment')}")
+            continue
+        seg_rows, w = load(seg_file)
+        warnings.extend(w)
+        kept = [r for r in seg_rows if _keep(r)]
+        collected.extend(kept)
+        # If NONE of this segment's data rows fall in the window, every older
+        # segment is also out of range (segments are time-ordered) -- stop.
+        data_rows = [
+            r for r in seg_rows if r.get("drop_id") not in (ROTATION_MARKER, ROTATION_ANCHOR)
+        ]
+        if data_rows and not kept:
+            break
+
+    collected.sort(key=lambda r: str(r.get("ts", "")))
+    return collected, warnings
 
 
 def load(path: Path) -> tuple[list[dict], list[str]]:

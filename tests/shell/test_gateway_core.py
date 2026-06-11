@@ -79,11 +79,12 @@ def _core(tmp_path, *, surface="telegram", allowlist=None, max_sensitivity="inte
 
     if builder is None:
         def builder(user_id, instance, r, *, ceiling_override, write_actor,
-                    write_gate):
+                    write_role, write_gate):
             captured["calls"].append({
                 "user_id": user_id, "instance": instance, "root": r,
                 "ceiling_override": ceiling_override,
-                "write_actor": write_actor, "write_gate": write_gate,
+                "write_actor": write_actor, "write_role": write_role,
+                "write_gate": write_gate,
             })
             return FakeLoop()
 
@@ -123,6 +124,48 @@ def test_core_injects_ceiling_actor_and_gate(tmp_path):
     # write_gate is a non-None callable bound to the core's allow_write.
     assert call["write_gate"] is not None
     assert callable(call["write_gate"])
+    # role is resolved explicitly (P5S-14): never left for the kernel's
+    # "unknown" default, and a user-tier allowlist entry resolves to "user".
+    assert call["write_role"] == "user"
+
+
+# --------------------------------------------------------------------------- #
+# P5-T2 / P5S-13: identity role resolution + gateway admin-clamp
+# --------------------------------------------------------------------------- #
+def test_gateway_clamps_admin_role_to_user(tmp_path):
+    """A crafted/mangled gateway allowlist entry with role: admin still resolves
+    a non-privileged 'user' role into the write verbs (P5S-13). The clamp is
+    logged. Admin is never threaded into a gateway write."""
+    logs = []
+    allow = {"42": {"role": "admin", "instance": "main"}}
+    core, root, captured = _core(tmp_path, allowlist=allow)
+    core.logger = lambda m: logs.append(m)
+    reply = core.handle(_inbound())
+    assert isinstance(reply, OutboundReply)
+    assert captured["calls"][0]["write_role"] == "user"
+    assert any("clamp" in m.lower() for m in logs)
+
+
+def test_gateway_role_always_explicit_even_when_entry_omits_it(tmp_path):
+    """An allowlist entry with no role key still resolves an EXPLICIT 'user'
+    role (P5S-14): the gateway never relies on the kernel's "unknown" default,
+    which is reserved for bare kernel-CLI writes."""
+    allow = {"42": {"instance": "main"}}  # no role key
+    core, root, captured = _core(tmp_path, allowlist=allow)
+    core.handle(_inbound())
+    assert captured["calls"][0]["write_role"] == "user"
+
+
+def test_gateway_role_invariant_across_entry_roles(tmp_path):
+    """Whatever role an entry claims, the gateway resolves the same clamped
+    'user' -- role is attribution and the gateway tier is non-privileged. (The
+    write verbs themselves are role-invariant downstream; here we pin that the
+    gateway never emits anything but 'user'.)"""
+    for claimed in ("user", "admin", "Admin", "ADMIN", "superuser", ""):
+        allow = {"42": {"role": claimed, "instance": "main"}}
+        core, root, captured = _core(tmp_path, allowlist=allow)
+        core.handle(_inbound())
+        assert captured["calls"][0]["write_role"] == "user", claimed
 
 
 def test_core_namespaces_actor_per_surface(tmp_path):
@@ -197,7 +240,7 @@ def test_empty_text_returns_none(tmp_path):
 def test_ledger_pinned_shape_and_telemetry(tmp_path):
     allow = {"42": {"role": "user", "instance": "main"}}
 
-    def builder(user_id, instance, r, *, ceiling_override, write_actor, write_gate):
+    def builder(user_id, instance, r, *, ceiling_override, write_actor, write_role, write_gate):
         return FakeLoop(repairs=2, redacted_count=1)
 
     core, root, _ = _core(tmp_path, allowlist=allow, builder=builder)
@@ -227,7 +270,7 @@ def test_repair_cap_refuses_before_model_call(tmp_path):
     allow = {"42": {"role": "user", "instance": "main"}}
     built = []
 
-    def builder(user_id, instance, r, *, ceiling_override, write_actor, write_gate):
+    def builder(user_id, instance, r, *, ceiling_override, write_actor, write_role, write_gate):
         loop = FakeLoop(repairs=2)
         built.append(loop)
         return loop
@@ -246,7 +289,7 @@ def test_repair_cap_refuses_before_model_call(tmp_path):
 def test_no_repair_cap_when_unconfigured(tmp_path):
     allow = {"42": {"role": "user", "instance": "main"}}
 
-    def builder(user_id, instance, r, *, ceiling_override, write_actor, write_gate):
+    def builder(user_id, instance, r, *, ceiling_override, write_actor, write_role, write_gate):
         return FakeLoop(repairs=5)
 
     core, root, _ = _core(tmp_path, allowlist=allow, builder=builder)
@@ -289,7 +332,7 @@ def test_turn_holds_root_lock(tmp_path):
 def test_turn_failure_returns_error_reply(tmp_path):
     allow = {"42": {"role": "user", "instance": "main"}}
 
-    def builder(user_id, instance, r, *, ceiling_override, write_actor, write_gate):
+    def builder(user_id, instance, r, *, ceiling_override, write_actor, write_role, write_gate):
         return BombLoop()
 
     core, root, _ = _core(tmp_path, allowlist=allow, builder=builder)
@@ -318,7 +361,7 @@ def test_loop_cached_across_handles(tmp_path):
     allow = {"42": {"role": "user", "instance": "main"}}
     built = []
 
-    def builder(user_id, instance, r, *, ceiling_override, write_actor, write_gate):
+    def builder(user_id, instance, r, *, ceiling_override, write_actor, write_role, write_gate):
         loop = FakeLoop()
         built.append(loop)
         return loop

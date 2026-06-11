@@ -655,6 +655,7 @@ def run_dream(root: Path, *, now: Optional[datetime] = None,
                     "actor": DREAM_ACTOR,
                 },
                 id_prefix="DRM",
+                auto_rotate=True,  # audit-critical: cross-segment rotation (P5-T8)
             )
         except Exception:
             pass

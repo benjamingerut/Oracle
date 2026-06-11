@@ -228,6 +228,13 @@ class Dispatcher:
     scrub_env: list[str] = field(default_factory=list)
     tool_result_max_chars: int = 20000
     write_actor: str | None = None   # e.g. "gateway_user:123" (M4 provenance)
+    # The resolved Principal's role (P5-T2). Threaded as ``--role`` into the
+    # model-invokable write verbs (remember/capture) as ATTRIBUTION only: the
+    # kernel verbs are role-INVARIANT (P5S-13), so this never changes what they
+    # do and never widens the model's tool surface (I2). ``None`` => no --role
+    # appended (the kernel's "unknown" default stands -- reserved for bare
+    # kernel-CLI writes, P5S-14). The gateway/local builders always set it.
+    write_role: str | None = None
     write_gate: object = None        # optional callable() -> bool (M4 rate limit)
     timeout: float = 120.0
     # Phase 8 (P8S-3): the PURE query-embedder seam. ``None`` => lexical search
@@ -459,6 +466,8 @@ class Dispatcher:
             argv += ["--learned-claim", c]
         if self.write_actor:
             argv += ["--actor", self.write_actor]
+        if self.write_role:
+            argv += ["--role", self.write_role]
         argv += ["--json"]
         rc, out, _err = self._run(argv)
         return ToolOutcome(self._cap(out.strip() or "[remembered]"), rc=rc)
@@ -482,6 +491,8 @@ class Dispatcher:
                 argv += ["--failure-mode", fm]
         if self.write_actor:
             argv += ["--actor", self.write_actor]
+        if self.write_role:
+            argv += ["--role", self.write_role]
         argv += ["--json"]
         rc, out, _err = self._run(argv)
         return ToolOutcome(self._cap(out.strip() or "[captured]"), rc=rc)

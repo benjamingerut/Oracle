@@ -43,6 +43,15 @@ _LOOP_CACHE_SIZE = 64
 # Public-cap label used when a reply lands on a non-private channel (P4S-5).
 _PUBLIC = "public"
 
+# The ONLY role a gateway-surface principal can resolve to (P5S-13). A gateway
+# allowlist entry that claims ``role: admin`` (crafted, mangled, or fat-fingered)
+# is CLAMPED to this non-privileged role: admin is honored only for writes the
+# human performs directly via ``oracle kernel``/CLI on the local attended
+# surface, never threaded into a gateway write. Role is attribution only and the
+# kernel write verbs are role-invariant, but clamping keeps the ledger honest
+# and forecloses any future role-sensitive path being reached from chat.
+_GATEWAY_ROLE = "user"
+
 
 # --------------------------------------------------------------------------- #
 # Normalized wire types (P4S-1/5)
@@ -97,9 +106,10 @@ class GatewayCore:
 
     ``loop_builder`` carries the pinned signature
     ``loop_builder(user_id, instance, root, *, ceiling_override, write_actor,
-    write_gate)`` (in production a thin shim over ``builder.build_loop`` with
-    ``surface="gateway"`` hard-coded). Core injects all three keyword args
-    itself -- no adapter or serve wiring can substitute any of them (P4S-2).
+    write_role, write_gate)`` (in production a thin shim over
+    ``builder.build_loop`` with ``surface="gateway"`` hard-coded). Core injects
+    all four keyword args itself -- no adapter or serve wiring can substitute any
+    of them (P4S-2). ``write_role`` is the clamped principal role (P5S-13).
     """
 
     def __init__(self, surface_cfg: dict, surface: str,
@@ -181,7 +191,8 @@ class GatewayCore:
                     f"gateway[{self.surface}]: on_authorized hook raised "
                     f"{type(exc).__name__} (ignored)")
 
-        loop = self._loop_for(user_id, instance, root, msg.is_private)
+        write_role = self._resolve_role(user_id, raw_entry)
+        loop = self._loop_for(user_id, instance, root, msg.is_private, write_role)
 
         # Per-user repair cap (P3S-3): refuse before any model call when over.
         if not self._allow_repairs(user_id):
@@ -207,9 +218,28 @@ class GatewayCore:
         self._ledger(root, msg, result, added_seconds)
         return OutboundReply(msg.channel_id, result.text)
 
+    # -- identity (P5-T2): resolve + clamp the principal's role -------------- #
+    def _resolve_role(self, user_id: str, raw_entry: dict) -> str:
+        """The gateway-resolved, ALWAYS-CLAMPED role for this principal (P5S-13).
+
+        The allowlist entry's ``role`` is read for the ledger's sake, but any
+        gateway-surface ``admin`` is clamped to the non-privileged ``user`` (and
+        the clamp is logged). A crafted or mangled allowlist entry can therefore
+        never thread ``--role admin`` into a gateway write. The role is always
+        resolved EXPLICITLY here so the kernel's ``"unknown"`` default stays
+        reserved for bare kernel-CLI writes (P5S-14).
+        """
+        claimed = raw_entry.get("role")
+        if isinstance(claimed, str) and claimed.strip().lower() != _GATEWAY_ROLE:
+            self.logger(
+                f"gateway[{self.surface}]: allowlist entry for {user_id} claims "
+                f"role={claimed!r}; clamping to {_GATEWAY_ROLE!r} "
+                f"(gateway roles are non-privileged, P5S-13)")
+        return _GATEWAY_ROLE
+
     # -- loop cache (LRU, capacity 64; P4S-3) ------------------------------- #
     def _loop_for(self, user_id: str, instance: str, root: Path,
-                  is_private: bool):
+                  is_private: bool, write_role: str = _GATEWAY_ROLE):
         # The core-owned ceiling: per-surface max_sensitivity, hard-capped at
         # ``public`` when the channel is not a private 1:1 (P4S-5). Cache key
         # carries the effective ceiling so a private and a (hypothetical) non-
@@ -227,6 +257,7 @@ class GatewayCore:
             user_id, instance, root,
             ceiling_override=ceiling,
             write_actor=actor,
+            write_role=write_role,
             write_gate=gate,
         )
         if len(self._loops) >= _LOOP_CACHE_SIZE:

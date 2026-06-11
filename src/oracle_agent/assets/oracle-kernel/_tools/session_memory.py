@@ -214,9 +214,18 @@ def capture_session(
     latency_ms: Optional[int] = None,
     sensitivity: str = "internal",
     actor: str = "",
+    role: str = "unknown",
     now: Optional[datetime] = None,
 ) -> dict:
-    """Capture one material session as structured Meta memory."""
+    """Capture one material session as structured Meta memory.
+
+    ``role`` is pure attribution (P5S-13): it is recorded on the ledger row and
+    the session note's frontmatter so audit names *who* under *what* role, but
+    it NEVER changes what this verb does -- capture is role-invariant. The
+    ``"unknown"`` default is reserved for bare kernel-CLI writes; the shell
+    surfaces (gateway, ``oracle chat``) always pass an explicitly resolved role
+    (P5S-14).
+    """
     root = Path(root)
     now = now or _now_default()
     request = str(user_request or "").strip()
@@ -243,6 +252,7 @@ def capture_session(
         "latency_ms": latency_ms,
         "sensitivity": sens,
         "actor": actor or "",
+        "role": str(role or "unknown"),
         "status": "captured",
     }
     session_id = ledger.append(_ledger_path(root), row, id_prefix="SES")
@@ -259,6 +269,7 @@ def capture_session(
         "status": "captured",
         "tags": ["meta", "session", "dreaming"],
         "actor": actor or "",
+        "role": str(role or "unknown"),
         "session_drop_id": session_id,
         "business_objects": row["business_objects"],
         "source_ids": row["source_ids"],
@@ -860,6 +871,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_cap.add_argument("--latency-ms", type=int)
     p_cap.add_argument("--sensitivity", default="internal", choices=SENSITIVITY_ORDER)
     p_cap.add_argument("--actor", default="")
+    p_cap.add_argument(
+        "--role", default="unknown",
+        help="attribution only -- recorded, never gates this verb (P5S-13). "
+             "'unknown' is reserved for bare kernel-CLI writes (P5S-14).",
+    )
     p_cap.add_argument("--json", action="store_true")
 
     p_list = sub.add_parser("list", help="list captured sessions")
@@ -902,6 +918,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 latency_ms=args.latency_ms,
                 sensitivity=args.sensitivity,
                 actor=args.actor,
+                role=args.role,
             )
             if args.json:
                 _print_json(out)

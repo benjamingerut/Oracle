@@ -51,18 +51,20 @@ def _gateway_loop_builder(cfg: dict):
 
     The transport name never reaches ``build_loop`` (P4S-1): every gateway
     message is served on the literal ``"gateway"`` loop surface. The core
-    injects ``ceiling_override``/``write_actor``/``write_gate`` itself; this
-    shim merely forwards them -- there is no path by which an adapter or serve
-    wiring can substitute any of the four (the holder hack is gone).
+    injects ``ceiling_override``/``write_actor``/``write_role``/``write_gate``
+    itself; this shim merely forwards them -- there is no path by which an
+    adapter or serve wiring can substitute any of the five (the holder hack is
+    gone). ``write_role`` is the clamped principal role (P5-T2 / P5S-13).
     """
     from ..agentloop.builder import build_loop
 
     def loop_builder(user_id, instance, root, *, ceiling_override,
-                     write_actor, write_gate):
+                     write_actor, write_role, write_gate):
         return build_loop(
             cfg, root, surface="gateway",
             ceiling_override=ceiling_override,
             write_actor=write_actor,
+            write_role=write_role,
             write_gate=write_gate,
         )
 

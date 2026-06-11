@@ -536,7 +536,9 @@ def log_action_event(root: Path, *, action: str, scope: dict, phase: str,
         "result": str(result),
         "reason": str(reason or ""),
     }
-    return ledger.append(_ledger_path(root), row, id_prefix="ACT")
+    # action_event is audit-critical: append with cross-segment rotation so the
+    # ledger survives years of appends with chain integrity preserved (P5-T8).
+    return ledger.append(_ledger_path(root), row, id_prefix="ACT", auto_rotate=True)
 
 
 def guard(action: str, scope: Any, *, root: Path,

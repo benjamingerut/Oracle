@@ -340,11 +340,11 @@ class TelegramGateway:
         surface_cfg = ((cfg.get("gateway") or {}).get("telegram") or {})
 
         # Adapt the legacy loop_factory into the pinned core loop_builder. The
-        # core injects ceiling_override/write_actor/write_gate; the legacy
-        # factory ignores them (production serve passes the real builder shim,
-        # which honors them; tests pass a 3-arg FakeLoop factory).
+        # core injects ceiling_override/write_actor/write_role/write_gate; the
+        # legacy factory ignores them (production serve passes the real builder
+        # shim, which honors them; tests pass a 3-arg FakeLoop factory).
         def loop_builder(user_id, instance, root, *, ceiling_override,
-                         write_actor, write_gate):
+                         write_actor, write_role, write_gate):
             return loop_factory(user_id, instance, root)
 
         self.core = GatewayCore(

@@ -397,7 +397,7 @@ def _core(tmp_path, surface_cfg, captured):
     root = tmp_path / "root"
     (root / "Meta.nosync" / "ledgers").mkdir(parents=True, exist_ok=True)
 
-    def builder(user_id, instance, r, *, ceiling_override, write_actor, write_gate):
+    def builder(user_id, instance, r, *, ceiling_override, write_actor, write_role, write_gate):
         captured.append({"ceiling_override": ceiling_override,
                          "write_actor": write_actor})
         return FakeLoop()

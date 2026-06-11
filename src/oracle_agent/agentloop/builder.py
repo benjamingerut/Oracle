@@ -67,6 +67,7 @@ def build_loop(cfg: dict, root: Path, *, surface: str,
                ceiling_override: str | None = None,
                grounding_override: str | None = None,
                write_actor: str | None = None,
+               write_role: str = "user",
                write_gate=None) -> AgentLoop:
     """Construct a ready AgentLoop for ``root`` on ``surface``.
 
@@ -80,6 +81,16 @@ def build_loop(cfg: dict, root: Path, *, surface: str,
     sole forced-grounding decision point (P3S-9): the mode is fixed at
     construction and no tool output, prompt injection, or config read can flip
     it mid-session.
+
+    ``write_actor``/``write_role`` are the resolved Principal's attribution
+    (P5-T2): they are threaded into the model-invokable write verbs' argv as
+    ``--actor``/``--role`` so the kernel ledgers name *who* wrote under *what*
+    role. Both are attribution only -- role is role-INVARIANT through these
+    verbs (P5S-13) and NEVER widens the model's tool surface (I2). ``write_role``
+    defaults to ``"user"``: the attended local surface is a non-privileged
+    model-driven write path; admin is reserved for the human's direct kernel
+    CLI. The gateway always injects an explicitly resolved (and clamped) role
+    via the pinned ``loop_builder`` seam, so the default never applies there.
     """
     prov = cfg.get("provider") or {}
     base_url = prov.get("base_url", "")
@@ -177,6 +188,7 @@ def build_loop(cfg: dict, root: Path, *, surface: str,
         profile_dir=config.profile_dir(), scrub_env=scrub,
         tool_result_max_chars=int((cfg.get("chat") or {}).get("tool_result_max_chars", 20000)),
         write_actor=write_actor,
+        write_role=write_role,
         write_gate=write_gate,
         query_embedder=query_embedder,
     )

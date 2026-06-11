@@ -197,6 +197,74 @@ def test_write_gate_blocks_remember(spawned_root):
     assert "rate limit" in out2.text
 
 
+# --------------------------------------------------------------------------- #
+# P5-T2: --role threading into the model-invokable write verbs (attribution).
+# --------------------------------------------------------------------------- #
+def _capture_argv(monkeypatch):
+    captured = {}
+    import oracle_agent.agentloop.verbtools as vt
+
+    def fake_run(self, argv, stdin=None):
+        captured["argv"] = argv
+        return 0, "{}", ""
+
+    monkeypatch.setattr(vt.Dispatcher, "_run", fake_run)
+    return captured
+
+
+def test_remember_threads_actor_and_role(spawned_root, monkeypatch):
+    captured = _capture_argv(monkeypatch)
+    _disp(spawned_root, write_actor="gateway_user:telegram:42",
+          write_role="user").dispatch(
+        "oracle_remember", {"user_request": "x", "answer_summary": "y"})
+    argv = captured["argv"]
+    assert "--actor" in argv and argv[argv.index("--actor") + 1] == "gateway_user:telegram:42"
+    assert "--role" in argv and argv[argv.index("--role") + 1] == "user"
+
+
+def test_capture_threads_actor_and_role(spawned_root, monkeypatch):
+    captured = _capture_argv(monkeypatch)
+    _disp(spawned_root, write_actor="gateway_user:slack:U1",
+          write_role="user").dispatch(
+        "oracle_capture", {"kind": "feedback", "target": "t", "polarity": "positive"})
+    argv = captured["argv"]
+    assert "--role" in argv and argv[argv.index("--role") + 1] == "user"
+
+
+def test_write_role_none_omits_role_flag(spawned_root, monkeypatch):
+    """When no role is resolved (write_role=None) the dispatcher appends NO
+    --role, leaving the kernel's "unknown" default for bare kernel-CLI writes
+    (P5S-14). Mirrors the write_actor=None behavior."""
+    captured = _capture_argv(monkeypatch)
+    _disp(spawned_root, write_actor=None, write_role=None).dispatch(
+        "oracle_remember", {"user_request": "x", "answer_summary": "y"})
+    assert "--role" not in captured["argv"]
+    assert "--actor" not in captured["argv"]
+
+
+def test_write_verb_argv_role_invariant_except_for_role_value(spawned_root, monkeypatch):
+    """The remember argv is identical regardless of the resolved role value
+    except for the --role slot itself -- role is attribution, never capability,
+    so it never changes WHICH verb/flags the model's write composes (P5S-13)."""
+    captured = _capture_argv(monkeypatch)
+    _disp(spawned_root, write_actor="a", write_role="user").dispatch(
+        "oracle_remember", {"user_request": "x", "answer_summary": "y"})
+    argv_user = list(captured["argv"])
+    _disp(spawned_root, write_actor="a", write_role="admin").dispatch(
+        "oracle_remember", {"user_request": "x", "answer_summary": "y"})
+    argv_admin = list(captured["argv"])
+
+    def _blank_role(argv):
+        argv = list(argv)
+        if "--role" in argv:
+            argv[argv.index("--role") + 1] = "<ROLE>"
+        return argv
+
+    assert _blank_role(argv_user) == _blank_role(argv_admin)
+    assert argv_user[argv_user.index("--role") + 1] == "user"
+    assert argv_admin[argv_admin.index("--role") + 1] == "admin"
+
+
 def test_search_real_subprocess_succeeds(spawned_root):
     """Regression: the built argv must actually parse in the kernel CLI."""
     out = _disp(spawned_root).dispatch("oracle_search", {"terms": "anything at all"})

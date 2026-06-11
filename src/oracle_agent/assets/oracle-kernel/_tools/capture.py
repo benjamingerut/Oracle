@@ -340,6 +340,7 @@ def _write_event(
     title: str,
     sensitivity: str,
     actor: Optional[str],
+    role: str,
     tags: Optional[list],
     body: Optional[str],
     now: datetime,
@@ -365,6 +366,7 @@ def _write_event(
         "kind": spec["type"],
         "target": target,
         "actor": actor or "",
+        "role": str(role or "unknown"),
         "consumed_by": list(spec["consumed_by"]),
     }
     row.update(ledger_extra)
@@ -392,6 +394,7 @@ def _write_event(
     }
     if actor:
         fm["actor"] = actor
+    fm["role"] = str(role or "unknown")
     fm.update(fm_extra)
 
     errors = _validate_note(root, fm)
@@ -455,6 +458,7 @@ def feedback_event(
     strength: Any = 1.0,
     excerpt: Optional[str] = None,
     actor: Optional[str] = None,
+    role: str = "unknown",
     sensitivity: str = "internal",
     tags: Optional[list] = None,
     body: Optional[str] = None,
@@ -484,6 +488,7 @@ def feedback_event(
         title=title,
         sensitivity=sensitivity,
         actor=actor,
+        role=role,
         tags=tags,
         body=body,
         now=now,
@@ -499,6 +504,7 @@ def value_event(
     value_kind: Optional[str] = None,
     excerpt: Optional[str] = None,
     actor: Optional[str] = None,
+    role: str = "unknown",
     sensitivity: str = "internal",
     tags: Optional[list] = None,
     body: Optional[str] = None,
@@ -533,6 +539,7 @@ def value_event(
         title=title,
         sensitivity=sensitivity,
         actor=actor,
+        role=role,
         tags=tags,
         body=body,
         now=now,
@@ -547,6 +554,7 @@ def failure_event(
     failure_mode: Optional[str] = None,
     excerpt: Optional[str] = None,
     actor: Optional[str] = None,
+    role: str = "unknown",
     sensitivity: str = "internal",
     tags: Optional[list] = None,
     body: Optional[str] = None,
@@ -597,6 +605,7 @@ def failure_event(
         title=title,
         sensitivity=sensitivity,
         actor=actor,
+        role=role,
         tags=tags,
         body=body,
         now=now,
@@ -695,6 +704,9 @@ def main(argv: list[str] | None = None) -> int:
     p_fb.add_argument("--strength", default="1.0")
     p_fb.add_argument("--excerpt")
     p_fb.add_argument("--actor")
+    p_fb.add_argument("--role", default="unknown",
+                      help="attribution only -- recorded, never gates capture "
+                           "(P5S-13); 'unknown' is for bare kernel-CLI writes (P5S-14)")
     p_fb.add_argument("--sensitivity", default="internal")
     p_fb.add_argument("--json", action="store_true")
 
@@ -705,6 +717,9 @@ def main(argv: list[str] | None = None) -> int:
     p_val.add_argument("--value-kind", choices=list(VALUE_KINDS))
     p_val.add_argument("--excerpt")
     p_val.add_argument("--actor")
+    p_val.add_argument("--role", default="unknown",
+                       help="attribution only -- recorded, never gates capture "
+                            "(P5S-13); 'unknown' is for bare kernel-CLI writes (P5S-14)")
     p_val.add_argument("--sensitivity", default="internal")
     p_val.add_argument("--json", action="store_true")
 
@@ -714,6 +729,9 @@ def main(argv: list[str] | None = None) -> int:
     p_fail.add_argument("--failure-mode")
     p_fail.add_argument("--excerpt")
     p_fail.add_argument("--actor")
+    p_fail.add_argument("--role", default="unknown",
+                        help="attribution only -- recorded, never gates capture "
+                             "(P5S-13); 'unknown' is for bare kernel-CLI writes (P5S-14)")
     p_fail.add_argument("--sensitivity", default="internal")
     p_fail.add_argument("--json", action="store_true")
 
@@ -732,6 +750,7 @@ def main(argv: list[str] | None = None) -> int:
                 strength=args.strength,
                 excerpt=args.excerpt,
                 actor=args.actor,
+                role=args.role,
                 sensitivity=args.sensitivity,
             )
         elif args.cmd == "value":
@@ -743,6 +762,7 @@ def main(argv: list[str] | None = None) -> int:
                 value_kind=args.value_kind,
                 excerpt=args.excerpt,
                 actor=args.actor,
+                role=args.role,
                 sensitivity=args.sensitivity,
             )
         elif args.cmd == "failure":
@@ -753,6 +773,7 @@ def main(argv: list[str] | None = None) -> int:
                 failure_mode=args.failure_mode,
                 excerpt=args.excerpt,
                 actor=args.actor,
+                role=args.role,
                 sensitivity=args.sensitivity,
             )
         elif args.cmd == "scorecard":

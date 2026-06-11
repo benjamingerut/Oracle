@@ -69,7 +69,7 @@ def _core(tmp_path, allowlist, *, max_sensitivity="internal"):
                    "per_user_writes_per_hour": 20}
     loops = {}
 
-    def builder(user_id, instance, r, *, ceiling_override, write_actor, write_gate):
+    def builder(user_id, instance, r, *, ceiling_override, write_actor, write_role, write_gate):
         loop = FakeLoop()
         loops[(user_id, instance)] = loop
         return loop

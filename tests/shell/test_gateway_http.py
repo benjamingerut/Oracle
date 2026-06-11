@@ -54,7 +54,7 @@ def _core(tmp_path, *, root_lock_factory=None, allowlist=None):
         "principal": PRINCIPAL,
     }
 
-    def builder(user_id, instance, r, *, ceiling_override, write_actor, write_gate):
+    def builder(user_id, instance, r, *, ceiling_override, write_actor, write_role, write_gate):
         return FakeLoop()
 
     core = GatewayCore(surface_cfg, "http", {"main": root}, builder,
