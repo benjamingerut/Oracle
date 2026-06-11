@@ -355,7 +355,8 @@ interfaces/tasks above. Summary of accepted findings and where each landed:
       spawned root through the real kernel subprocess; tampered file refused;
       cross-origin refused; path escape refused; no secret ever archived;
       0600/0700 enforced.
-- [x] `make check` green locally (892 tests); new tests added. CI matrix
+- [x] `make check` green locally (866 tests collected, 865 passed + 1
+      skipped); new tests added. CI matrix
       confirmation pending next push (the suite is the gate on every cell).
 
 **Phase 1 completed 2026-06-10.**
