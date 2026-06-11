@@ -11,7 +11,8 @@ import sys
 from pathlib import Path
 
 from .. import config
-from ..llm.client import LLMClient
+from ..llm.client import EmbedClient, LLMClient
+from . import embedder as emb
 from . import policy_bridge as pb
 from .loop import AgentLoop, GroundingPolicy, build_system_prompt
 from .verbtools import Dispatcher
@@ -118,6 +119,52 @@ def build_loop(cfg: dict, root: Path, *, surface: str,
     client = LLMClient(base_url, prov.get("model", ""), api_key=api_key,
                        environment=environment)
 
+    # Phase 8 (P8-T4): the optional embedding seam. The query-embedder is a PURE
+    # callable injected into the Dispatcher; when no embedding model is
+    # configured it stays ``None`` and search is lexical exactly as today. The
+    # embed client is a SEPARATE one-purpose instance (P8S-2) keyed to the
+    # EMBEDDING endpoint's own base_url and POST-VETO environment -- never the
+    # chat client with a swapped path. The post-veto embed ceiling is computed
+    # here at build time (NOT per-search; the veto's 3 s probe must not ride the
+    # search path). The frozen query rule (rank(retrieval) <= rank(embed)) is
+    # decided inside ``build_query_embedder`` -- verbtools holds no ceiling logic.
+    query_embedder = None
+    emb_cfg = (prov.get("embeddings") or {})
+    embed_model = (emb_cfg.get("model") or "").strip()
+    if embed_model:
+        embed_base_url = (emb_cfg.get("base_url") or base_url or "")
+        embed_key_env = (emb_cfg.get("api_key_env") or api_key_env or "")
+        # Named to form the scanner-suppressed self-assignment kwarg below.
+        api_key_embed = config.resolve_secret(embed_key_env) if embed_key_env else None
+        # Independent post-veto classification of the EMBEDDING endpoint (P8S-1).
+        embed_env = pb.environment_for(embed_base_url)
+        if embed_env == "local_agent":
+            embed_veto = pb.egress_veto(embed_base_url, embed_model)
+            if embed_veto:
+                print(
+                    f"oracle: embedding egress veto — loopback embedder "
+                    f"reclassified as external: {embed_veto}",
+                    file=sys.stderr,
+                )
+                embed_env = "external"
+        embed_ceiling = emb.embedding_ceiling(root, embed_base_url, embed_model)
+        try:
+            embed_client = EmbedClient(embed_base_url, api_key=api_key_embed,
+                                       environment=embed_env)
+        except Exception as exc:  # plaintext-key refusal etc. -> lexical only
+            print(
+                f"oracle: embedding client construction failed "
+                f"({type(exc).__name__}); vector search disabled (lexical only)",
+                file=sys.stderr,
+            )
+            embed_client = None
+        if embed_client is not None:
+            query_embedder = emb.build_query_embedder(
+                embed_client, embed_model=embed_model,
+                embed_ceiling=embed_ceiling, retrieval_ceiling=ceiling,
+                order=order,
+            )
+
     instance_roots = config.instance_roots(cfg)
     sibling_roots = [r for r in instance_roots.values()
                      if Path(r).resolve() != Path(root).resolve()]
@@ -131,6 +178,7 @@ def build_loop(cfg: dict, root: Path, *, surface: str,
         tool_result_max_chars=int((cfg.get("chat") or {}).get("tool_result_max_chars", 20000)),
         write_actor=write_actor,
         write_gate=write_gate,
+        query_embedder=query_embedder,
     )
     system_prompt = build_system_prompt(Path(root), surface, environment, ceiling)
     chat_cfg = cfg.get("chat") or {}

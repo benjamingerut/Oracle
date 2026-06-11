@@ -82,6 +82,11 @@ CONSUMPTION_LEDGER = "Meta.nosync/ledgers/event_consumption.jsonl"
 EXPORT_LEDGER = "Meta.nosync/ledgers/export_event.jsonl"
 AUTONOMY_LEDGER = "Meta.nosync/ledgers/autonomy_event.jsonl"
 DREAM_LEDGER = "Meta.nosync/ledgers/dream_session.jsonl"
+# Retrieval telemetry (P8-T7): monthly-rotated, so we glob rather than name one
+# file. The query text is never present -- only a salted query_hmac + metadata.
+LEDGERS_DIR = "Meta.nosync/ledgers"
+RETRIEVAL_LEDGER_GLOB = "retrieval_event-*.jsonl"
+SOURCES_DIR = "Memory.nosync/Sources"
 
 DEFAULT_WINDOW_DAYS = 30
 # A composite has to move by more than this to count as a real direction.
@@ -395,6 +400,156 @@ def _kpi_dream(root: Path, start: datetime, end: datetime) -> dict:
     return {"sessions": len(rows), "ok": ok}
 
 
+def _load_retrieval_rows(root: Path) -> list[dict]:
+    """Load every monthly-rotated retrieval_event ledger, concatenated.
+
+    Each month is a separate file with its own hash chain; we only need the
+    rows. ``ledger.load`` is corruption-tolerant and never raises.
+    """
+    folder = Path(root) / LEDGERS_DIR
+    rows: list[dict] = []
+    if not folder.is_dir():
+        return rows
+    for p in sorted(folder.glob(RETRIEVAL_LEDGER_GLOB)):
+        these, _w = ledger.load(p)
+        rows.extend(these)
+    return rows
+
+
+def _answer_cited_source_ids(root: Path, start: datetime, end: datetime) -> set[str]:
+    """All source_ids cited by an exit-0 ``answer_event`` in the window.
+
+    ``answer_event`` rows gained an additive ``source_ids`` field (the cited
+    sources); a legacy row without it contributes nothing.
+    """
+    cited: set[str] = set()
+    for r in _load(root, ANSWER_LEDGER):
+        if not _in_window(r, start, end):
+            continue
+        if str(r.get("exit_code", "")).strip() != "0":
+            continue
+        for sid in r.get("source_ids") or []:
+            s = str(sid).strip()
+            if s:
+                cited.add(s)
+    return cited
+
+
+def _source_ingest_dates(root: Path) -> dict[str, datetime]:
+    """Map source_id -> earliest ingest/as_of/created date from Source notes.
+
+    Used for time_to_first_grounded_answer. The source_id is the note's
+    ``source_id``/``id``; the date is the first of created/ingested/as_of that
+    parses. Best-effort: a malformed note is skipped, never fatal.
+    """
+    out: dict[str, datetime] = {}
+    folder = Path(root) / SOURCES_DIR
+    if not folder.is_dir():
+        return out
+    for p in sorted(folder.glob("*.md")):
+        if p.name.startswith("_"):
+            continue
+        try:
+            fm, _body = _split_frontmatter(p.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+        sid = ""
+        for key in ("source_id", "id"):
+            v = str(fm.get(key, "") or "").strip()
+            if v:
+                sid = v
+                break
+        if not sid:
+            continue
+        dt = None
+        for key in ("ingested", "created", "as_of"):
+            dt = parse_dt(fm.get(key))
+            if dt is not None:
+                break
+        if dt is not None:
+            out[sid] = dt
+    return out
+
+
+def _kpi_retrieval(root: Path, start: datetime, end: datetime) -> dict:
+    """The ``retrieval`` KPI section (P8-T7), all metadata-only.
+
+      * searches / non_empty_rate / hybrid_share / vector_coverage --
+        straight off the retrieval_event rows in the window.
+      * retrieval_hit_rate -- share of window searches whose top_source_ids
+        intersect the source_ids cited by an exit-0 answer_event in the window
+        (a proxy: did the searches surface what the grounded answers cited?).
+      * time_to_first_grounded_answer -- median days from a source's ingest to
+        the first exit-0 answer citing it (honestly derivable from
+        answer_event.source_ids timestamps + Source-note ingest dates).
+    """
+    rows = [r for r in _load_retrieval_rows(root) if _in_window(r, start, end)]
+    searches = len(rows)
+    non_empty = sum(1 for r in rows if int(r.get("result_count", 0) or 0) > 0)
+    hybrid = sum(1 for r in rows if bool(r.get("hybrid")))
+    # Latest non-null coverage seen in the window (coverage drifts as backfill
+    # progresses; the most recent reading is the current state).
+    coverage = None
+    for r in rows:
+        cov = r.get("vector_coverage")
+        if cov is not None:
+            coverage = cov
+
+    cited = _answer_cited_source_ids(root, start, end)
+    hits = 0
+    for r in rows:
+        top = {str(s).strip() for s in (r.get("top_source_ids") or []) if str(s).strip()}
+        if top and (top & cited):
+            hits += 1
+    hit_rate = round(hits / searches, 4) if searches else None
+
+    ttfga = _time_to_first_grounded_answer(root, start, end)
+
+    return {
+        "searches": searches,
+        "non_empty_rate": round(non_empty / searches, 4) if searches else None,
+        "hybrid_share": round(hybrid / searches, 4) if searches else None,
+        "vector_coverage": coverage,
+        "retrieval_hit_rate": hit_rate,
+        "time_to_first_grounded_answer": ttfga,
+    }
+
+
+def _time_to_first_grounded_answer(root: Path, start: datetime, end: datetime):
+    """Median days from a source's ingest to the FIRST exit-0 answer citing it.
+
+    Considers exit-0 answer_event rows in the window; for each cited source_id
+    with a known ingest date, the latency is (first citing answer ts - ingest).
+    Returns the median across sources first-grounded in the window, or None.
+    """
+    ingest = _source_ingest_dates(root)
+    if not ingest:
+        return None
+    first_cite: dict[str, datetime] = {}
+    for r in _load(root, ANSWER_LEDGER):
+        if not _in_window(r, start, end):
+            continue
+        if str(r.get("exit_code", "")).strip() != "0":
+            continue
+        ts = parse_dt(r.get("ts"))
+        if ts is None:
+            continue
+        for sid in r.get("source_ids") or []:
+            s = str(sid).strip()
+            if not s:
+                continue
+            if s not in first_cite or ts < first_cite[s]:
+                first_cite[s] = ts
+    latencies: list[float] = []
+    for sid, cite_ts in first_cite.items():
+        ing = ingest.get(sid)
+        if ing is not None and cite_ts >= ing:
+            latencies.append((cite_ts - ing).total_seconds() / 86400.0)
+    if not latencies:
+        return None
+    return round(statistics.median(latencies), 2)
+
+
 def compute_kpis(root: Path, *, start: datetime, end: datetime) -> dict:
     """All KPI sections for (start, end]. Read-only and deterministic."""
     root = Path(root)
@@ -413,6 +568,7 @@ def compute_kpis(root: Path, *, start: datetime, end: datetime) -> dict:
         "improvements": improvements,
         "admin_actions": _kpi_admin_actions(root, start, end, verified),
         "dream": _kpi_dream(root, start, end),
+        "retrieval": _kpi_retrieval(root, start, end),
     }
 
 
@@ -535,6 +691,15 @@ def _fm_kpis(kpis: dict) -> dict:
         out["improvements_proposed_open"] = improvements.get("proposed_open", 0)
         out["improvements_verified_in_window"] = improvements.get("verified_in_window", 0)
         out["improvements_regressed_in_window"] = improvements.get("regressed_in_window", 0)
+    retrieval = kpis.get("retrieval", {})
+    if isinstance(retrieval, dict):
+        out["retrieval_searches"] = retrieval.get("searches", 0)
+        out["retrieval_hit_rate"] = retrieval.get("retrieval_hit_rate")
+        out["retrieval_hybrid_share"] = retrieval.get("hybrid_share")
+        out["retrieval_vector_coverage"] = retrieval.get("vector_coverage")
+        out["time_to_first_grounded_answer"] = retrieval.get(
+            "time_to_first_grounded_answer"
+        )
     return out
 
 
@@ -581,6 +746,7 @@ def _render_body(fm: dict, kpis: dict, prior: Optional[dict]) -> str:
         f"- improvements: {json.dumps(kpis['improvements'], default=str)}",
         f"- admin actions: {json.dumps(kpis['admin_actions'], default=str)}",
         f"- dream sessions: {json.dumps(kpis['dream'], default=str)}",
+        f"- retrieval: {json.dumps(kpis.get('retrieval', {}), default=str)}",
         "",
         "## Carry forward",
         "",

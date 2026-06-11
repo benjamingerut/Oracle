@@ -459,3 +459,12 @@ def test_self_assignment_kwarg_not_flagged():
     assert not _has("client = LLMClient(url, api_key=api_key,", "generic_assignment")
     assert not _has("connect(password=password)", "generic_assignment")
     assert not _has("token = token", "generic_assignment")
+
+
+def test_identifier_shaped_value_not_flagged():
+    """An unquoted snake_case identifier in value position is a variable
+    reference (api_key=resolved_key), never a literal secret."""
+    assert not _has("EmbedClient(url, api_key=api_key_embed,", "generic_assignment")
+    assert not _has("connect(password=db_password_var)", "generic_assignment")
+    # Quoted literals of the same shape are still secrets.
+    assert _has('api_key = "super_secret_value"', "generic_assignment")

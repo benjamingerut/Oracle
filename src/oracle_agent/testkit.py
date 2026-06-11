@@ -208,6 +208,95 @@ class FakeLLM:
 
 
 # ---------------------------------------------------------------------------
+# FakeEmbedClient (Phase 8 / P8-T4, additive to the frozen P1-T2 interface)
+# ---------------------------------------------------------------------------
+
+class FakeEmbedClient:
+    """Scripted embeddings client that RECORDS every request payload.
+
+    Mirrors the surface of :class:`oracle_agent.llm.client.EmbedClient` --
+    ``embed(texts, *, model) -> list[list[float]]`` -- but performs no network
+    egress. Every ``embed`` call appends ``{"model": model, "texts": [...]}`` to
+    ``requests`` so a test can assert exactly which text reached the (simulated)
+    embedding endpoint. This is the embedding analogue of
+    :meth:`FakeLLM.assert_no_content_above`: the egress enforcer's whole job is
+    to keep above-ceiling chunk/query text OUT of any embedding request, and
+    this fake makes that byte-checkable.
+
+    Vectors are produced by ``vector_fn(text) -> list[float]`` (a deterministic
+    synthetic embedding by default), so the recorded count matches the input and
+    the kernel ``vectors-add`` round-trips. Set ``fail=True`` (or a specific
+    ``exc``) to simulate a transport failure, exercising the silent-lexical
+    degradation path.
+    """
+
+    def __init__(self, vector_fn=None, *, dim: int = 8, fail: bool = False,
+                 exc: Exception | None = None):
+        self.requests: list[dict] = []
+        self._dim = dim
+        self._vector_fn = vector_fn or self._default_vector
+        self.fail = fail
+        self._exc = exc
+
+    def _default_vector(self, text: str) -> list[float]:
+        """Deterministic non-zero synthetic embedding (stdlib hashlib)."""
+        import hashlib
+
+        out: list[float] = []
+        for i in range(self._dim):
+            h = hashlib.sha256(f"{i}:{text}".encode("utf-8")).digest()
+            out.append((h[0] / 255.0) - 0.5 + 1e-6)  # avoid an all-zero vector
+        return out
+
+    def embed(self, texts, *, model: str):
+        self.requests.append({"model": model, "texts": list(texts)})
+        if self.fail or self._exc is not None:
+            from oracle_agent.llm.client import LLMError
+            raise self._exc or LLMError(
+                "network", "simulated embed transport failure",
+                status=None, retryable=True,
+            )
+        return [self._vector_fn(str(t)) for t in texts]
+
+    # -- content scanning ---------------------------------------------------- #
+
+    @property
+    def all_texts(self) -> list[str]:
+        """Every text string ever sent to ``embed()``, across all requests."""
+        out: list[str] = []
+        for req in self.requests:
+            out.extend(req.get("texts") or [])
+        return out
+
+    def assert_no_text(self, needle: str) -> None:
+        """Assert ``needle`` never appeared in any embedding request text.
+
+        The primary enforcer assertion: an above-ceiling chunk's distinctive
+        text (or an above-ceiling query) must never reach the embedder. The test
+        plants a known marker in the above-ceiling content and asserts it never
+        egressed.
+        """
+        for req_idx, req in enumerate(self.requests):
+            for txt_idx, txt in enumerate(req.get("texts") or []):
+                if needle in str(txt):
+                    raise AssertionError(
+                        f"FakeEmbedClient.assert_no_text({needle!r}): found in "
+                        f"request {req_idx} text {txt_idx} (model="
+                        f"{req.get('model')!r}). Above-ceiling content egressed "
+                        f"to the embedding endpoint."
+                    )
+
+    def assert_no_requests(self) -> None:
+        """Assert the embedder was never called at all (zero egress)."""
+        if self.requests:
+            raise AssertionError(
+                f"FakeEmbedClient.assert_no_requests(): expected zero embedding "
+                f"requests but recorded {len(self.requests)} "
+                f"(models: {[r.get('model') for r in self.requests]})."
+            )
+
+
+# ---------------------------------------------------------------------------
 # Harness
 # ---------------------------------------------------------------------------
 

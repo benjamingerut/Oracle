@@ -115,6 +115,151 @@ def _is_ollama_tags_reachable(base_url: str) -> bool:
     return isinstance(data, dict) and isinstance(data.get("models"), list)
 
 
+def _kernel_index_stats(root: Path) -> dict | None:
+    """Run the kernel's ``oracle search stats`` (read-only) and parse the JSON.
+
+    Returns the stats dict (chunks, vectors, vector_coverage, by_embedding_model,
+    dim_mismatches, ...) or ``None`` on any failure. Doctor stays read-only.
+    """
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(root / "oracle"), "search", "stats"],
+            cwd=str(root), capture_output=True, text=True, timeout=60,
+        )
+    except Exception:
+        return None
+    out = (proc.stdout or "").strip()
+    if not out:
+        return None
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+#: Mirror of knowledge_index.VECTOR_CONTINGENCY_THRESHOLD (P8S-7). The kernel is
+#: vendored and never imported by the shell (I3); this constant is duplicated as
+#: DATA so doctor can warn at the same corpus crossing the kernel pins. Kept in
+#: sync by test_embedder_enforcer.py::test_doctor_contingency_threshold_matches_kernel.
+_VECTOR_CONTINGENCY_THRESHOLD = 100_000
+
+
+def _check_vectors(rep: "Report", name: str, root: Path,
+                   embed_model: str, embed_env: str) -> None:
+    """Per-instance vector-store health (P8-T6): coverage, orphan, contingency.
+
+    Read-only via ``oracle search stats``. Reports:
+      * vector coverage for the active embedding model (a coverage COLLAPSE
+        relative to the chunk count is the post-reindex / DB-loss signature,
+        since a wipe now implies a full-corpus re-egress -- P8S-13);
+      * dim mismatches (same model name, different dim -- never fused, P8S-11);
+      * a warning once the active-model vector count crosses the corpus
+        contingency threshold (reduced-dimensions-then-int8 ladder, P8S-7).
+
+    The orphan-vector backstop (P8S-6) is reported only when non-empty -- a
+    single-transaction lifecycle should keep it empty; a non-empty result is the
+    crash-tolerance signal that a vector outlived its chunk.
+    """
+    stats = _kernel_index_stats(root)
+    if stats is None:
+        return  # stats unavailable -> nothing to report (not a failure)
+    chunks = int(stats.get("chunks") or 0)
+    vec_total = int(stats.get("vectors") or 0)
+    by_model = stats.get("by_embedding_model") or {}
+    coverage = stats.get("vector_coverage") or {}
+    dim_mismatches = int(stats.get("dim_mismatches") or 0)
+
+    if not embed_model:
+        if vec_total:
+            rep.add(WARN, f"instance '{name}': {vec_total} vector(s) present but no "
+                          "embedding model is configured (orphaned coverage)",
+                    "set provider.embeddings.model or run vectors-prune")
+        return
+
+    # Vector search is only meaningful for surfaces at/below the embed ceiling;
+    # an external/public embedder embeds public chunks only. State coverage.
+    active_cov = float(coverage.get(embed_model) or 0.0)
+    active_n = int(by_model.get(embed_model) or 0)
+    if chunks == 0:
+        pass  # zero-source instance already warned elsewhere
+    elif active_n == 0:
+        rep.add(WARN, f"instance '{name}': embedding model {embed_model!r} has no "
+                      "vectors yet (search is lexical-only until backfill runs)",
+                "the backfill drains pending chunks on scheduler ticks "
+                "(autonomy must be enabled); a reindex/DB-loss implies a "
+                "full-corpus re-embed through the egress endpoint")
+    elif active_cov < 0.5:
+        rep.add(WARN, f"instance '{name}': vector coverage for {embed_model!r} is "
+                      f"{active_cov:.0%} ({active_n}/{chunks}) — likely a coverage "
+                      "collapse after a reindex/_wipe/DB loss (full-corpus re-embed "
+                      "needed; auditable via embedding_event)",
+                "let the backfill re-embed (autonomy on); confidential+ stays "
+                "lexical-only by design")
+    else:
+        rep.add(OK, f"instance '{name}': vector coverage {active_cov:.0%} for "
+                    f"{embed_model!r}")
+
+    if dim_mismatches:
+        rep.add(WARN, f"instance '{name}': {dim_mismatches} vector(s) share the "
+                      "active model name but a different dim — skipped, never "
+                      "fused (P8S-11)",
+                "vectors-prune the stale-dim model, then re-embed under the "
+                "current dim")
+
+    if active_n >= _VECTOR_CONTINGENCY_THRESHOLD:
+        rep.add(WARN, f"instance '{name}': {active_n} vectors for {embed_model!r} "
+                      f"crosses the brute-force contingency threshold "
+                      f"({_VECTOR_CONTINGENCY_THRESHOLD}) — interactive search "
+                      "latency may degrade on the floor interpreter",
+                "activate the contingency ladder IN ORDER: reduced provider "
+                "`dimensions` (e.g. 256-512) first, then int8 quantization")
+
+    orphans = _kernel_orphan_vectors(root)
+    if orphans:
+        rep.add(FAIL, f"instance '{name}': {len(orphans)} orphan vector(s) — a "
+                      "vector outlived its chunk (crash mid single-transaction "
+                      "lifecycle, P8S-6)",
+                "run a reindex to rebuild the index cleanly (vectors are "
+                "re-embedded through the egress endpoint)")
+
+
+def _kernel_orphan_vectors(root: Path) -> list:
+    """Cheap orphan-vector backstop (P8S-6) via the kernel index module.
+
+    Shells out to a one-liner that calls ``KnowledgeIndex.orphan_vectors()``
+    against the root's own vendored kernel (read-only). Any error -> empty (the
+    backstop must never itself red-flag a healthy install).
+    """
+    import subprocess
+
+    code = (
+        "import json,sys;"
+        "sys.path.insert(0, '_tools');"
+        "import knowledge_index as k;"
+        "idx=k.KnowledgeIndex(root='.');"
+        "print(json.dumps(idx.orphan_vectors()));"
+        "idx.close()"
+    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=str(root), capture_output=True, text=True, timeout=60,
+        )
+    except Exception:
+        return []
+    out = (proc.stdout or "").strip()
+    if not out:
+        return []
+    try:
+        data = json.loads(out.splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        return []
+    return data if isinstance(data, list) else []
+
+
 def _count_real_sources(root: Path) -> int:
     """Count non-template markdown files in ``Memory.nosync/Sources/``.
 
@@ -300,6 +445,15 @@ def run(instance: str | None = None) -> Report:
     if not roots:
         rep.add(WARN, "no instances registered", "run `oracle setup` or `oracle spawn`")
     vendored = _vendored_tools_version()
+    # Phase 8 (P8-T6): resolve the embedding endpoint's POST-VETO environment +
+    # ceiling once, so the per-instance vector-health check and the
+    # embedding-endpoint provider row agree. The embedding endpoint is
+    # classified INDEPENDENTLY of the chat endpoint (P8S-1).
+    _prov = cfg.get("provider") or {}
+    _emb_cfg = (_prov.get("embeddings") or {})
+    embed_model = (_emb_cfg.get("model") or "").strip()
+    embed_base_url = (_emb_cfg.get("base_url") or _prov.get("base_url") or "")
+    embed_env = pb.environment_for(embed_base_url) if embed_model else "external"
     for name, root in roots.items():
         if not (root / "oracle.yml").exists():
             rep.add(FAIL, f"instance '{name}': root missing oracle.yml ({root})",
@@ -332,6 +486,10 @@ def run(instance: str | None = None) -> Report:
         # a remote probe is authenticated egress -- the same kind doctor already
         # performs for the LLM provider -- but no bytes are pulled into _INPUT).
         _check_connectors(rep, name, root)
+
+        # per-instance vector-store health (P8-T6): coverage, dim mismatches,
+        # orphan backstop, contingency threshold. Read-only via search stats.
+        _check_vectors(rep, name, root, embed_model, embed_env)
 
     # provider
     prov = cfg.get("provider") or {}
@@ -373,6 +531,48 @@ def run(instance: str | None = None) -> Report:
     elif env_key:
         rep.add(OK, f"provider API key resolvable via {env_key}")
     _probe_models(rep, base_url)
+
+    # embedding endpoint (Phase 8 / P8-T6). The embedding endpoint is content
+    # egress; its POST-VETO environment + ceiling are classified INDEPENDENTLY
+    # of the chat endpoint (P8S-1). Doctor names the veto reason when one fired,
+    # and states plainly that internal+ surfaces are lexical-only when the
+    # embedder is external/vetoed.
+    if not embed_model:
+        rep.add(OK, "embedding endpoint: not configured (vector search disabled; "
+                    "lexical-only retrieval)")
+    else:
+        _emb_veto = None
+        if embed_env == "local_agent":
+            _emb_veto = pb.egress_veto(embed_base_url, embed_model, timeout=3.0)
+        post_veto_env = "external" if _emb_veto else embed_env
+        if _emb_veto:
+            # A vetoed loopback config: name the proxied remote host (the veto
+            # reason carries it) and state the consequence.
+            rep.add(FAIL,
+                    f"embedding model {embed_model!r} on a loopback endpoint is "
+                    f"cloud-proxied: {_emb_veto} — reclassified external, so "
+                    "internal+ surfaces are embedded NOT AT ALL (lexical-only)",
+                    "use a fully local embedder, or accept public-only vector "
+                    "search")
+        elif post_veto_env == "external":
+            rep.add(OK, f"embedding endpoint: external ({embed_base_url}) — "
+                        f"PUBLIC chunks/queries only; internal+ surfaces are "
+                        f"lexical-only by design (the egress ceiling is public)")
+        elif _is_ollama_tags_reachable(embed_base_url):
+            rep.add(OK, f"embedding endpoint: local_agent, egress veto clear "
+                        f"({embed_model!r}) — chunks up to internal embedded")
+        else:
+            rep.add(WARN,
+                    f"embedding endpoint {embed_base_url}: cannot verify "
+                    "processing locality (non-Ollama loopback server?) — "
+                    "loopback != no forwarding (STRESS C2)",
+                    "if this is Ollama ensure /api/tags is reachable; otherwise "
+                    "confirm the embedder does not forward off-box")
+        if _is_non_loopback_http(embed_base_url):
+            rep.add(FAIL,
+                    "embedding endpoint is plain http:// to a non-loopback host "
+                    "— an API key would be sent in cleartext",
+                    "set an https:// embeddings base_url")
 
     # gateway
     tg = ((cfg.get("gateway") or {}).get("telegram") or {})

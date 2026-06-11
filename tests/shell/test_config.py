@@ -560,29 +560,229 @@ def test_embeddings_base_url_alter_caught(profile, monkeypatch):
         config.load_config()
 
 
-def test_security_key_preserved_for_wildcard_providers(profile, monkeypatch):
-    """providers.*.api_key_env wildcard must be checked for each provider entry."""
+# NOTE: the former ``test_security_key_preserved_for_wildcard_providers`` was
+# REMOVED in P4 (P4S-16). It exercised the dead ``providers.*.api_key_env``
+# wildcard against a plural ``providers`` dict that never exists in the real
+# config (the real key is singular ``provider``), so it protected nothing and
+# passed for the wrong reason. The wildcard is now corrected to the singular
+# ``provider.api_key_env`` non-wildcard path; see
+# ``test_provider_api_key_env_drop_caught`` / ``_alter_caught`` below.
+
+
+# --------------------------------------------------------------------------- #
+# P4-T3/T4 — config v3 gateway blocks (slack / email / http) + briefings
+# --------------------------------------------------------------------------- #
+def test_config_version_is_3():
+    assert config.CONFIG_VERSION == 3
+
+
+def test_v3_migration_registered_and_noop_stamps_version():
+    """The v2->v3 migration is a no-op structural bump (stamps version only)."""
+    assert 2 in config.MIGRATIONS
+    raw = {"version": 2, "provider": {"name": "test"}, "gateway": {}}
+    migrated = config.MIGRATIONS[2](raw)
+    assert migrated["version"] == 3
+    # No structural change beyond the stamp.
+    assert migrated["provider"] == {"name": "test"}
+    assert migrated["gateway"] == {}
+
+
+def test_email_block_defaults(profile):
+    cfg = config.load_config()
+    em = cfg["gateway"]["email"]
+    assert em["enabled"] is False
+    # P4S-10: ceiling HARD-CAPPED at public by default (authserv_id null).
+    assert em["max_sensitivity"] == "public"
+    assert em["authserv_id"] is None
+    assert em["per_sender_turns_per_hour"] == 10
+    assert em["poll_seconds"] == 60
+    assert em["user_env"] and em["pass_env"]
+    assert em["allowlist"] == {}
+
+
+def test_http_block_defaults(profile):
+    cfg = config.load_config()
+    h = cfg["gateway"]["http"]
+    assert h["enabled"] is False
+    assert h["bind"] == "127.0.0.1"
+    assert h["port"] == 8765
+    assert h["principal"] == "http-operator"
+    assert h["max_sensitivity"] == "internal"
+    assert h["token_env"]
+
+
+def test_slack_block_defaults(profile):
+    cfg = config.load_config()
+    s = cfg["gateway"]["slack"]
+    assert s["enabled"] is False
+    assert s["max_sensitivity"] == "internal"
+    assert s["token_env"] and s["signing_secret_env"]
+
+
+def test_briefings_block_present_and_empty(profile):
+    cfg = config.load_config()
+    assert cfg["briefings"] == {}
+
+
+# --------------------------------------------------------------------------- #
+# P4S-16 — new SECURITY_KEYS enumerated
+# --------------------------------------------------------------------------- #
+def test_new_security_keys_registered():
+    for key in (
+        "gateway.slack.enabled", "gateway.slack.allowlist",
+        "gateway.slack.max_sensitivity", "gateway.slack.token_env",
+        "gateway.slack.signing_secret_env",
+        "gateway.email.enabled", "gateway.email.allowlist",
+        "gateway.email.max_sensitivity", "gateway.email.user_env",
+        "gateway.email.pass_env", "gateway.email.imap_host",
+        "gateway.email.smtp_host", "gateway.email.authserv_id",
+        "gateway.http.enabled", "gateway.http.max_sensitivity",
+        "gateway.http.token_env", "gateway.http.bind", "gateway.http.port",
+        "briefings",
+    ):
+        assert key in config.SECURITY_KEYS, f"missing SECURITY_KEY: {key}"
+
+
+def test_email_smtp_host_drop_caught(profile, monkeypatch):
+    """A migration dropping gateway.email.smtp_host is a hard load error
+    (P4S-16: redirecting smtp_host silently exfiltrates output)."""
     import copy as _copy
 
-    def _bad_migrate_drops_api_key(raw: dict) -> dict:
-        """Drop api_key_env from all providers sub-entries."""
+    def _bad_migrate(raw: dict) -> dict:
         out = _copy.deepcopy(raw)
-        out["version"] = 2
-        for prov in out.get("providers", {}).values():
-            prov.pop("api_key_env", None)
+        out["version"] = 3
+        try:
+            del out["gateway"]["email"]["smtp_host"]
+        except KeyError:
+            pass
         return out
 
-    monkeypatch.setitem(config.MIGRATIONS, 1, _bad_migrate_drops_api_key)
+    monkeypatch.setitem(config.MIGRATIONS, 2, _bad_migrate)
 
     p = config.config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    v1 = {
-        "providers": {
-            "openai": {"api_key_env": "OPENAI_KEY"},
-            "anthropic": {"api_key_env": "ANTHROPIC_KEY"},
-        }
-    }
-    p.write_text(json.dumps(v1) + "\n", encoding="utf-8")
+    v2 = {"version": 2, "gateway": {"email": {
+        "enabled": True, "imap_host": "imap.co.com", "smtp_host": "smtp.co.com",
+        "allowlist": {"ceo@co.com": {"role": "user", "instance": "x"}},
+        "max_sensitivity": "public", "authserv_id": None,
+        "user_env": "U", "pass_env": "P"}}}
+    p.write_text(json.dumps(v2) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"[Ss]ecurity key"):
+        config.load_config()
+
+    assert json.loads(p.read_text())["gateway"]["email"]["smtp_host"] == "smtp.co.com"
+
+
+def test_http_bind_alter_caught(profile, monkeypatch):
+    """A migration that repoints gateway.http.bind to a public address is refused."""
+    import copy as _copy
+
+    def _bad_migrate(raw: dict) -> dict:
+        out = _copy.deepcopy(raw)
+        out["version"] = 3
+        out["gateway"]["http"]["bind"] = "0.0.0.0"  # silent exposure
+        return out
+
+    monkeypatch.setitem(config.MIGRATIONS, 2, _bad_migrate)
+
+    p = config.config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    v2 = {"version": 2, "gateway": {"http": {
+        "enabled": True, "bind": "127.0.0.1", "port": 8765,
+        "token_env": "T", "max_sensitivity": "internal"}}}
+    p.write_text(json.dumps(v2) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"[Ss]ecurity key"):
+        config.load_config()
+
+
+def test_briefings_alter_caught(profile, monkeypatch):
+    """A migration that rewrites a briefing target is refused (P4S-15/16)."""
+    import copy as _copy
+
+    def _bad_migrate(raw: dict) -> dict:
+        out = _copy.deepcopy(raw)
+        out["version"] = 3
+        out["briefings"]["main"]["targets"][0]["address"] = "attacker@evil.com"
+        return out
+
+    monkeypatch.setitem(config.MIGRATIONS, 2, _bad_migrate)
+
+    p = config.config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    v2 = {"version": 2, "briefings": {"main": {"targets": [
+        {"surface": "email", "address": "ceo@co.com"}]}}}
+    p.write_text(json.dumps(v2) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"[Ss]ecurity key"):
+        config.load_config()
+
+
+# --------------------------------------------------------------------------- #
+# P4S-16 — the dead providers.*.api_key_env wildcard is FIXED to
+# provider.api_key_env (singular), with a regression test.
+# --------------------------------------------------------------------------- #
+def test_provider_api_key_env_is_a_security_key():
+    assert "provider.api_key_env" in config.SECURITY_KEYS
+    # The dead plural wildcard is gone.
+    assert "providers.*.api_key_env" not in config.SECURITY_KEYS
+
+
+def test_provider_api_key_env_resolves_through_singular_nesting():
+    """The corrected non-wildcard path matches the real SINGULAR provider key."""
+    d = {"provider": {"api_key_env": "ORACLE_LLM_API_KEY"}}
+    assert config._get_dotted(d, "provider.api_key_env") == "ORACLE_LLM_API_KEY"
+
+
+def test_provider_api_key_env_drop_caught(profile, monkeypatch):
+    """A migration dropping provider.api_key_env is now a hard error (was DEAD).
+
+    This is the P4S-16 regression: the chat egress credential name was
+    effectively unprotected under the dead plural wildcard.
+    """
+    import copy as _copy
+
+    def _bad_migrate(raw: dict) -> dict:
+        out = _copy.deepcopy(raw)
+        out["version"] = 3
+        try:
+            del out["provider"]["api_key_env"]
+        except KeyError:
+            pass
+        return out
+
+    monkeypatch.setitem(config.MIGRATIONS, 2, _bad_migrate)
+
+    p = config.config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    v2 = {"version": 2, "provider": {"name": "anthropic",
+                                     "api_key_env": "ORACLE_LLM_API_KEY"}}
+    p.write_text(json.dumps(v2) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"[Ss]ecurity key"):
+        config.load_config()
+
+    assert json.loads(p.read_text())["provider"]["api_key_env"] == "ORACLE_LLM_API_KEY"
+
+
+def test_provider_api_key_env_alter_caught(profile, monkeypatch):
+    """A migration that REPOINTS provider.api_key_env is refused."""
+    import copy as _copy
+
+    def _bad_migrate(raw: dict) -> dict:
+        out = _copy.deepcopy(raw)
+        out["version"] = 3
+        out["provider"]["api_key_env"] = "ATTACKER_KEY"
+        return out
+
+    monkeypatch.setitem(config.MIGRATIONS, 2, _bad_migrate)
+
+    p = config.config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    v2 = {"version": 2, "provider": {"name": "anthropic",
+                                     "api_key_env": "ORACLE_LLM_API_KEY"}}
+    p.write_text(json.dumps(v2) + "\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match=r"[Ss]ecurity key"):
         config.load_config()

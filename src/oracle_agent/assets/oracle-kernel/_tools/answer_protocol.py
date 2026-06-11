@@ -143,9 +143,17 @@ class Envelope:
     authority_state: str = AUTHORITY_NONE
     evidence_count: int = 0
     suggested_fix: list = field(default_factory=list)
+    # Cited source ids (P8-T7): the Source notes that evidence this answer. Used
+    # ONLY for the additive ``answer_event.source_ids`` telemetry field; it never
+    # affects the verdict. EXCLUDED from to_dict() so the answer-protocol checklist
+    # contract (ANSWER-PROTOCOL.md) stays exactly the 8-check field set -- this is
+    # telemetry, not a protocol field. Metadata-tier (ids, never content).
+    cited_source_ids: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        d.pop("cited_source_ids", None)
+        return d
 
     def exit_code(self) -> int:
         return verdict_exit_code(self)
@@ -576,6 +584,36 @@ def _gather_sources(root: Path, business_object: str, primary_source: str, *, sn
     return out
 
 
+def _source_ids_of(sources: list[dict]) -> list[str]:
+    """Cited source ids from a list of Source frontmatters (P8-T7).
+
+    Prefers the index-side ``source_id`` (the captured-sha256[:12] the knowledge
+    index keys chunks by, so the answer_event ids line up with the retrieval
+    ledger's top_source_ids), then falls back to the note's ``source_id``/``id``.
+    De-dupes, preserves order. Metadata only -- never content.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for fm in sources or []:
+        if not isinstance(fm, dict):
+            continue
+        full = str(fm.get("captured_sha256") or fm.get("sha256") or "").strip()
+        sid = (
+            full[:12]
+            if full
+            else str(
+                fm.get("sha256_12")
+                or fm.get("source_id")
+                or fm.get("id")
+                or ""
+            ).strip()
+        )
+        if sid and sid not in seen:
+            seen.add(sid)
+            out.append(sid)
+    return out
+
+
 def _gather_object_evidence(root: Path, business_object: str, *, snap=None) -> list[dict]:
     """All Source notes claiming ``business_object`` regardless of authority.
 
@@ -798,6 +836,7 @@ def preflight(root, business_object: str, question: Optional[str] = None) -> Env
     # pre-ingest, which caveats rather than grounds).
     sources = _gather_sources(root, bo, primary)
     env.evidence_count = len(sources)
+    env.cited_source_ids = _source_ids_of(sources)
 
     # Check 4: freshness verdict vs the row's budget.
     budget = row.get("freshness budget", "")
@@ -851,6 +890,7 @@ def _candidate_or_refuse(
     env.open_contradictions = _gather_open_contradictions(root, bo)
     env.sensitivity_ceiling = _compute_ceiling(env.truth_map_row or {}, evidence, question)
     env.evidence_count = len(evidence)
+    env.cited_source_ids = _source_ids_of(evidence)
 
     if not evidence:
         env.authority_state = AUTHORITY_NONE
@@ -1037,6 +1077,10 @@ def log_answer_event(root, env: Envelope, *, interface: str = "cli") -> Optional
                 "exit_code": env.exit_code(),
                 "authority_state": env.authority_state,
                 "interface": str(interface or "cli"),
+                # Additive cited-sources field (P8-T7): the scorecard's
+                # retrieval_hit_rate + time_to_first_grounded_answer read this.
+                # Metadata only (ids), never the claim text.
+                "source_ids": list(env.cited_source_ids or []),
             },
             id_prefix="ANS",
         )

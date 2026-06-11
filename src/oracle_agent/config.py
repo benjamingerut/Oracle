@@ -40,7 +40,7 @@ from typing import Callable
 # --------------------------------------------------------------------------- #
 
 #: The current config schema version.  Increment when a migration is added.
-CONFIG_VERSION: int = 2
+CONFIG_VERSION: int = 3
 
 # --------------------------------------------------------------------------- #
 # defaults
@@ -101,8 +101,61 @@ DEFAULT_CONFIG: dict = {
             # (which is hard-coded ENFORCE on the gateway, P3S-11). null = no cap;
             # the per-turn iteration + wall-clock budgets still bound every turn.
             "per_user_repairs_per_hour": None,
-        }
+        },
+        # Phase 4 (P4-T2): Slack surface (Option A, Socket Mode; optional dep).
+        "slack": {
+            "enabled": False,
+            "token_env": "ORACLE_SLACK_TOKEN",
+            "signing_secret_env": "ORACLE_SLACK_SIGNING_SECRET",
+            "allowlist": {},  # {"<U…member id>": {"role": "user", "instance": "<name>"}}
+            "max_sensitivity": "internal",
+            "per_user_writes_per_hour": 20,
+            "per_user_repairs_per_hour": None,
+        },
+        # Phase 4 (P4-T3): email surface (IMAP poll + SMTP send). Layered
+        # fail-closed identity (P4S-10): ``max_sensitivity`` is HARD-CAPPED at
+        # ``public`` by the adapter unless ``authserv_id`` is configured AND a
+        # matching ``Authentication-Results`` header carries ``dmarc=pass`` --
+        # so the config value above public is only an UPPER bound that the
+        # per-message verification can unlock. A per-sender hourly turn cap is
+        # ALWAYS on. Allowlist keys are the full address lowercased, matched
+        # exactly (``user+tag@`` is a DIFFERENT key -> denied, fail closed).
+        "email": {
+            "enabled": False,
+            "imap_host": "",
+            "smtp_host": "",
+            "user_env": "ORACLE_EMAIL_USER",
+            "pass_env": "ORACLE_EMAIL_PASS",
+            "allowlist": {},  # {"ceo@co.com": {"role": "user", "instance": "<name>"}}
+            "max_sensitivity": "public",
+            "authserv_id": None,
+            "per_sender_turns_per_hour": 10,
+            "per_user_writes_per_hour": 20,
+            "per_user_repairs_per_hour": None,
+            "poll_seconds": 60,
+        },
+        # Phase 4 (P4-T4): local HTTP/MCP surface. Loopback-bound, token-
+        # authenticated single principal (the token IS the principal). The
+        # ``bind`` must parse as a literal loopback IP (P4S-7); hostnames
+        # (including ``"localhost"``) and ``0.0.0.0`` are refused at startup.
+        "http": {
+            "enabled": False,
+            "bind": "127.0.0.1",
+            "port": 8765,
+            "token_env": "ORACLE_HTTP_TOKEN",
+            "principal": "http-operator",
+            "max_sensitivity": "internal",
+            "per_user_writes_per_hour": 20,
+            "per_user_repairs_per_hour": None,
+        },
     },
+    # Phase 4 (P4-T8): scheduled briefing delivery targets (P4S-15). Keyed by
+    # instance name; each target must resolve to an ALREADY-allowlisted private
+    # identity on its surface (deny-by-default: no target => no delivery).
+    # Example:
+    #   "<instance>": {"targets": [{"surface": "telegram", "user_id": "12345"},
+    #                              {"surface": "email", "address": "ceo@co.com"}]}
+    "briefings": {},
     "instances": {},  # {"<name>": {"root": "/abs/path"}}
     "ingest_roots": [],
     "default_instance": None,
@@ -121,13 +174,44 @@ SECURITY_KEYS: tuple[str, ...] = (
     "gateway.telegram.allowlist",
     "gateway.telegram.max_sensitivity",
     "gateway.telegram.token_env",
+    # Phase 4 (P4S-16): new per-surface security keys. A migration that drops
+    # or repoints an enabled flag, allowlist, ceiling, credential env name,
+    # IMAP/SMTP host, HTTP bind, or the email authserv-id is exfil-critical:
+    # it could silently widen access, redirect confidential output to an
+    # attacker's mailbox, or expose the loopback surface on a public address.
+    "gateway.slack.enabled",
+    "gateway.slack.allowlist",
+    "gateway.slack.max_sensitivity",
+    "gateway.slack.token_env",
+    "gateway.slack.signing_secret_env",
+    "gateway.email.enabled",
+    "gateway.email.allowlist",
+    "gateway.email.max_sensitivity",
+    "gateway.email.user_env",
+    "gateway.email.pass_env",
+    "gateway.email.imap_host",
+    "gateway.email.smtp_host",
+    "gateway.email.authserv_id",
+    "gateway.http.enabled",
+    "gateway.http.max_sensitivity",
+    "gateway.http.token_env",
+    "gateway.http.bind",
+    "gateway.http.port",
+    # Briefing delivery targets are exfil-critical: a migration that rewrites a
+    # target (surface/user_id/address) silently redirects confidential output.
+    "briefings",
     "chat.grounding_default",
-    "providers.*.api_key_env",
+    # Phase 4 (P4S-16): the dead ``providers.*.api_key_env`` wildcard is FIXED.
+    # The real config key is SINGULAR ``provider`` -- the plural wildcard
+    # expanded against a nonexistent dict and protected nothing. The corrected
+    # non-wildcard path walks the singular nesting; a migration that drops or
+    # repoints ``provider.api_key_env`` (the chat egress credential) is now
+    # refused. Regression: test_provider_api_key_env_drop_caught / _alter_caught.
+    "provider.api_key_env",
     # Phase 8 (P8S-16): the embedding endpoint is content egress; a migration
-    # must never silently drop or repoint it. NOTE these are SINGULAR
-    # ``provider`` dotted paths (not the wildcard ``providers.*`` entry above,
-    # which is DEAD — the real config key is singular ``provider``); the
-    # non-wildcard ``_get_dotted`` walks the nesting, verified by
+    # must never silently drop or repoint it. These are SINGULAR ``provider``
+    # dotted paths (same singular nesting as the corrected ``provider.api_key_env``
+    # above); the non-wildcard ``_get_dotted`` walks the nesting, verified by
     # test_embeddings_security_key_drop_caught / _alter_caught.
     "provider.embeddings.api_key_env",
     "provider.embeddings.base_url",
@@ -249,8 +333,27 @@ def _migrate_v1_to_v2(raw: dict) -> dict:
     return out
 
 
+def _migrate_v2_to_v3(raw: dict) -> dict:
+    """Migrate a v2 config dict to v3 (Phase 4, P4S-16).
+
+    v3 adds the per-surface gateway blocks (slack/email/http) and the
+    ``briefings`` delivery-target block.  These are all backfilled by the
+    ``_deep_merge`` with ``DEFAULT_CONFIG`` AFTER migration, so the migration
+    itself is a NO-OP structural bump: it only stamps the version.
+
+    The bump is deliberate (not skipped): the security-key preservation check
+    only runs when a migration actually fires, so a real version bump makes the
+    check exercise EVERY new SECURITY_KEYS path against existing configs --
+    catching any future migration that would drop or repoint one (P4S-16).
+    """
+    out = copy.deepcopy(raw)
+    out["version"] = 3
+    return out
+
+
 MIGRATIONS: dict[int, Callable[[dict], dict]] = {
     1: _migrate_v1_to_v2,
+    2: _migrate_v2_to_v3,
 }
 
 # Secret-guard patterns (STRESS M3).

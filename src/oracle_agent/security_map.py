@@ -854,6 +854,156 @@ GUARANTEES: list[Guarantee] = [
         kind="test",
         source="P4S-17",
     ),
+
+    # ------------------------------------------------------------------
+    # P8 -- retrieval quality (Phase 8). An embedding request IS content
+    # egress: the policy bridge's environment x sensitivity ceiling, INCLUDING
+    # the egress veto, applies to embedding requests exactly as to chat
+    # requests, enforced at the SHELL dispatch in agentloop/embedder.py (I5),
+    # failing closed (I4). The egress guarantees point at the SHELL enforcer
+    # tests, never at the kernel embedding_event stamp (which is shell
+    # ATTESTATION the kernel cannot verify -- P8S-15).
+    # ------------------------------------------------------------------
+    Guarantee(
+        id="SH-069",
+        statement=(
+            "An embedding request never carries content above the embedding "
+            "endpoint's POST-VETO environment ceiling: the egress veto applies "
+            "to embedding endpoints exactly as to chat endpoints, so a loopback "
+            "Ollama listener serving a ':cloud' (or remote_host-proxied) "
+            "embedding model is reclassified external and embeds nothing above "
+            "public."
+        ),
+        enforcer=(
+            "tests/shell/test_embedder_enforcer.py::test_embed_ceiling_applies_egress_veto"
+        ),
+        kind="test",
+        source="P8S-1",
+    ),
+    Guarantee(
+        id="SH-070",
+        statement=(
+            "An over-ceiling chunk is dropped at the embed dispatch against its "
+            "CURRENT (re-read) sensitivity and is never present in any embedding "
+            "request; an external/public-ceiling embedder embeds public chunks "
+            "only (the dispatch boundary holds, zero reclassification window)."
+        ),
+        enforcer=(
+            "tests/shell/test_embedder_enforcer.py::"
+            "test_embed_dispatch_blocks_over_ceiling_chunks"
+        ),
+        kind="test",
+        source="P8S-14",
+    ),
+    Guarantee(
+        id="SH-071",
+        statement=(
+            "An external/vetoed embedding endpoint (post-veto ceiling 'public') "
+            "never receives a non-public query: vector search is disabled for "
+            "every internal-and-above surface by the frozen query rule "
+            "(rank(retrieval_ceiling) <= rank(embed_ceiling)), and retrieval "
+            "falls back to lexical, silently and correctly."
+        ),
+        enforcer=(
+            "tests/shell/test_embedder_enforcer.py::"
+            "test_external_embedder_disables_vector_search_above_public"
+        ),
+        kind="test",
+        source="P8S-3",
+    ),
+    Guarantee(
+        id="SH-072",
+        statement=(
+            "Any error computing the embedding endpoint's ceiling fails closed "
+            "to 'public', so no embedding request leaves above public when the "
+            "classification path itself errors (fail closed, I4)."
+        ),
+        enforcer=(
+            "tests/shell/test_embedder_enforcer.py::"
+            "test_ceiling_error_fails_closed_no_egress"
+        ),
+        kind="test",
+        source="P8S-1",
+    ),
+    Guarantee(
+        id="SH-073",
+        statement=(
+            "Any embed transport failure (network error, the 10 s query-path "
+            "timeout, or a malformed response) degrades the search silently to "
+            "lexical -- no error is surfaced to the model, and the query vector "
+            "is simply absent."
+        ),
+        enforcer=(
+            "tests/shell/test_embedder_enforcer.py::"
+            "test_query_embedder_silent_lexical_on_transport_failure"
+        ),
+        kind="test",
+        source="P8S-3",
+    ),
+    Guarantee(
+        id="SH-074",
+        statement=(
+            "The vectors-* CLI surface (vectors-add, vectors-pending, "
+            "vectors-prune, --qvec-stdin) is structurally absent from every tool "
+            "schema on every surface, so the model gains neither a bulk "
+            "corpus-text export nor a vector-injection tool (SH-005-style "
+            "structural exclusion)."
+        ),
+        enforcer=(
+            "tests/shell/test_verbtools.py::"
+            "test_vectors_subcommands_absent_from_all_tool_schemas"
+        ),
+        kind="test",
+        source="P8S-10",
+    ),
+    Guarantee(
+        id="SH-075",
+        statement=(
+            "The query-vector stdin payload is composed EXCLUSIVELY by shell "
+            "code -- a config-sourced embedding-model string plus computed "
+            "floats -- so the model-supplied search terms never reach the stdin "
+            "channel and the argv chokepoint discipline (I2) is preserved."
+        ),
+        enforcer=(
+            "tests/shell/test_verbtools.py::"
+            "test_search_qvec_payload_composed_shell_side_only"
+        ),
+        kind="test",
+        source="P8S-3",
+    ),
+    Guarantee(
+        id="SH-076",
+        statement=(
+            "Every embedding batch is ledgered metadata-only: the "
+            "embedding_event row carries source ids, chunk count, model and the "
+            "applied-ceiling attestation, and NEVER chunk text or vectors. The "
+            "environment/ceiling stamp is shell ATTESTATION (the kernel cannot "
+            "verify shell egress, P8S-15); the ENFORCED egress guarantees point "
+            "at the shell enforcer tests above, not at this row."
+        ),
+        enforcer=(
+            "tests/shell/test_embedder_enforcer.py::"
+            "test_embed_pending_writes_metadata_only_ledger"
+        ),
+        kind="test",
+        source="P8S-15",
+    ),
+    Guarantee(
+        id="SH-077",
+        statement=(
+            "Vectors are content-equivalent to their chunk and never out-clear "
+            "it: the shell handoff file carrying vectors to the kernel "
+            "vectors-add chokepoint is created 0600 under the in-root tmp.nosync "
+            "directory and is deleted after the call returns, so vectors never "
+            "transit a world-readable tmp path (P8S-10)."
+        ),
+        enforcer=(
+            "tests/shell/test_embedder_enforcer.py::"
+            "test_embed_pending_handoff_file_is_gone_after"
+        ),
+        kind="test",
+        source="P8S-10",
+    ),
 ]
 
 # ---------------------------------------------------------------------------

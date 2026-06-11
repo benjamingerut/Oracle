@@ -84,20 +84,34 @@ def _line_sha256(raw_line: str) -> str:
 # --------------------------------------------------------------------------- #
 # core API
 # --------------------------------------------------------------------------- #
-def append(path: Path, row: dict, *, id_prefix: str | None = None) -> str:
+#: Sentinel for ``id_prefix`` meaning "mint NO drop_id at all" -- the row's
+#: identity is ``ts`` + ``row_hash``. This skips the id-collision full-file scan
+#: ``append`` otherwise performs, which is the load-bearing property for the
+#: monthly-rotated retrieval ledger's per-search hot path (P8S-8): a search must
+#: not pay a quadratic id-minting scan. Distinct from ``id_prefix=None`` (which
+#: defaults to a generic ``LOG`` id when the row carries no drop_id).
+NO_ID = object()
+
+
+def append(path: Path, row: dict, *, id_prefix=None) -> str:
     """Append a single JSON object as one line, durably.
 
     Acquires an exclusive advisory lock for the duration of the write, emits a
     compact JSON line terminated by a newline, flushes and ``os.fsync``s before
-    releasing the lock. The row is normalised so it always carries ``drop_id``
-    and ``ts``; if the caller omitted ``ts`` we stamp it now.
+    releasing the lock. The row is normalised so it always carries ``ts``; if the
+    caller omitted ``ts`` we stamp it now.
 
-    Collision-safe id minting: if ``id_prefix`` is given, the ``drop_id`` is
+    Collision-safe id minting: if ``id_prefix`` is a string, the ``drop_id`` is
     minted *under the same lock* as the write by scanning the rows already on
     disk -- so two concurrent ``append(..., id_prefix=...)`` calls can never
     mint the same id (there is no read/append TOCTOU gap). If the row already
-    carries a ``drop_id`` it is preserved. With neither, a generic ``LOG`` id is
-    minted under the lock. Returns the final ``drop_id``.
+    carries a ``drop_id`` it is preserved. With ``id_prefix=None`` and no
+    drop_id, a generic ``LOG`` id is minted under the lock.
+
+    Pass ``id_prefix=ledger.NO_ID`` to mint NO drop_id at all -- the row's
+    identity is ``ts`` + ``row_hash``. This deliberately SKIPS the id-collision
+    scan, which is what keeps the per-search retrieval ledger off the quadratic
+    path (P8S-8). Returns the final ``drop_id`` ('' when NO_ID is used).
     """
     path = Path(path)
     if not isinstance(row, dict):
@@ -105,7 +119,10 @@ def append(path: Path, row: dict, *, id_prefix: str | None = None) -> str:
     _ensure_parent(path)
     payload = dict(row)
     payload.setdefault("ts", _now_iso())
-    prefix = id_prefix or (None if payload.get("drop_id") else "LOG")
+    if id_prefix is NO_ID:
+        prefix = None
+    else:
+        prefix = id_prefix or (None if payload.get("drop_id") else "LOG")
     # safe_paths-internal: ledger durability append (caller-supplied contained path)
     with open(path, "a+", encoding="utf-8") as f:  # noqa: SAFEPATHS  # safe_paths-internal
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
@@ -123,7 +140,7 @@ def append(path: Path, row: dict, *, id_prefix: str | None = None) -> str:
             os.fsync(f.fileno())
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-    return str(payload["drop_id"])
+    return str(payload.get("drop_id", ""))
 
 
 def _next_id_locked(f, prefix: str) -> str:

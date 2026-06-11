@@ -63,7 +63,7 @@ def test_answer_above_ceiling_is_withheld(spawned_root, monkeypatch):
     d = _disp(spawned_root, max_sensitivity="public")
     import oracle_agent.agentloop.verbtools as vt
 
-    def fake_run(self, argv):
+    def fake_run(self, argv, stdin=None):
         if argv[0] == "answer":
             env = ('{"business_object":"X","sensitivity_ceiling":"secret",'
                    '"verdict":"grounded","exit_code":0,"suggested_fix":[]}')
@@ -83,7 +83,7 @@ def test_withheld_envelope_carries_withheld_marker(spawned_root, monkeypatch):
     d = _disp(spawned_root, max_sensitivity="public")
     import oracle_agent.agentloop.verbtools as vt
 
-    def fake_run(self, argv):
+    def fake_run(self, argv, stdin=None):
         if argv[0] == "answer":
             env = ('{"business_object":"X","sensitivity_ceiling":"secret",'
                    '"verdict":"grounded","exit_code":0,"suggested_fix":[]}')
@@ -102,7 +102,7 @@ def test_below_ceiling_envelope_is_not_marked_withheld(spawned_root, monkeypatch
     d = _disp(spawned_root, max_sensitivity="secret")
     import oracle_agent.agentloop.verbtools as vt
 
-    def fake_run(self, argv):
+    def fake_run(self, argv, stdin=None):
         if argv[0] == "answer":
             env = ('{"business_object":"X","sensitivity_ceiling":"public",'
                    '"verdict":"grounded","exit_code":0,"suggested_fix":[]}')
@@ -119,7 +119,7 @@ def test_search_forces_ceiling(spawned_root, monkeypatch):
     captured = {}
     import oracle_agent.agentloop.verbtools as vt
 
-    def fake_run(self, argv):
+    def fake_run(self, argv, stdin=None):
         captured["argv"] = argv
         return 0, "[]", ""
 
@@ -270,7 +270,7 @@ def test_smuggled_sensitivity_flag_stripped_from_search_terms(spawned_root, monk
     import oracle_agent.agentloop.verbtools as vt
     captured = {}
 
-    def fake_run(self, argv):
+    def fake_run(self, argv, stdin=None):
         captured["argv"] = argv
         return 0, "[]", ""
 
@@ -292,7 +292,7 @@ def test_smuggled_sensitivity_flag_no_args_form(spawned_root, monkeypatch):
     import oracle_agent.agentloop.verbtools as vt
     captured = {}
 
-    def fake_run(self, argv):
+    def fake_run(self, argv, stdin=None):
         captured["argv"] = argv
         return 0, "[]", ""
 
@@ -312,7 +312,7 @@ def test_tool_result_truncation_respected(spawned_root, monkeypatch):
     """S4: output is capped at tool_result_max_chars and truncation marker appended."""
     import oracle_agent.agentloop.verbtools as vt
 
-    def fake_run(self, argv):
+    def fake_run(self, argv, stdin=None):
         # Return 30 000 chars of output (well above the 20 000 default cap).
         return 0, "A" * 30_000, ""
 
@@ -330,3 +330,91 @@ def test_strip_sensitivity_tokens_unit():
     assert _strip_sensitivity_tokens("no flags here") == "no flags here"
     assert _strip_sensitivity_tokens("--max-sensitivity") == ""
     assert _strip_sensitivity_tokens("  --max-sensitivity=restricted  ") == ""
+
+
+# --------------------------------------------------------------------------- #
+# Phase 8 (P8S-3 / P8S-10): the query-vector seam + structural vectors-* exclusion
+# --------------------------------------------------------------------------- #
+def test_search_qvec_payload_composed_shell_side_only(spawned_root, monkeypatch):
+    """The --qvec-stdin payload is composed EXCLUSIVELY by shell code: a
+    config-sourced model string + computed floats. The model-supplied terms
+    never enter the stdin channel (argv chokepoint discipline preserved)."""
+    import json as _json
+    import oracle_agent.agentloop.verbtools as vt
+
+    captured = {}
+
+    def fake_run(self, argv, stdin=None):
+        captured["argv"] = argv
+        captured["stdin"] = stdin
+        return 0, "[]", ""
+
+    monkeypatch.setattr(vt.Dispatcher, "_run", fake_run)
+
+    # A pure query-embedder that ignores its argument and returns a fixed
+    # shell-composed payload (the real callable is built in agentloop.embedder).
+    def query_embedder(terms):
+        return {"embedding_model": "emb-model", "vector": [0.1, 0.2, 0.3]}
+
+    d = _disp(spawned_root, query_embedder=query_embedder)
+    d.dispatch("oracle_search", {"terms": "SECRET_TERMS_MARKER headcount"})
+    assert "--qvec-stdin" in captured["argv"]
+    payload = _json.loads(captured["stdin"])
+    assert payload["embedding_model"] == "emb-model"
+    assert payload["vector"] == [0.1, 0.2, 0.3]
+    # The model terms never reach the stdin channel.
+    assert "SECRET_TERMS_MARKER" not in captured["stdin"]
+    # The terms still ride the argv --q= element exactly as before.
+    assert any(a.startswith("--q=") for a in captured["argv"])
+
+
+def test_search_lexical_when_embedder_returns_none(spawned_root, monkeypatch):
+    """A query-embedder returning None (rule disallows / transport failure) =>
+    no --qvec-stdin and stdin stays closed (lexical exactly as today)."""
+    import oracle_agent.agentloop.verbtools as vt
+
+    captured = {}
+
+    def fake_run(self, argv, stdin=None):
+        captured["argv"] = argv
+        captured["stdin"] = stdin
+        return 0, "[]", ""
+
+    monkeypatch.setattr(vt.Dispatcher, "_run", fake_run)
+    d = _disp(spawned_root, query_embedder=lambda terms: None)
+    d.dispatch("oracle_search", {"terms": "revenue"})
+    assert "--qvec-stdin" not in captured["argv"]
+    assert captured["stdin"] is None
+
+
+def test_vectors_subcommands_absent_from_all_tool_schemas():
+    """SH-005-style structural exclusion (P8S-10): the vectors-* CLI surface is
+    never exposed as a model tool on any surface -- the model gains neither a
+    bulk corpus-text export (vectors-pending) nor a vector-injection tool."""
+    import json as _json
+    for surface in ("local", "gateway"):
+        for env in ("local_agent", "external"):
+            blob = _json.dumps(tool_schemas(surface, env))
+            assert "vectors-add" not in blob
+            assert "vectors-pending" not in blob
+            assert "vectors-prune" not in blob
+            assert "qvec" not in blob
+
+
+def test_run_verb_input_param_feeds_stdin(spawned_root):
+    """run_verb(input=...) feeds the kernel's stdin channel. A query with
+    --qvec-stdin and a valid payload round-trips through the real kernel CLI."""
+    import json as _json
+    from oracle_agent.agentloop.verbtools import run_verb
+
+    # No vectors are indexed, so the payload degrades to lexical inside the
+    # kernel -- the point is that stdin is plumbed and the call still succeeds.
+    payload = _json.dumps({"embedding_model": "synthetic-hash-v1",
+                           "vector": [0.1, 0.2, 0.3, 0.4]})
+    rc, out, _err = run_verb(
+        spawned_root,
+        ["search", "query", "--q=anything", "--k", "5",
+         "--max-sensitivity", "public", "--qvec-stdin"],
+        input=payload,
+    )
+    assert rc == 0, out

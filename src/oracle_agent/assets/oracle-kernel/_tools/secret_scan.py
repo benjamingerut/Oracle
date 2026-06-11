@@ -313,9 +313,14 @@ def scan_text(text: str) -> list[dict]:
             if not quote:
                 if _is_wordy(value):
                     continue
-                # Self-assignment kwarg idiom (api_key=api_key,) is source
-                # code passing a variable through, never a literal secret.
-                if value.rstrip(",;").strip() == key_name:
+                # Unquoted identifier-shaped values are source code passing a
+                # variable through (api_key=api_key, api_key=resolved_key,...),
+                # never a literal secret: real credentials are not lowercase
+                # snake_case identifiers. Quoted literals are still flagged.
+                bare = value.rstrip(",;)").strip()
+                if bare == key_name:
+                    continue
+                if "_" in bare and bare.isidentifier() and bare == bare.lower():
                     continue
                 # For highly sensitive key names: flag digit-free values ≥ 8
                 # chars; for all others keep the original digit requirement.

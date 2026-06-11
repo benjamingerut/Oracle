@@ -1306,6 +1306,77 @@ def _read_query_vector_stdin(stream=None) -> tuple[str, list]:
     return model, list(unit)
 
 
+def _ledger_embedding_batch(root, rows, *, environment, ceiling) -> None:
+    """Append metadata-only embedding_event rows for a vectors-add batch (P8S-15).
+
+    Best-effort: a ledger failure must not fail the vectors-add (the vectors are
+    already committed). The model is read from the batch rows (they share one
+    active model on the shell's backfill path).
+    """
+    try:
+        import embedding_ledger as _el  # type: ignore
+    except Exception:  # pragma: no cover - package fallback
+        try:
+            from . import embedding_ledger as _el  # type: ignore
+        except Exception:
+            return
+    try:
+        model = ""
+        for r in rows:
+            m = str(r.get("embedding_model") or "").strip()
+            if m:
+                model = m
+                break
+        _el.append_batch_events(
+            root, rows,
+            embedding_model=model,
+            environment=environment,
+            ceiling=ceiling,
+        )
+    except Exception:  # pragma: no cover - best-effort audit
+        return
+
+
+def _log_retrieval_event(root, *, query, k, idx, hybrid, hits) -> None:
+    """Append one best-effort retrieval_event row for this search (P8-T7).
+
+    Reads the active-model vector_coverage from ``idx.stats()`` and the surfaced
+    ``top_source_ids`` from the hits, then hands them to the monthly-rotated
+    retrieval ledger. The helper is itself wrapped so a missing retrieval_ledger
+    module (or any other failure) can NEVER break or delay the search (P8S-8):
+    the write path is strictly subordinate to the read path.
+    """
+    try:
+        import retrieval_ledger as _rl  # type: ignore
+    except Exception:  # pragma: no cover - package fallback
+        try:
+            from . import retrieval_ledger as _rl  # type: ignore
+        except Exception:
+            return
+    try:
+        stats = idx.stats()
+        active = idx.active_embedding_model()
+        cov = stats.get("vector_coverage", {})
+        coverage = cov.get(active) if active else None
+        top = []
+        for h in hits:
+            sid = str(h.get("source_id", "")).strip()
+            if sid and sid not in top:
+                top.append(sid)
+        _rl.log_search(
+            root,
+            query=query,
+            k=int(k),
+            engine=idx.engine,
+            hybrid=bool(hybrid),
+            vector_coverage=coverage,
+            result_count=len(hits),
+            top_source_ids=top,
+        )
+    except Exception:  # pragma: no cover - best-effort telemetry
+        return
+
+
 def _jsonish(value) -> str:
     if value is None:
         return ""
@@ -1429,6 +1500,11 @@ def main(argv: Optional[list] = None) -> int:
     # -- vector store subcommands (operator/shell-only; never a model tool) --- #
     p_vadd = sub.add_parser("vectors-add", help="upsert chunk vectors from a JSON file")
     p_vadd.add_argument("--file", required=True)
+    # ATTESTATION fields the SHELL stamps (P8S-15): when EITHER is supplied, the
+    # batch is ledgered (one embedding_event row per source_id, metadata-only).
+    # The kernel records but cannot verify these (it makes no network call).
+    p_vadd.add_argument("--embedding-environment", default=None)
+    p_vadd.add_argument("--embedding-ceiling", default=None)
 
     p_vpend = sub.add_parser(
         "vectors-pending", help="chunks lacking a vector for the given model"
@@ -1474,6 +1550,14 @@ def main(argv: Optional[list] = None) -> int:
                 args.q, k=args.k, max_sensitivity=args.max_sensitivity,
                 query_vector=qvec, embedding_model=qmodel,
             )
+            # Best-effort retrieval telemetry (P8-T7): one metadata-only row per
+            # search, monthly-rotated, salted query_hmac, never the query text.
+            # This NEVER fails or delays the search -- the helper swallows every
+            # error and a read-only root still returns hits below (P8S-8).
+            _log_retrieval_event(
+                args.root, query=args.q, k=args.k, idx=idx,
+                hybrid=qvec is not None, hits=hits,
+            )
             print(json.dumps(hits, indent=2, ensure_ascii=False))
             return 0
         if args.cmd == "stats":
@@ -1484,7 +1568,20 @@ def main(argv: Optional[list] = None) -> int:
             print(json.dumps({"reindexed": n, "engine": idx.engine}, indent=2))
             return 0
         if args.cmd == "vectors-add":
-            n = idx.add_vectors(_load_vectors_file(Path(args.file)))
+            rows = _load_vectors_file(Path(args.file))
+            n = idx.add_vectors(rows)
+            # Each vectors-add appends one embedding_event row per source_id --
+            # metadata only (P8S-15). Gated on a supplied attestation field so a
+            # bare operator vectors-add (no env/ceiling) leaves the ledger and
+            # the {"added": N} response shape untouched. The shell ALWAYS stamps
+            # these, so every real backfill batch is audited.
+            env_attest = getattr(args, "embedding_environment", None)
+            ceil_attest = getattr(args, "embedding_ceiling", None)
+            if env_attest is not None or ceil_attest is not None:
+                _ledger_embedding_batch(
+                    args.root, rows,
+                    environment=env_attest, ceiling=ceil_attest,
+                )
             # Frozen response shape {"added": N} (P8S-4): the shell validates
             # THIS shape rather than trusting rc 0.
             print(json.dumps({"added": n}, indent=2))

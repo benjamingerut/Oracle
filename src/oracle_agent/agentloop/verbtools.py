@@ -164,16 +164,24 @@ def _scrubbed_env(extra_drop: list[str] | None = None) -> dict:
 
 
 def run_verb(root: Path, argv: list[str], timeout: float = 120.0,
-             scrub_env: list[str] | None = None) -> tuple[int, str, str]:
+             scrub_env: list[str] | None = None,
+             input: str | None = None) -> tuple[int, str, str]:
     """Run ``root/oracle <argv...>`` as an argv subprocess. Returns (rc, out, err).
 
     Never ``shell=True``. stdout and stderr are captured SEPARATELY so the
     answer envelope (stdout) is never corrupted by warnings (stderr).
+
+    ``input`` (Phase 8 / P8S-3) is the stdin channel for the kernel's
+    ``--qvec-stdin`` query-vector payload. It is composed EXCLUSIVELY by shell
+    code -- a config-sourced model string plus computed floats -- so the channel
+    is not model-influencable and the argv chokepoint discipline (I2) is
+    preserved. ``None`` leaves stdin closed exactly as before.
     """
     oracle = Path(root) / "oracle"
     cmd = [sys.executable, str(oracle), *argv]
     proc = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True,
-                          timeout=timeout, env=_scrubbed_env(scrub_env))
+                          timeout=timeout, env=_scrubbed_env(scrub_env),
+                          input=input)
     return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 
@@ -222,6 +230,14 @@ class Dispatcher:
     write_actor: str | None = None   # e.g. "gateway_user:123" (M4 provenance)
     write_gate: object = None        # optional callable() -> bool (M4 rate limit)
     timeout: float = 120.0
+    # Phase 8 (P8S-3): the PURE query-embedder seam. ``None`` => lexical search
+    # exactly as today. When present, it is ``Callable[[str], dict | None]``
+    # injected by ``build_loop``; it closes over the embed client, the post-veto
+    # embed ceiling and the frozen query rule, so the Dispatcher itself stays
+    # egress-free (holds no client, no ceiling logic). It returns a
+    # shell-composed stdin payload ``{"embedding_model": M, "vector": [...]}`` or
+    # ``None`` for lexical. The model's terms never reach the payload keys.
+    query_embedder: object = None
 
     def _allowed(self, name: str) -> bool:
         return any(t["function"]["name"] == name
@@ -269,8 +285,9 @@ class Dispatcher:
     def _rank(self, label: str) -> int:
         return policy_bridge.sensitivity_rank(label, self.order)
 
-    def _run(self, argv: list[str]) -> tuple[int, str, str]:
-        return run_verb(self.root, argv, timeout=self.timeout, scrub_env=self.scrub_env)
+    def _run(self, argv: list[str], stdin: str | None = None) -> tuple[int, str, str]:
+        return run_verb(self.root, argv, timeout=self.timeout,
+                        scrub_env=self.scrub_env, input=stdin)
 
     # -- read verbs --------------------------------------------------------- #
     def _do_oracle_status(self, args: dict) -> ToolOutcome:
@@ -305,7 +322,25 @@ class Dispatcher:
         # layer per SPEC S4 / STRESS M5).
         argv = ["search", "query", f"--q={terms}", "--k", str(k),
                 "--max-sensitivity", self.max_sensitivity]
-        rc, out, _err = self._run(argv)
+        # Phase 8 (P8S-3): hybrid retrieval. The query-embedder is a PURE
+        # callable injected by build_loop; the Dispatcher itself never embeds
+        # and holds no ceiling logic. If it returns a payload (the frozen query
+        # rule allowed it AND the embed transport succeeded under its 10 s
+        # timeout), we add the bare ``--qvec-stdin`` flag and feed the payload on
+        # STDIN. The payload is composed SHELL-SIDE ONLY -- a config-sourced
+        # model string + computed floats; the model's terms never enter it. ANY
+        # transport failure degrades silently to lexical (the callable returns
+        # None) -- search never errors out over the embedder.
+        stdin_payload = None
+        if self.query_embedder is not None:
+            try:
+                payload = self.query_embedder(terms)
+            except Exception:
+                payload = None  # belt-and-braces: lexical on any embedder error
+            if payload is not None:
+                stdin_payload = json.dumps(payload)
+                argv.append("--qvec-stdin")
+        rc, out, _err = self._run(argv, stdin=stdin_payload)
         return ToolOutcome(self._cap(out.strip() or "[no results]"), rc=rc)
 
     def _do_oracle_answer(self, args: dict) -> ToolOutcome:

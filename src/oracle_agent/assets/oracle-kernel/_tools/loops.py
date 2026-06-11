@@ -818,6 +818,8 @@ def _dispatch(root: Path, loop: Loop, *, now: datetime, headless: bool) -> dict:
         )
     if runner_key in ("builtin:connector-pull", "connectors:run_connector_pull_loop"):
         return _run_connector_pull(root, loop, now=now)
+    if runner_key in ("builtin:embed-backfill", "loops:run_embed_backfill_loop"):
+        return _run_embed_backfill(root, loop, now=now)
     if runner == "" or runner_key in ("agent-worklist", "agent", "worklist"):
         return {
             "status": "worklist",
@@ -1374,6 +1376,209 @@ def _run_connector_pull(root: Path, loop: Loop, *, now: datetime) -> dict:
         "gate_denied": denied,
         "connectors": per_connector,
     }
+
+
+# --------------------------------------------------------------------------- #
+# builtin: embed-backfill (P8-T5) -- autonomy-gated incremental + backfill
+#
+# THE KERNEL/SHELL SPLIT (pinned by the spec's "core idea" + I3):
+# The kernel never dials out. This builtin runner therefore does NOT embed and
+# does NOT call vectors-add itself -- it SURFACES due-ness (vector coverage for
+# the active embedding model < 100% AND an embedding endpoint is configured) and
+# EMITS the pending batch (the chunks lacking a vector for the active model) as
+# a structured result. The SHELL's scheduler tick is the half that acts on it:
+# it re-computes the POST-VETO embedding ceiling (P8S-1), runs the per-chunk
+# dispatch enforcer (P8S-14), embeds via its one-purpose embed client, hands the
+# vectors back through the 0600 in-root vectors-add chokepoint (P8S-10), and
+# stamps the embedding_event attestation. The runner is autonomy-gated exactly
+# like connector-pull (NOT in DETERMINISTIC_LOOPS): an explicit allowed_loops
+# entry is required before the harness ever dispatches it, so autonomy OFF means
+# zero pending batches are emitted and therefore zero embedding requests.
+# --------------------------------------------------------------------------- #
+EMBED_BACKFILL_BATCH = 64
+
+
+def _embedding_endpoint_configured(root: Path) -> bool:
+    """True iff oracle.yml declares a ``provider.embeddings`` block with a model.
+
+    Read-only config probe (the kernel parses oracle.yml but never dials the
+    endpoint). An absent/garbled config -> not configured -> the loop is not due,
+    so a corpus on an oracle with no embedder never surfaces a backfill batch.
+    """
+    try:
+        cfg_path = Path(root) / "oracle.yml"
+        if not cfg_path.exists():
+            return False
+        data = safe_load(cfg_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    provider = data.get("provider")
+    if not isinstance(provider, dict):
+        return False
+    emb = provider.get("embeddings")
+    if not isinstance(emb, dict):
+        return False
+    return bool(str(emb.get("model") or "").strip())
+
+
+def _import_knowledge_index():
+    for loader in (
+        lambda: importlib.import_module("knowledge_index"),
+        lambda: importlib.import_module(".knowledge_index", package="_tools"),
+    ):
+        try:
+            return loader()
+        except Exception:
+            continue
+    return None
+
+
+def embed_backfill_due(root: Path) -> tuple[bool, dict]:
+    """Pure due-ness probe for the embed-backfill loop.
+
+    Returns ``(due, detail)``. Due iff an embedding endpoint is configured AND
+    the active embedding model's vector coverage is < 100% (some chunk still
+    lacks a vector for that model). ``detail`` carries the active model, the
+    coverage fraction, and the pending count for the result/diagnostics. Any
+    failure -> not due (fail-safe: never surface a backfill batch we cannot
+    honestly size).
+    """
+    detail: dict = {
+        "configured": False,
+        "active_model": None,
+        "coverage": None,
+        "pending": 0,
+        "chunks": 0,
+    }
+    if not _embedding_endpoint_configured(root):
+        return False, detail
+    detail["configured"] = True
+    ki = _import_knowledge_index()
+    if ki is None:
+        return False, detail
+    try:
+        idx = ki.KnowledgeIndex(root)
+    except Exception:
+        return False, detail
+    try:
+        active = idx.active_embedding_model()
+        detail["active_model"] = active
+        stats = idx.stats()
+        detail["chunks"] = int(stats.get("chunks", 0))
+        if not active or detail["chunks"] == 0:
+            return False, detail
+        coverage = stats.get("vector_coverage", {}).get(active, 0.0)
+        detail["coverage"] = coverage
+        pending = idx.pending_vectors(embedding_model=active)
+        detail["pending"] = len(pending)
+        due = len(pending) > 0
+        return due, detail
+    except Exception:
+        return False, detail
+    finally:
+        try:
+            idx.close()
+        except Exception:
+            pass
+
+
+def _run_embed_backfill(root: Path, loop: Loop, *, now: datetime) -> dict:
+    """Builtin runner for the canonical ``embed-backfill`` loop (P8-T5).
+
+    Surfaces due-ness and EMITS the pending batch for the shell to embed. The
+    kernel never embeds and never dials out (I3): the returned ``worklist``
+    carries the active model and a BOUNDED slice of pending chunks (the batch),
+    which the shell's scheduler tick drains -- re-computing the post-veto ceiling
+    per run (P8S-1), enforcing per-chunk at dispatch (P8S-14), and handing
+    vectors back through vectors-add (P8S-10/P8S-4). Idempotent + resumable by
+    construction: the pending set shrinks monotonically as the shell adds
+    vectors, so a kill mid-backfill loses at most one batch and the next tick
+    resumes from the still-uncovered remainder.
+
+    Status discipline: this returns a WORKLIST (performed=False) -- like an
+    agent-worklist, it is NOT complete until the shell has embedded and the next
+    due-ness probe reports full coverage. The harness must not advance last_run
+    on the mere emission of a batch.
+    """
+    batch = EMBED_BACKFILL_BATCH
+    try:
+        cfg = loop.get("embed_batch") if loop is not None else None
+        if cfg is not None:
+            batch = max(1, int(cfg))
+    except (TypeError, ValueError):
+        batch = EMBED_BACKFILL_BATCH
+
+    due, detail = embed_backfill_due(root)
+    if not due:
+        # Configured-but-fully-covered, or no endpoint, or no active model:
+        # nothing to embed. Healthy no-op (performed=False); not a failure.
+        return {
+            "status": "ok",
+            "performed": False,
+            "kind": "builtin:embed-backfill",
+            "health_signal": "healthy",
+            "due": False,
+            "detail": detail,
+        }
+
+    ki = _import_knowledge_index()
+    active = detail.get("active_model")
+    pending_batch: list[dict] = []
+    if ki is not None and active:
+        try:
+            idx = ki.KnowledgeIndex(root)
+            try:
+                # Emit a BOUNDED slice: the shell drains the rest across ticks.
+                # NOTE: pending_vectors carries chunk TEXT -- this result is
+                # SHELL-INTERNAL (it crosses the kernel->shell process boundary
+                # the shell already trusts), never a model-visible tool output.
+                pending_batch = idx.pending_vectors(
+                    embedding_model=active, limit=batch
+                )
+            finally:
+                idx.close()
+        except Exception:
+            pending_batch = []
+
+    return {
+        "status": "worklist",
+        "performed": False,
+        "kind": "builtin:embed-backfill",
+        "health_signal": "healthy",
+        "due": True,
+        "embedding_model": active,
+        "batch": batch,
+        "pending_total": detail.get("pending", 0),
+        "coverage": detail.get("coverage"),
+        "worklist": {
+            "loop_id": loop.id if loop is not None else "embed-backfill",
+            "embedding_model": active,
+            "batch_size": batch,
+            "pending_in_batch": len(pending_batch),
+            "pending_total": detail.get("pending", 0),
+            "chunks": pending_batch,
+            "instructions": (
+                "Shell scheduler tick: re-compute the POST-VETO embedding "
+                "ceiling, enforce per-chunk sensitivity at dispatch, embed this "
+                "bounded batch via the one-purpose embed client, then hand the "
+                "vectors back through `vectors-add` (0600 in-root handoff) "
+                "stamping the embedding_event attestation. Resumable: re-run the "
+                "loop next tick to drain the remaining pending chunks."
+            ),
+        },
+    }
+
+
+def run_embed_backfill_loop(root, loop=None, *, now: Optional[datetime] = None) -> dict:
+    """Public builtin-runner entry point (mirrors the other builtins' signature).
+
+    Lets the ``loops:run_embed_backfill_loop`` runner spec resolve through
+    ``_resolve_python_runner`` as well as the ``builtin:embed-backfill`` fast
+    path in ``_dispatch``.
+    """
+    return _run_embed_backfill(Path(root), loop, now=now or _now_default())
 
 
 def run(
