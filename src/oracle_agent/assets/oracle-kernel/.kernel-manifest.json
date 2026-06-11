@@ -1,5 +1,5 @@
 {
-  "aggregate_sha256": "9d99189a632edef6f6e397fc6fc8e2e4cb5495fd951395475955a42f7b5be769",
+  "aggregate_sha256": "9f72517124c8ab36fdeea5bae9ff62f2a37978632738bf44818ad98ad11145ef",
   "files": {
     "_tools/KERNEL_VERSION": "eb0cd1f1d199956d3cb6a119202fe1c98f31b6ae513e4326d57ca1f9946f7a31",
     "_tools/_CONTEXT.md": "661ae48ec92ac8c7e0eda8f65fce86f0ffeae498fdde9de4d758774c4f7abd0d",
@@ -10,10 +10,15 @@
     "_tools/briefing.py": "4f78e4a255530c4aa512717cce36b09d0a98bd19ef0dc5bcd9a4207c2bcab42d",
     "_tools/capture.py": "fa93c751af9a7cebf0345ecccaed189260f91b4746dab9a5b01a31a605419932",
     "_tools/chunker.py": "6cacbf6c6791a59024b8d84071cc1c85a8d641eb033df60b2ebe3bb159d8675e",
-    "_tools/connectors/__init__.py": "05863921eea0a9b695e9d77e212613a56e7a0509ea98402739fdb7cbde639d65",
+    "_tools/connectors/__init__.py": "444841b852b7256370b70f8b6b5d92e5e97e76232f26ff855b469fb57d2f330e",
     "_tools/connectors/base.py": "e34c2a1263cd169aaaadd808c8097f14cd7091c94fe44b05dc6fb626fad3c303",
+    "_tools/connectors/gdrive.py": "29f23de5121566911d4607beaa87a598cfa8757653da72c9bcd2f7edc4db5786",
+    "_tools/connectors/imap_mailbox.py": "e750758d6656d737acab2578a6ad5ed561a4aa248942e66c758a0caae23b9623",
     "_tools/connectors/localfolder.py": "d0721ee1595b3b6d49d882682f93f117f0cea46bbcf4cabfedacfa8ef627ab84",
+    "_tools/connectors/msgraph.py": "f004b81af389d02dd84dcdb38262b32e5acc6097a41f760620798964354e889c",
+    "_tools/connectors/notion.py": "a2249dbd373e6bf8bbfe63c91b89a35a70a4349d707943ad75a7f1aade90c5d5",
     "_tools/connectors/remote.py": "a3e2436a3327634342d1b10884e616680b03527238bf40e7e5baa5ec72ca379f",
+    "_tools/connectors/slack_export.py": "52f6775bc973f46347b13566b0824547c1766fc89ee27b00edbb9522b386abdc",
     "_tools/contradiction.py": "a416a1179b702d83f92c0051e27330eb14717d2ed1cc22d84b5b08427ea7060d",
     "_tools/dashboard.py": "07ac5ea1e1d460d06e5a7f5d70265636c0ba5b67466d0e9b6fa633be01bdf6f6",
     "_tools/derive.py": "ade8cf73ae18d1fa89a357b38552b0c3dc30e1e1ce323ee27229fd01d85d7366",
@@ -67,6 +72,6 @@
     "_tools/truth_map.py": "32f230610bc6764c7d46629142ad50844ead2c176f3de4027b26c31e3c7ac55f",
     "_tools/upgrade.py": "b4a0b49e7f2fa3eb8beacc2e5a6d024e95e514868b8c4b949d052b71481e2c3a"
   },
-  "generated": "2026-06-10T22:07:30",
+  "generated": "2026-06-10T22:21:47",
   "tools_version": "3.0.0"
 }

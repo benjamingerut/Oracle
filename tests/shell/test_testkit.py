@@ -403,6 +403,48 @@ def test_harness_chat_with_tool_call(spawned_root):
     assert "search complete" in result.text
 
 
+def test_harness_chat_grounding_defaults_to_observe(spawned_root):
+    """Harness.chat builds an OBSERVE loop by default (v1 footer-only)."""
+    from oracle_agent.testkit import Harness, ScriptedResponse
+    from oracle_agent.agentloop.loop import GroundingPolicy
+
+    h = Harness(spawned_root)
+    loop = h.chat([ScriptedResponse("hello")])
+    assert loop.grounding is GroundingPolicy.OBSERVE
+
+
+def test_harness_chat_repair_aware_scripting(spawned_root):
+    """Repair-aware scripting: a ScriptedResponse is consumed per repair turn so
+    a fake model can script assert -> repair -> ground (P3-T3 testkit note).
+
+    Under ENFORCE the loop sends the model back when a claim is unbacked; the
+    next scripted entry is the repair turn. We script three entries (draft,
+    repair tool-call, re-statement) and confirm all three are consumed in
+    order. The repair's real ``oracle_answer`` on a fresh root returns a refused
+    (exit-4) envelope, so the re-asserted claim is mismatched and gets redacted
+    -- the point here is that scripting advances one entry PER repair turn.
+    """
+    from oracle_agent.testkit import Harness, ScriptedResponse, FakeLLM
+    from oracle_agent.agentloop.loop import GroundingPolicy
+
+    claim = "Revenue / invoices was $1M last quarter."
+    script = [
+        ScriptedResponse(claim),  # ungrounded draft -> repair turn 1
+        ScriptedResponse(tool_calls=[
+            ("a1", "oracle_answer", '{"business_object":"Revenue / invoices"}')]),
+        ScriptedResponse(claim),  # re-statement (still mismatched on fresh root)
+    ]
+    h = Harness(spawned_root)
+    loop = h.chat(script, grounding=GroundingPolicy.ENFORCE, max_repair=1)
+    res = loop.run_turn("what is revenue?")
+    assert res.repairs == 1
+    # Three scripted entries were consumed in order (one per model call).
+    assert isinstance(loop.client, FakeLLM)
+    assert loop.client._index == 3
+    # The re-asserted-but-still-unbacked claim is redacted, not released.
+    assert "Revenue / invoices was $1M last quarter." not in res.text
+
+
 # ---------------------------------------------------------------------------
 # Harness.gateway
 # ---------------------------------------------------------------------------

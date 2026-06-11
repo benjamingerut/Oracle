@@ -1,0 +1,102 @@
+# msgraph -- the Microsoft Graph (SharePoint + OneDrive) connector template.
+#
+# Copy this dir to Connectors/<id>/ (one dir per account; the id MUST match the
+# folder name) and fill in the scope allowlist + auth var names. Pulls files
+# from allowlisted SharePoint sites / OneDrive drives into
+# Workproduct.nosync/_INPUT/ through the shared RemoteConnector safety core:
+# gate-first authorization, default-deny scope, blast caps + a runtime byte
+# counter, content classification, the policy gate, containment, stable landing
+# names, an atomic delta cursor, and redaction. Runtime:
+# _tools/connectors/msgraph.py (list_items + fetch_item only; pull is FINAL).
+#
+# Block-style YAML only: one '- item' per line; no anchors, aliases, tags, flow
+# ([] / {}), or multi-doc. Empty OPTIONAL fields are OMITTED (a bare 'key:'
+# parses to null and the schema types these fields, so it would fail lint).
+# Validated against _tools/schemas/connector.schema.json.
+
+# id MUST match the folder name and the runtime's connector id. For a second
+# account use a distinct id (e.g. msgraph-finance) -- it resolves to this class
+# via the registry's system-fallback.
+id: msgraph
+
+system: Microsoft Graph (SharePoint Online + OneDrive for Business)
+
+# planned until the admin sets the scope allowlist + auth vars and authorizes
+# the device-code flow.
+status: planned
+
+# REST over HTTPS+JSON via the shared http_json / http_download primitives.
+access_mode: api
+
+# Bytes are snapshotted into the oracle on pull, then ingested; re-pull (delta)
+# to refresh. Not kept continuously in sync.
+locality: external_only
+capture_tier: snapshot
+
+# Auth: env-var NAMES only -- never secret values. Values live in the root's
+# .env.nosync (written by the wizard via write_root_env_secret, and rotated
+# refresh tokens by the kernel's persist_rotated_token). By convention the
+# *_CLIENT_ID var is the public app (client) id and the *_REFRESH_TOKEN var is
+# the rotating refresh token captured by the device-code flow.
+auth:
+  method: oauth_device_code
+  vars:
+    - MSGRAPH_CLIENT_ID
+    - MSGRAPH_REFRESH_TOKEN
+
+# Read-only: the runtime refuses to run if this is read_write. Every Graph call
+# this connector makes is a read (delta enumeration + /content download).
+permissions: read_only
+
+# Freshness SLA: a delta snapshot is considered stale after ~1 day; re-pull to
+# refresh. last_verified is omitted -- freshness is derived from the cursor's
+# last_success_ts, not this field (a pull never rewrites its own manifest).
+freshness:
+  class: api
+  expected_decay_days: 1
+
+# Source authority (feeds TRUTH-MAP.md).
+authoritative_for:
+  - documents in the allowlisted SharePoint sites / OneDrive drives
+cannot_prove:
+  - content outside the allowlisted sites/drives
+
+# Guardrails.
+forbidden_uses:
+  - pulling from a site or drive the admin has not explicitly allowlisted
+  - any write back to SharePoint / OneDrive (read-only)
+biases:
+  - reflects only the sites/drives the admin chose to allowlist
+
+# Health: confirm auth vars resolve and the scope allowlist is set.
+health_check:
+  cadence: daily
+  checks:
+    - auth vars resolvable in <root>/.env.nosync
+    - at least one site or drive allowlisted
+    - last pull within freshness SLA
+
+# No remote schema to re-probe (the grain is "files in the allowlisted drives").
+schema_refresh:
+  enabled: false
+  remote_probe: false
+
+# Runtime-specific block (read by _tools/connectors/msgraph.py). The schema's
+# job here is shape/typo detection; EMPTINESS is enforced at pull time by the
+# default-deny allowlist gate (None/missing/[]/non-list all refuse -- empty
+# never means 'everything'; P7S-13). API base URLs are pinned in the connector
+# code, never here (P7S-5).
+#   sites               -- SharePoint site ids; each site's default document
+#                          library (drive) is resolved and added to scope.
+#   drives              -- OneDrive / document-library drive ids, directly.
+#   max_files           -- blast-radius cap per pull (also bounded by actions caps).
+#   default_sensitivity -- classification FLOOR (ambiguity classifies UP).
+#   cadence             -- scheduled-pull grammar: hourly|daily|weekly|<N>h|<N>d.
+# At least ONE of sites / drives MUST be a non-empty list (default-deny). Bare
+# until the admin sets the allowlist; the connector refuses to pull otherwise.
+source:
+  sites:
+  drives:
+  max_files: 500
+  default_sensitivity: internal
+  cadence: daily

@@ -18,11 +18,15 @@ Stdlib only.
 """
 from __future__ import annotations
 
+import enum
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..llm.client import ChatResponse, LLMClient, LLMError, chat_with_retry
+from . import grounding as _grounding
+from .grounding import GateError, check_grounding, known_objects, repair_prompt
 from .verbtools import Dispatcher, run_verb, tool_schemas
 
 _VERDICT_LABEL = {
@@ -31,6 +35,63 @@ _VERDICT_LABEL = {
     3: "caveated",
     4: "refused",
 }
+
+
+class GroundingPolicy(enum.Enum):
+    """How the forced-grounding gate (Phase 3) acts on the model's draft.
+
+    * ``OBSERVE`` -- the gate runs and its verdict is recorded on the turn
+      result metadata, but the prose is released untouched (the v1
+      footer-only behavior). Local-operator-only, logged; never reachable
+      from the gateway (P3S-9/11).
+    * ``ENFORCE`` -- unbacked/mismatched claims trigger a repair loop (tools
+      re-enabled) sharing the turn's iteration + wall-clock budget; any claim
+      still unbacked on the final draft is redacted whole and a notice +
+      footer is shipped. The only mode on the gateway.
+
+    Set ONCE at loop construction by the builder (the sole decision point);
+    no tool output, prompt injection, or config read can flip it mid-session.
+    """
+
+    OBSERVE = "observe"
+    ENFORCE = "enforce"
+
+
+# Repair user-turns carry this sentinel so the evictor can treat a question and
+# its repair chain as ONE turn group (P3S-19): eviction can never drop the
+# original question while keeping an orphaned repair fragment.
+_REPAIR_TAG = "_oracle_grounding_repair"
+
+# Redaction notice template (P3S-14): the count only; suggested_fix lines live
+# once in the footer (exit-4 envelopes already carry them there).
+_REDACT_NOTICE = (
+    "[{n} claim(s) withheld: not grounded -- ask the operator to ingest "
+    "evidence or promote authority]"
+)
+
+# Generic withhold-all notice when the gate itself raises (fail-closed, P3S-8).
+_GATE_ERROR_NOTICE = (
+    "[reply withheld: the grounding gate could not verify this answer]"
+)
+
+
+def _line_content(stripped: str) -> str:
+    """Return a markdown line's content the way the extractor sees a unit.
+
+    Mirrors ``grounding._split_units`` marker handling (list bullet, blockquote,
+    heading) so a redaction target derived from the extractor matches the line
+    here. Table rows and ordinary prose are returned as-is. Linear-time.
+    """
+    import re as _re
+
+    m = _re.match(r"^(?:[-*+]\s+|\d+[.)]\s+)(.*)$", stripped)
+    if m:
+        return m.group(1).strip()
+    if stripped.startswith(">"):
+        return stripped.lstrip(">").strip()
+    if stripped.startswith("#"):
+        return stripped.lstrip("#").strip()
+    return stripped
 
 
 def minimized_status(root: Path) -> dict:
@@ -85,19 +146,44 @@ class TurnResult:
     text: str
     envelopes: list[dict] = field(default_factory=list)
     iterations: int = 0
+    # Grounding-gate metadata (Phase 3). ``grounding`` is the policy name; the
+    # remaining fields record what the gate did this turn (OBSERVE records
+    # without altering; ENFORCE may repair/redact/withhold).
+    grounding: str | None = None
+    repairs: int = 0                          # repair round-trips taken
+    unbacked_count: int = 0                   # claims unbacked on the final draft
+    redacted_count: int = 0                   # claim-units redacted from the reply
+    withheld: bool = False                    # whole reply withheld (gate error)
 
 
 class AgentLoop:
     def __init__(self, client: LLMClient, dispatcher: Dispatcher,
-                 system_prompt: str, *, max_iterations: int = 20,
+                 system_prompt: str, *, grounding: GroundingPolicy,
+                 max_iterations: int = 20,
                  history_max_chars: int = 400_000, max_tokens: int | None = None,
-                 retry_kwargs: dict | None = None):
+                 max_repair: int = 2, turn_wall_clock: float | None = None,
+                 retry_kwargs: dict | None = None, clock=time.monotonic):
+        if not isinstance(grounding, GroundingPolicy):
+            raise TypeError(
+                "AgentLoop requires a GroundingPolicy 'grounding' argument "
+                "(no security-meaningful default); the builder decides it."
+            )
         self.client = client
         self.dispatcher = dispatcher
         self.system_prompt = system_prompt
+        self.grounding = grounding
         self.max_iterations = max_iterations
         self.history_max_chars = history_max_chars
         self.max_tokens = max_tokens
+        # Repair budget: repairs SHARE the turn's max_iterations ceiling
+        # (P3S-7). ``max_repair`` caps how many repair *round-trips* may be
+        # appended; the iteration budget is the hard global per-turn LLM-call
+        # ceiling and always wins.
+        self.max_repair = max_repair
+        # Per-turn wall-clock ceiling (gateway: 120s, aligned with
+        # Dispatcher.timeout). None = no wall-clock ceiling (local default).
+        self.turn_wall_clock = turn_wall_clock
+        self._clock = clock
         self.retry_kwargs = retry_kwargs or {}
         # The loop owns ONE message list, mutated only by append + eviction.
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
@@ -107,14 +193,57 @@ class AgentLoop:
         self.messages.append({"role": "user", "content": user_text})
         tools = tool_schemas(self.dispatcher.surface, self.dispatcher.environment)
         envelopes: list[dict] = []
+        # Global per-turn LLM-call counter -- repairs SHARE this budget (P3S-7).
         iterations = 0
+        repairs = 0
+        start = self._clock()
 
-        for iterations in range(1, self.max_iterations + 1):
+        def over_wall_clock() -> bool:
+            if self.turn_wall_clock is None:
+                return False
+            return (self._clock() - start) >= self.turn_wall_clock
+
+        # The turn runs as a model<->tool loop. A content-only response is a
+        # DRAFT answer; under ENFORCE it may trigger a repair round-trip that
+        # re-enters the loop with tools re-enabled. The repair budget and the
+        # wall-clock ceiling both bound the total number of model calls so a
+        # repair storm cannot stall the single-threaded serve loop under
+        # LOCK_EX (P3S-7).
+        while iterations < self.max_iterations:
+            iterations += 1
             resp = self._call(tools)
             if not resp.tool_calls:
-                text = resp.content or ""
-                self.messages.append({"role": "assistant", "content": text})
-                return TurnResult(self._with_footer(text, envelopes), envelopes, iterations)
+                draft = resp.content or ""
+                self.messages.append({"role": "assistant", "content": draft})
+                # --- grounding gate on the DRAFT, BEFORE the footer (P3S-14) -
+                if self.grounding is GroundingPolicy.OBSERVE:
+                    return self._observe_release(draft, envelopes, iterations, repairs)
+                # ENFORCE: check the draft.
+                try:
+                    check = self._check(draft, envelopes)
+                except GateError:
+                    return self._withhold_all(envelopes, iterations, repairs)
+                if not check.unbacked and not check.mismatched:
+                    # Every material claim is backed -> release with footer.
+                    return TurnResult(
+                        self._with_footer(draft, envelopes), envelopes, iterations,
+                        grounding=self.grounding.value, repairs=repairs,
+                    )
+                # Unbacked/mismatched. Repair if budget remains, else redact.
+                budget_left = (iterations < self.max_iterations
+                               and repairs < self.max_repair
+                               and not over_wall_clock())
+                if not budget_left:
+                    return self._redact_release(draft, envelopes, iterations, repairs)
+                # Append the repair prompt as a TAGGED user turn (P3S-19) and
+                # loop with tools RE-ENABLED so the model can call oracle_answer.
+                repairs += 1
+                self.messages.append({
+                    "role": "user", "content": repair_prompt(check),
+                    _REPAIR_TAG: True,
+                })
+                self._evict_if_needed()
+                continue
 
             # Record the assistant tool-call turn verbatim (provider replay).
             self.messages.append(self._assistant_toolcall_msg(resp))
@@ -128,21 +257,39 @@ class AgentLoop:
                 })
             self._evict_if_needed()
 
-        # Iteration cap: one forced answer with tools disabled.
+        # Iteration cap: one forced answer with tools disabled. It CANNOT
+        # repair (tools off), so under ENFORCE it goes STRAIGHT to redaction
+        # (P3S-12) -- consuming no repair budget.
         resp = self._call(tools=None)
         text = resp.content or "[no answer produced within the iteration budget]"
         self.messages.append({"role": "assistant", "content": text})
-        return TurnResult(self._with_footer(text, envelopes), envelopes, iterations)
+        if self.grounding is GroundingPolicy.OBSERVE:
+            return self._observe_release(text, envelopes, iterations, repairs)
+        try:
+            return self._redact_release(text, envelopes, iterations, repairs)
+        except GateError:
+            return self._withhold_all(envelopes, iterations, repairs)
 
     # -- internals ---------------------------------------------------------- #
+    def _wire_messages(self) -> list[dict]:
+        """Messages as the provider sees them: the internal ``_REPAIR_TAG``
+        sentinel (P3S-19 eviction bookkeeping) is stripped so it never goes on
+        the wire as an unknown message field."""
+        out: list[dict] = []
+        for m in self.messages:
+            if _REPAIR_TAG in m:
+                m = {k: v for k, v in m.items() if k != _REPAIR_TAG}
+            out.append(m)
+        return out
+
     def _call(self, tools) -> ChatResponse:
         try:
-            return chat_with_retry(self.client, self.messages, tools=tools,
+            return chat_with_retry(self.client, self._wire_messages(), tools=tools,
                                    max_tokens=self.max_tokens, **self.retry_kwargs)
         except LLMError as exc:
             if exc.kind == "context_overflow":
                 self._evict_if_needed(force=True)
-                return chat_with_retry(self.client, self.messages, tools=tools,
+                return chat_with_retry(self.client, self._wire_messages(), tools=tools,
                                        max_tokens=self.max_tokens, **self.retry_kwargs)
             raise
 
@@ -168,23 +315,32 @@ class AgentLoop:
     def _evict_if_needed(self, *, force: bool = False) -> None:
         """Drop oldest whole TURN GROUPS when over the history budget.
 
-        A turn group runs from a ``user`` message up to (not including) the
-        next ``user`` message. Evicting whole groups preserves the OpenAI
-        pairing invariant: an assistant ``tool_calls`` message and its
-        ``tool`` replies are never separated (a dangling tool_call_id would
-        fail every subsequent API call). The system prompt (index 0) and the
-        current (final) group are never evicted. ``force=True`` evicts at
-        least one group when possible (context-overflow recovery).
+        A turn group runs from a NON-REPAIR ``user`` message up to (not
+        including) the next non-repair ``user`` message -- so a question and
+        its grounding-repair chain (whose repair user-turns carry the
+        ``_REPAIR_TAG`` sentinel, P3S-19) are ONE group. This can never drop
+        the original question while keeping an orphaned repair fragment, and it
+        preserves the OpenAI pairing invariant (STRESS I1): an assistant
+        ``tool_calls`` message and its ``tool`` replies are never separated (a
+        dangling tool_call_id would fail every subsequent API call). The system
+        prompt (index 0) and the current (final) group are never evicted.
+        ``force=True`` evicts at least one group when possible (context-overflow
+        recovery).
         """
         def size() -> int:
             return sum(len(json.dumps(m)) for m in self.messages)
+
+        def is_group_start(m: dict) -> bool:
+            # A repair user-turn is NOT a group start: it belongs to the
+            # question's group (P3S-19).
+            return m.get("role") == "user" and not m.get(_REPAIR_TAG)
 
         def evict_one_group() -> bool:
             if len(self.messages) < 2:
                 return False
             start = 1  # first message after the system prompt
             end = next((j for j in range(start + 1, len(self.messages))
-                        if self.messages[j].get("role") == "user"),
+                        if is_group_start(self.messages[j])),
                        len(self.messages))
             if end >= len(self.messages):
                 return False  # only the current group remains -- keep it
@@ -199,6 +355,141 @@ class AgentLoop:
 
     def _with_footer(self, text: str, envelopes: list[dict]) -> str:
         return text.rstrip() + "\n\n" + authority_footer(envelopes)
+
+    # -- grounding gate (Phase 3) ------------------------------------------- #
+    def _objects_seen(self, envelopes: list[dict]) -> list[str]:
+        """``objects_seen`` = truth-map objects U envelope objects this turn.
+
+        The truth-map enumeration is server-side and NEVER enters model
+        context (STRESS H1). A ``known_objects`` failure raises ``GateError``
+        (fail-closed) -- propagated to the caller so the whole reply withholds.
+        """
+        root = getattr(self.dispatcher, "root", None)
+        if root is None:
+            raise GateError("grounding: dispatcher has no root")
+        objs = list(known_objects(root))
+        seen = {o for o in objs}
+        for env in envelopes:
+            if not isinstance(env, dict):
+                continue
+            name = str(env.get("business_object", "") or "").strip()
+            if name and name not in seen:
+                objs.append(name)
+                seen.add(name)
+        return objs
+
+    def _check(self, draft: str, envelopes: list[dict]):
+        """Run the grounding checker on a draft. Raises ``GateError`` closed."""
+        objects_seen = self._objects_seen(envelopes)
+        return check_grounding(draft, list(envelopes), objects_seen=objects_seen)
+
+    def _observe_release(self, draft: str, envelopes: list[dict],
+                         iterations: int, repairs: int) -> TurnResult:
+        """OBSERVE: record the gate verdict, release the prose untouched.
+
+        The footer is appended exactly as in v1. A gate exception is recorded
+        as metadata but, in OBSERVE, must NOT withhold the operator's raw
+        output (OBSERVE is the explicit raw-output mode); the prose still
+        ships. ``unbacked_count`` is best-effort.
+        """
+        unbacked = 0
+        try:
+            check = self._check(draft, envelopes)
+            unbacked = len(check.unbacked) + len(check.mismatched)
+        except GateError:
+            unbacked = -1  # gate could not run; recorded, prose still released
+        return TurnResult(
+            self._with_footer(draft, envelopes), envelopes, iterations,
+            grounding=self.grounding.value, repairs=repairs,
+            unbacked_count=unbacked,
+        )
+
+    def _redact_release(self, draft: str, envelopes: list[dict],
+                        iterations: int, repairs: int) -> TurnResult:
+        """ENFORCE fallback: redact unbacked/mismatched claim-units, then ship.
+
+        Re-runs extract+check on the FINAL draft and removes the offending
+        claim units WHOLE (sentence / list item / table row -- never partial,
+        so markdown stays intact), appends the count notice, then the footer.
+        A fully-redacted reply ships notice + footer alone (P3S-14). Raises
+        ``GateError`` if the gate cannot run (caller withholds all).
+        """
+        check = self._check(draft, envelopes)
+        offending = list(check.unbacked) + list(check.mismatched)
+        redacted, n = self._redact_units(draft, offending)
+        body = redacted.rstrip()
+        if n:
+            notice = _REDACT_NOTICE.format(n=n)
+            body = (body + ("\n\n" if body else "") + notice).strip()
+        text = self._with_footer(body, envelopes)
+        return TurnResult(
+            text, envelopes, iterations,
+            grounding=self.grounding.value, repairs=repairs,
+            unbacked_count=n, redacted_count=n,
+        )
+
+    @staticmethod
+    def _redact_units(draft: str, claims: list) -> tuple[str, int]:
+        """Remove whole claim-unit lines/sentences matching ``claims`` texts.
+
+        Operates line-by-line: a line whose stripped content (after marker
+        stripping) contains an offending claim unit is dropped whole; for a
+        prose line carrying several sentences, only the offending sentences are
+        removed and the survivors rejoined, so a benign clause is not lost.
+        Footer-lookalike body lines were already stripped by extraction, but we
+        re-strip here defensively so redaction operates on the same text the
+        checker saw. Returns ``(redacted_text, count_removed)``.
+        """
+        targets = {c.text.strip() for c in claims if getattr(c, "text", "").strip()}
+        if not targets:
+            return draft, 0
+        body = _grounding._strip_footer_lookalikes(draft)
+        out_lines: list[str] = []
+        removed = 0
+        for raw in body.splitlines():
+            stripped = raw.strip()
+            if not stripped:
+                out_lines.append(raw)
+                continue
+            # Whole-unit (list item / table row / quoted / heading line): if any
+            # target is the whole line content, drop the line.
+            line_unit = _line_content(stripped)
+            if line_unit in targets:
+                removed += 1
+                continue
+            # Sentence-level: split the line into sentences, drop offending ones.
+            sentences = _grounding._SENTENCE_SPLIT_RE.split(line_unit) \
+                if line_unit else [line_unit]
+            if len(sentences) > 1:
+                kept = []
+                for sent in sentences:
+                    if sent.strip() in targets:
+                        removed += 1
+                    else:
+                        kept.append(sent)
+                if not kept:
+                    continue  # whole line was offending sentences
+                # Rebuild the line preserving any leading marker.
+                prefix = raw[:len(raw) - len(raw.lstrip())]
+                marker = stripped[:len(stripped) - len(line_unit)]
+                out_lines.append(prefix + marker + " ".join(kept))
+                continue
+            out_lines.append(raw)
+        return "\n".join(out_lines), removed
+
+    def _withhold_all(self, envelopes: list[dict],
+                      iterations: int, repairs: int) -> TurnResult:
+        """Gate exception (P3S-8): withhold the ENTIRE reply, fail closed.
+
+        Ships a generic notice + the deterministic footer (footer inputs are
+        the accumulated envelopes, untouched by the gate, P3S-14). The draft is
+        never released ungated.
+        """
+        text = self._with_footer(_GATE_ERROR_NOTICE, envelopes)
+        return TurnResult(
+            text, envelopes, iterations,
+            grounding=self.grounding.value, repairs=repairs, withheld=True,
+        )
 
 
 def authority_footer(envelopes: list[dict]) -> str:

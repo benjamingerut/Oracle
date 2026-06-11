@@ -1,0 +1,101 @@
+# gdrive -- the Google Drive remote connector (P7-T2). Pull-only.
+#
+# A thin adapter over the RemoteConnector safety core. Pulls files from an
+# admin-approved set of Drive FOLDERS (source.folder_ids -- the default-deny
+# scope allowlist) into Workproduct.nosync/_INPUT/ through the shared core:
+# gate-first authorization, scope-allowlist enforcement, content classification,
+# the policy gate, safe_paths containment, the streaming byte cap, redaction,
+# and the atomic modifiedTime cursor. Runtime: _tools/connectors/gdrive.py
+# (list_items + fetch_item only; pull is the FINAL core template).
+#
+# Block-style YAML only: one '- item' per line; no anchors, aliases, tags, flow
+# ([] / {}), or multi-doc. Empty OPTIONAL fields are OMITTED (a bare 'key:'
+# parses to null and the schema types these fields, so it would fail lint). The
+# scope allowlist (source.folder_ids) is left BARE here -- the wizard / admin
+# fills it explicitly; an empty allowlist refuses the pull (empty NEVER means
+# "everything"; I4 / P7S-13). Validated against
+# _tools/schemas/connector.schema.json.
+
+# id MUST match the folder name and the runtime's connector id.
+id: gdrive
+
+system: gdrive
+
+# planned until the admin fills source.folder_ids and completes the OAuth flow.
+status: planned
+
+# api access mode: Google Drive REST v3 over HTTPS+JSON (stdlib urllib in the
+# safety core only -- this connector never imports urllib).
+access_mode: api
+
+# A point-in-time snapshot of selected bytes is copied into the oracle, then
+# ingested; re-run pull to refresh (incremental via the modifiedTime cursor).
+locality: external_only
+capture_tier: snapshot
+
+# auth: reference variable NAMES only; values live in the root's .env.nosync
+# (0600, never logged). Initial authorization uses the stdlib LOOPBACK
+# installed-app OAuth flow (Google's device flow cannot grant Drive read scopes,
+# P7S-1); pulls only ever refresh the short-lived access token.
+#   GDRIVE_CLIENT_ID      -- the GCP OAuth client id (Desktop app)
+#   GDRIVE_CLIENT_SECRET  -- the GCP OAuth client secret
+#   GDRIVE_REFRESH_TOKEN  -- the offline refresh token from the loopback flow
+auth:
+  method: oauth
+  vars:
+    - GDRIVE_CLIENT_ID
+    - GDRIVE_CLIENT_SECRET
+    - GDRIVE_REFRESH_TOKEN
+
+# Read-only: the core refuses to run a read_write connector as a pull.
+permissions: read_only
+
+# Freshness SLA: a snapshot is considered stale after ~7 days; re-pull to
+# refresh. Freshness is derived from the cursor's last_success_ts (a pull never
+# rewrites this manifest; P7S-23). last_verified is omitted until the first pull.
+freshness:
+  class: api
+  expected_decay_days: 7
+
+# Source authority (feeds TRUTH-MAP.md): primary only for the documents inside
+# the admin-allowlisted Drive folders.
+authoritative_for:
+  - documents in the allowlisted Google Drive folders
+cannot_prove:
+  - content outside the allowlisted folders
+
+# Guardrails.
+forbidden_uses:
+  - pulling from a folder the admin has not added to source.folder_ids
+  - following shortcuts / shared links to targets outside the allowlist
+  - any write back to Drive (read-only; pull-only)
+biases:
+  - reflects only the folders the admin chose to allowlist
+
+# Health: confirm the allowlist is set, auth vars resolve, and the connector is
+# read-only.
+health_check:
+  cadence: weekly
+  checks:
+    - source.folder_ids is a non-empty allowlist
+    - GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET / GDRIVE_REFRESH_TOKEN resolve
+    - last pull within freshness SLA
+
+# Drive's schema is "whatever files live in the allowlisted folders".
+schema_refresh:
+  enabled: false
+  remote_probe: false
+
+# Runtime-specific block (read by _tools/connectors/gdrive.py).
+#   folder_ids          -- the DEFAULT-DENY scope allowlist of Drive folder ids.
+#                          Bare (null) until the admin fills it; an empty / None
+#                          / non-list allowlist refuses the pull. Per-parent
+#                          recursion runs ONLY inside these folders.
+#   max_files           -- blast-radius cap per pull (also bounded by actions caps).
+#   max_bytes           -- per-pull landed-byte ceiling (also bounded by the gate).
+#   cadence             -- scheduled-pull cadence: hourly|daily|weekly|<N>h|<N>d.
+#   default_sensitivity -- classification FLOOR; intake classifies UP on content.
+source:
+  folder_ids:
+  max_files: 500
+  default_sensitivity: internal

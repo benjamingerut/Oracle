@@ -1,0 +1,92 @@
+# slack-export -- the OFFLINE Slack workspace-export connector.
+#
+# Reads an admin-downloaded Slack workspace export .zip (no token, no network)
+# from source.path, honours a default-deny channel allowlist, and lands a
+# readable per-channel-per-day markdown transcript into Workproduct.nosync/_INPUT/
+# through the shared safety core (safe_paths containment, the policy gate, the
+# intake sensitivity classifier). Re-running on the same zip is idempotent
+# (cursor records the export sha256). Runtime: _tools/connectors/slack_export.py.
+#
+# Block-style YAML only: one '- item' per line; no anchors, aliases, tags, flow
+# ([] / {}), or multi-doc. Empty OPTIONAL fields are OMITTED (a bare 'key:' parses
+# to null and the schema types these fields, so it would fail lint). Validated
+# against _tools/schemas/connector.schema.json.
+
+# id MUST match the folder name and the runtime's connector id.
+id: slack-export
+
+system: slack
+
+# planned until the admin sets source.path + source.channels below and approves.
+status: planned
+
+# file_drop: a local export zip is dropped in; no API, no network.
+access_mode: file_drop
+
+# A point-in-time snapshot of the export is rendered + ingested; re-run pull on
+# a fresh export to refresh.
+locality: snapshot_local
+capture_tier: snapshot
+
+# No credentials: an offline export read needs no secret. method 'none', no vars.
+auth:
+  method: none
+
+# Read-only: the runtime refuses to run if this is read_write.
+permissions: read_only
+
+# Freshness SLA: a Slack export is considered stale after ~30 days; re-export to
+# refresh. last_verified is derived from the cursor's last successful pull, never
+# rewritten into this manifest (P7S-23).
+freshness:
+  class: snapshot
+  expected_decay_days: 30
+
+# The grain is "one markdown transcript per channel per day".
+schema:
+  key_objects:
+    - channel
+    - day
+    - message
+
+# Source authority (feeds TRUTH-MAP.md): this connector is primary only for the
+# Slack history the admin explicitly exported and allowlisted.
+authoritative_for:
+  - allowlisted Slack channel history
+cannot_prove:
+  - messages outside the exported / allowlisted channels
+
+# Guardrails.
+forbidden_uses:
+  - pulling a channel the admin has not explicitly allowlisted
+  - any write back to Slack (read-only, offline)
+biases:
+  - reflects only the channels the admin exported and allowlisted
+
+# Health: confirm the export zip exists, is readable, and the channel allowlist
+# is set and non-empty.
+health_check:
+  cadence: weekly
+  checks:
+    - source.path is set and points at a readable zip
+    - source.channels is a non-empty allowlist
+    - last pull within freshness SLA
+
+# Offline export has no remote schema to re-probe.
+schema_refresh:
+  enabled: false
+  remote_probe: false
+
+# Runtime-specific block (read by _tools/connectors/slack_export.py).
+#   path                -- the Slack export .zip to read. Bare (null) until the
+#                          admin sets it; the connector refuses to pull on empty.
+#   channels            -- DEFAULT-DENY allowlist of channel names to land. Bare
+#                          (null) / [] / non-list ALL refuse (empty never means
+#                          "everything"; I4 / P7S-13).
+#   default_sensitivity -- intake classification FLOOR (ambiguity classifies up).
+#   max_files           -- blast-radius cap per pull (also bounded by actions caps).
+source:
+  path:
+  channels:
+  default_sensitivity: internal
+  max_files: 500

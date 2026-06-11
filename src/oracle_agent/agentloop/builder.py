@@ -13,7 +13,7 @@ from pathlib import Path
 from .. import config
 from ..llm.client import LLMClient
 from . import policy_bridge as pb
-from .loop import AgentLoop, build_system_prompt
+from .loop import AgentLoop, GroundingPolicy, build_system_prompt
 from .verbtools import Dispatcher
 
 
@@ -84,6 +84,7 @@ def build_loop(cfg: dict, root: Path, *, surface: str,
     chat_cfg = cfg.get("chat") or {}
     return AgentLoop(
         client, dispatcher, system_prompt,
+        grounding=GroundingPolicy.OBSERVE,  # P3-T4 wires the real surface decision
         max_iterations=int(chat_cfg.get("max_iterations", 20)),
         history_max_chars=int(chat_cfg.get("history_max_chars", 400000)),
         max_tokens=int(prov.get("max_tokens", 4096)),

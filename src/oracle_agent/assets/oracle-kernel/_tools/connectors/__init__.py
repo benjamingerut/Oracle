@@ -106,6 +106,30 @@ def register_system(system: str, factory: Callable[[dict], Connector]) -> None:
     SYSTEM_FACTORIES[str(system)] = factory
 
 
+def _register_builtin_remotes() -> None:
+    """Wire the shipped remote connectors (P7-T2..T6) into the registry.
+
+    Each module is imported under the same flat/package dual pattern as
+    ``localfolder`` above and registered id-only + system-fallback (P7S-6).
+    A connector module that fails to import is skipped (the registry must
+    never die because one adapter is broken); the failure surfaces through
+    ``get_connector_class`` raising for that id, which doctor reports.
+    """
+    for mod_name in ("gdrive", "msgraph", "notion", "imap_mailbox", "slack_export"):
+        try:
+            try:  # flat layout (tests put _tools on sys.path)
+                mod = __import__(f"connectors.{mod_name}", fromlist=[mod_name])
+            except Exception:  # pragma: no cover - package fallback
+                from importlib import import_module
+                mod = import_module(f".{mod_name}", package=__name__)
+            register(mod.ID, mod.build, system=mod.SYSTEM)
+        except Exception:  # pragma: no cover - broken adapter never kills the registry
+            continue
+
+
+_register_builtin_remotes()
+
+
 def get_connector_class(manifest: dict) -> Callable[[dict], Connector]:
     """Resolve the connector factory: by id, then by ``system`` fallback.
 

@@ -230,6 +230,8 @@ class Harness:
         script: list,
         surface: str = "local",
         environment: str = "local_agent",
+        grounding=None,
+        **loop_kwargs,
     ):
         """Return an :class:`~oracle_agent.agentloop.loop.AgentLoop` wired
         with a :class:`FakeLLM` that will replay *script*.
@@ -239,12 +241,28 @@ class Harness:
         URL (loopback for ``local_agent``, a non-loopback for ``external``),
         exercising the real classification path instead of bypassing it.
 
+        ``grounding`` is the :class:`~oracle_agent.agentloop.loop.GroundingPolicy`
+        (Phase 3, required by the loop). It defaults to ``OBSERVE`` -- the v1
+        footer-only behavior -- so existing tests keep the same behavior; pass
+        ``GroundingPolicy.ENFORCE`` to exercise the repair loop. Repair-aware
+        scripting just works: ``FakeLLM`` consumes one ``ScriptedResponse`` per
+        model call, so an assert -> repair -> ground sequence is scripted as
+        three (or more) entries in ``script``.
+
+        Extra ``loop_kwargs`` (e.g. ``max_iterations``, ``max_repair``,
+        ``turn_wall_clock``, ``clock``) are forwarded to ``AgentLoop``.
+
         The loop is built via the real builder's logic (Dispatcher, system
         prompt) with the FakeLLM swapped in for LLMClient.
         """
         from oracle_agent.agentloop import policy_bridge as pb
-        from oracle_agent.agentloop.loop import AgentLoop, build_system_prompt
+        from oracle_agent.agentloop.loop import (
+            AgentLoop, GroundingPolicy, build_system_prompt,
+        )
         from oracle_agent.agentloop.verbtools import Dispatcher
+
+        if grounding is None:
+            grounding = GroundingPolicy.OBSERVE
 
         fake_llm = FakeLLM([s.build() if hasattr(s, "build") else s
                             for s in script])
@@ -277,7 +295,9 @@ class Harness:
         )
         return AgentLoop(
             fake_llm, dispatcher, system_prompt,
+            grounding=grounding,
             retry_kwargs={"sleep": lambda *_: None},
+            **loop_kwargs,
         )
 
     def gateway(self, updates: list[dict], allowlist: dict):
@@ -304,7 +324,7 @@ class Harness:
         loops: dict = {}
 
         def factory(user_id, instance, r):
-            from oracle_agent.agentloop.loop import AgentLoop
+            from oracle_agent.agentloop.loop import AgentLoop, GroundingPolicy
             from oracle_agent.agentloop.verbtools import Dispatcher
             from oracle_agent.agentloop import policy_bridge as pb
 
@@ -318,6 +338,7 @@ class Harness:
             )
             loop = AgentLoop(
                 fake_llm, dispatcher, "SYS",
+                grounding=GroundingPolicy.OBSERVE,  # P3-T4 sets the real gateway mode
                 retry_kwargs={"sleep": lambda *_: None},
             )
             loops[(user_id, instance)] = loop

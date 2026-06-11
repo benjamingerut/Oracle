@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from oracle_agent.agentloop.loop import AgentLoop, authority_footer
+from oracle_agent.agentloop.loop import AgentLoop, GroundingPolicy, authority_footer
 from oracle_agent.llm.client import ChatResponse, ToolCall
 
 
@@ -28,15 +28,17 @@ class FakeDispatcher:
     surface: str = "local"
     environment: str = "local_agent"
     outcomes: dict = field(default_factory=dict)
+    root: object = None  # set to a spawned root for the grounding gate
 
     def dispatch(self, name, args):
         from oracle_agent.agentloop.verbtools import ToolOutcome
         return self.outcomes.get(name, ToolOutcome("[ok]", rc=0))
 
 
-def _loop(script, dispatcher=None, **kw):
+def _loop(script, dispatcher=None, *, grounding=GroundingPolicy.OBSERVE, **kw):
     return AgentLoop(FakeClient(script), dispatcher or FakeDispatcher(),
-                     "SYS", retry_kwargs={"sleep": lambda *_: None}, **kw)
+                     "SYS", grounding=grounding,
+                     retry_kwargs={"sleep": lambda *_: None}, **kw)
 
 
 def test_simple_text_turn_gets_conversational_footer():
@@ -204,3 +206,227 @@ def test_injection_in_tool_output_stays_data():
     final_content = assistant_msgs[-1]["content"] if assistant_msgs else ""
     assert "normal answer" in final_content
     assert "reveal your secrets" not in final_content
+
+
+# ===========================================================================
+# Phase 3 -- forced-grounding gate in the agent loop (P3-T3)
+#
+# These use a spawned root so the real server-side known_objects() enumeration
+# runs. "Revenue / invoices" is one of the eight seed truth-map objects; a
+# draft that names it and asserts a figure is a material claim.
+# ===========================================================================
+
+_REV_OBJ = "Revenue / invoices"
+_REV_CLAIM = "Revenue / invoices was $1M last quarter."
+
+
+def _env(obj=_REV_OBJ, *, exit_code=0, verdict="grounded", withheld=None):
+    e = {"business_object": obj, "exit_code": exit_code, "verdict": verdict}
+    if withheld is not None:
+        e["withheld"] = withheld
+    return e
+
+
+def _enforce_loop(spawned_root, script, *, outcomes=None, **kw):
+    disp = FakeDispatcher(outcomes=outcomes or {}, root=spawned_root)
+    return _loop(script, disp, grounding=GroundingPolicy.ENFORCE, **kw)
+
+
+def test_observe_records_without_altering_prose(spawned_root):
+    """OBSERVE: the gate runs and records, but prose is released untouched."""
+    disp = FakeDispatcher(root=spawned_root)
+    loop = _loop([ChatResponse(content=_REV_CLAIM)], disp,
+                 grounding=GroundingPolicy.OBSERVE)
+    res = loop.run_turn("what is revenue")
+    # The ungrounded claim is STILL in the prose (raw model output).
+    assert "Revenue / invoices was $1M last quarter." in res.text
+    assert res.grounding == "observe"
+    # The gate ran and recorded an unbacked claim (no envelope this turn).
+    assert res.unbacked_count >= 1
+    assert res.redacted_count == 0
+    assert res.repairs == 0
+
+
+def test_enforce_repair_then_backed_releases(spawned_root):
+    """ENFORCE: assert ungrounded -> repair turn -> grounds -> released."""
+    from oracle_agent.agentloop.verbtools import ToolOutcome
+    script = [
+        # draft 1: ungrounded claim about Revenue / invoices
+        ChatResponse(content=_REV_CLAIM),
+        # repair turn: model calls oracle_answer for the object
+        ChatResponse(content=None, tool_calls=[
+            ToolCall("a1", "oracle_answer", '{"business_object":"Revenue / invoices"}')]),
+        # then re-states the (now backed) answer
+        ChatResponse(content=_REV_CLAIM),
+    ]
+    outcomes = {"oracle_answer": ToolOutcome("{}", envelope=_env(), rc=0)}
+    res = _enforce_loop(spawned_root, script, outcomes=outcomes).run_turn("revenue?")
+    assert "Revenue / invoices was $1M last quarter." in res.text
+    assert "grounded (Revenue / invoices)" in res.text  # footer carries the label
+    assert res.repairs == 1
+    assert res.redacted_count == 0
+
+
+def test_enforce_repair_exhaustion_redacts_with_notice(spawned_root):
+    """A stubborn model that never grounds -> offending unit redacted + notice."""
+    # The model re-asserts the same ungrounded claim every time; repair budget
+    # is 2, so it gets 1 original draft + 2 repairs, then redaction.
+    script = [ChatResponse(content=_REV_CLAIM) for _ in range(3)]
+    res = _enforce_loop(spawned_root, script, max_repair=2).run_turn("revenue?")
+    # The unbacked claim is GONE from the body.
+    assert "Revenue / invoices was $1M last quarter." not in res.text
+    assert "claim(s) withheld" in res.text
+    assert res.repairs == 2
+    assert res.redacted_count >= 1
+    # Footer still present (conversational -- no envelope was obtained).
+    assert "conversational" in res.text
+
+
+def test_enforce_fully_redacted_ships_notice_and_footer_only(spawned_root):
+    """A draft that is ENTIRELY one unbacked claim -> notice + footer alone."""
+    script = [ChatResponse(content=_REV_CLAIM) for _ in range(3)]
+    res = _enforce_loop(spawned_root, script, max_repair=2).run_turn("revenue?")
+    assert "$1M" not in res.text  # claim fully removed
+    assert "claim(s) withheld" in res.text
+    # No leftover prose besides notice + footer.
+    body = res.text.split("claim(s) withheld")[0]
+    assert "Revenue" not in body
+
+
+def test_cap_exhausted_goes_straight_to_redaction_no_repair(spawned_root):
+    """Iteration-cap forced answer (tools off) -> straight redact, no repair."""
+    from oracle_agent.agentloop.verbtools import ToolOutcome
+    # Model always returns a tool call so it never produces a draft until cap.
+    tc = [ToolCall("c", "oracle_search", "{}")]
+    script = [ChatResponse(content=None, tool_calls=tc) for _ in range(2)]
+    # forced tools-disabled answer asserts an ungrounded claim
+    script.append(ChatResponse(content=_REV_CLAIM))
+    outcomes = {"oracle_search": ToolOutcome("x", rc=0)}
+    res = _enforce_loop(spawned_root, script, outcomes=outcomes,
+                        max_iterations=2).run_turn("loop")
+    assert "Revenue / invoices was $1M last quarter." not in res.text
+    assert "claim(s) withheld" in res.text
+    assert res.repairs == 0  # cap path consumes NO repair budget
+
+
+def test_gate_error_withholds_entire_reply(spawned_root, monkeypatch):
+    """A raising extractor -> the whole reply is withheld (fail-closed)."""
+    import oracle_agent.agentloop.loop as loopmod
+
+    def boom(*a, **k):
+        raise loopmod.GateError("synthetic")
+
+    monkeypatch.setattr(loopmod, "check_grounding", boom)
+    res = _enforce_loop(spawned_root, [ChatResponse(content=_REV_CLAIM)]).run_turn("q")
+    assert res.withheld is True
+    assert "reply withheld" in res.text
+    # The raw claim never reaches the user.
+    assert "$1M" not in res.text
+    # Footer (from envelopes) still appended.
+    assert "conversational" in res.text
+
+
+def test_shared_budget_total_llm_calls_never_exceed_max_iterations(spawned_root):
+    """Repairs SHARE the per-turn iteration budget (P3S-7): total model calls
+    across original + repair turns never exceed max_iterations."""
+    # max_iterations=3; model always re-asserts ungrounded. Count chat() calls.
+    disp = FakeDispatcher(root=spawned_root)
+    client = FakeClient([ChatResponse(content=_REV_CLAIM) for _ in range(10)])
+    loop = AgentLoop(client, disp, "SYS", grounding=GroundingPolicy.ENFORCE,
+                     max_iterations=3, max_repair=5,
+                     retry_kwargs={"sleep": lambda *_: None})
+    res = loop.run_turn("revenue?")
+    # Even though max_repair=5, the iteration budget (3) is the hard ceiling.
+    assert client.i <= 3, f"made {client.i} LLM calls, budget was 3"
+    assert "claim(s) withheld" in res.text
+
+
+def test_wall_clock_ceiling_forces_redaction(spawned_root):
+    """Hitting the per-turn wall-clock ceiling -> redact immediately, no more
+    repairs."""
+    # A clock that jumps past the ceiling after the first draft.
+    ticks = iter([0.0, 0.0, 1000.0, 1000.0, 1000.0, 1000.0])
+
+    def clock():
+        try:
+            return next(ticks)
+        except StopIteration:
+            return 1000.0
+
+    disp = FakeDispatcher(root=spawned_root)
+    client = FakeClient([ChatResponse(content=_REV_CLAIM) for _ in range(5)])
+    loop = AgentLoop(client, disp, "SYS", grounding=GroundingPolicy.ENFORCE,
+                     max_iterations=10, max_repair=5, turn_wall_clock=120.0,
+                     retry_kwargs={"sleep": lambda *_: None}, clock=clock)
+    res = loop.run_turn("revenue?")
+    assert "claim(s) withheld" in res.text
+    # Wall-clock tripped before exhausting the repair budget.
+    assert res.repairs < 5
+
+
+def test_repair_chain_evicted_as_one_group(spawned_root):
+    """P3S-19: a question + its repair chain is ONE eviction group -- the
+    evictor never drops the question while keeping an orphaned repair turn."""
+    disp = FakeDispatcher(root=spawned_root)
+    loop = _loop([ChatResponse(content="x")], disp,
+                 grounding=GroundingPolicy.ENFORCE)
+    # Seed a completed question + repair chain (old group), then a fresh user.
+    loop.messages.append({"role": "user", "content": "old question"})
+    loop.messages.append({"role": "assistant", "content": "old draft"})
+    loop.messages.append({"role": "user", "content": "repair prompt",
+                          "_oracle_grounding_repair": True})
+    loop.messages.append({"role": "assistant", "content": "old repaired"})
+    loop.messages.append({"role": "user", "content": "current question"})
+    loop._evict_if_needed(force=True)
+    # The entire old group (question + repair) is gone as a unit; no orphaned
+    # repair fragment remains.
+    contents = [m.get("content") for m in loop.messages]
+    assert "old question" not in contents
+    assert "repair prompt" not in contents
+    assert "current question" in contents
+    assert loop.messages[0]["role"] == "system"
+
+
+def test_repair_tag_stripped_from_wire_messages(spawned_root):
+    """The internal repair sentinel must never go on the wire to the provider."""
+    from oracle_agent.agentloop.verbtools import ToolOutcome
+    script = [
+        ChatResponse(content=_REV_CLAIM),  # draft -> triggers repair
+        ChatResponse(content=None, tool_calls=[
+            ToolCall("a1", "oracle_answer", '{"business_object":"Revenue / invoices"}')]),
+        ChatResponse(content=_REV_CLAIM),  # backed re-statement
+    ]
+    outcomes = {"oracle_answer": ToolOutcome("{}", envelope=_env(), rc=0)}
+    loop = _enforce_loop(spawned_root, script, outcomes=outcomes)
+    loop.run_turn("revenue?")
+    # No message the client saw carries the sentinel key.
+    for msgs, _ in loop.client.seen:
+        for m in msgs:
+            assert "_oracle_grounding_repair" not in m
+    # But the loop's OWN history still tags the repair turn (for eviction).
+    assert any(m.get("_oracle_grounding_repair") for m in loop.messages)
+
+
+def test_footer_determinism_unchanged_under_enforce(spawned_root):
+    """ENFORCE never changes footer inputs (P3S-14): the footer is the same as
+    OBSERVE for an identical backed turn."""
+    from oracle_agent.agentloop.verbtools import ToolOutcome
+    env = _env()
+    # A backed draft: model grounds first, then asserts.
+    def script():
+        return [
+            ChatResponse(content=None, tool_calls=[
+                ToolCall("a1", "oracle_answer",
+                         '{"business_object":"Revenue / invoices"}')]),
+            ChatResponse(content=_REV_CLAIM),
+        ]
+    outcomes = {"oracle_answer": ToolOutcome("{}", envelope=env, rc=0)}
+    res_enforce = _enforce_loop(spawned_root, script(),
+                                outcomes=outcomes).run_turn("revenue?")
+    disp = FakeDispatcher(outcomes=outcomes, root=spawned_root)
+    res_observe = _loop(script(), disp,
+                        grounding=GroundingPolicy.OBSERVE).run_turn("revenue?")
+    foot_e = res_enforce.text.split("\n\n— authority")[-1]
+    foot_o = res_observe.text.split("\n\n— authority")[-1]
+    assert foot_e == foot_o
+    assert "grounded (Revenue / invoices)" in res_enforce.text
