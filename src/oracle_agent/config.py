@@ -54,6 +54,18 @@ DEFAULT_CONFIG: dict = {
         "api_key_env": "ORACLE_LLM_API_KEY",
         "max_tokens": 4096,
         "local_is_confined": False,
+        # Phase 8 (P8-T3): the embeddings endpoint for the optional vector
+        # index. A SEPARATE one-purpose surface from chat (P8S-2). ``base_url``
+        # and ``api_key_env`` default to the chat endpoint's when null/absent;
+        # the embedding endpoint is then classified INDEPENDENTLY (and vetoed)
+        # by the policy bridge (P8S-1). ``provider.embeddings.api_key_env`` and
+        # ``provider.embeddings.base_url`` are SECURITY_KEYS (P8S-16) so a
+        # migration can never silently drop or repoint the embedding egress.
+        "embeddings": {
+            "model": None,       # None => embedding/vector search disabled
+            "base_url": None,    # None => inherit provider.base_url
+            "api_key_env": None,  # None => inherit provider.api_key_env
+        },
     },
     "chat": {
         "max_iterations": 20,
@@ -111,6 +123,14 @@ SECURITY_KEYS: tuple[str, ...] = (
     "gateway.telegram.token_env",
     "chat.grounding_default",
     "providers.*.api_key_env",
+    # Phase 8 (P8S-16): the embedding endpoint is content egress; a migration
+    # must never silently drop or repoint it. NOTE these are SINGULAR
+    # ``provider`` dotted paths (not the wildcard ``providers.*`` entry above,
+    # which is DEAD — the real config key is singular ``provider``); the
+    # non-wildcard ``_get_dotted`` walks the nesting, verified by
+    # test_embeddings_security_key_drop_caught / _alter_caught.
+    "provider.embeddings.api_key_env",
+    "provider.embeddings.base_url",
     "ingest_roots",
     "default_instance",
     "default_provider",

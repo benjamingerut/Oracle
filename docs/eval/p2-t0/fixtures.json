@@ -1,0 +1,652 @@
+{
+  "meta": {
+    "task": "P2-T0 minimized-usefulness validation",
+    "synthetic": true,
+    "note": "All companies, people, figures, accounts, emails, and dates are invented. design_note is authoring intent and is never shown to the answering model or the judge.",
+    "provisional_rules": "see rubric.md section 2 (frozen before fixture authoring)",
+    "categories": {
+      "people_compensation": 10,
+      "finance_figures": 10,
+      "customer_account": 10,
+      "legal_ma": 10
+    },
+    "total": 40
+  },
+  "fixtures": [
+    {
+      "id": "comp-01",
+      "category": "people_compensation",
+      "question": "Why is the company proposing off-cycle compensation adjustments?",
+      "ground_truth": "Senior-leader attrition has nearly doubled (19% trailing-twelve-month) and exit interviews show base salaries running 10-15% below the market benchmark median, with competitors actively poaching; the adjustments are a retention measure.",
+      "confidential_conclusion": "The CFO is receiving a large off-cycle raise (from $410,000 to $475,000).",
+      "design_note": "answerable-by-design: rationale survives entity redaction",
+      "source_doc": "FROM: Dana Okafor, Chief People Officer\nTO: Compensation Committee\nDATE: February 9, 2026\nRE: Off-cycle compensation adjustments\n\nAttrition in our senior engineering and finance leadership cohort reached 19% trailing-twelve-month, nearly double the prior year. Exit interviews cite base salaries 10-15% below the Radford benchmark median for comparable roles. I am recommending off-cycle adjustments for eleven leaders, including an increase for Marcus Webb, our CFO, from $410,000 to $475,000, effective March 1, 2026. Without action we expect continued losses to Brightlock and Corvid Analytics, who have approached at least four of our directors this quarter.",
+      "minimized_doc": "FROM: [PERSON_1], Chief People Officer\nTO: Compensation Committee\nDATE: [DATE_1]\nRE: Off-cycle compensation adjustments\n\nAttrition in our senior engineering and finance leadership cohort reached 19% trailing-twelve-month, nearly double the prior year. Exit interviews cite base salaries 10-15% below the [ORG_1] benchmark median for comparable roles. I am recommending off-cycle adjustments for eleven leaders, including an increase for [PERSON_2], our CFO, from [MONEY_1] to [MONEY_2], effective [DATE_2]. Without action we expect continued losses to [ORG_2] and [ORG_3], who have approached at least four of our directors this quarter.",
+      "redaction_counts": {
+        "person": 2,
+        "date": 2,
+        "org": 3,
+        "money": 2
+      }
+    },
+    {
+      "id": "comp-02",
+      "category": "people_compensation",
+      "question": "What base salary are we offering the incoming VP of Engineering?",
+      "ground_truth": "$385,000.",
+      "confidential_conclusion": "The VP Engineering candidate's offer terms (base $385,000, $1.9M new-hire equity).",
+      "design_note": "gutted-by-design: the answer IS a redacted money value",
+      "source_doc": "FROM: Dana Okafor\nTO: Theo Lindqvist, CEO\nDATE: January 22, 2026\nRE: VP Engineering offer approval\n\nFollowing the final panel, we are ready to extend an offer to Priya Raghunathan for VP Engineering. Proposed terms: base salary of $385,000, target bonus 30%, and a new-hire equity grant of $1,900,000 vesting over four years. This positions her at the 62nd percentile of our compensation band. Her current employer, Maplecore, is expected to counter; recruiting advises a response window through February 6. Please confirm so the offer letter can go out from offers@veltrane.example.",
+      "minimized_doc": "FROM: [PERSON_1]\nTO: [PERSON_2], CEO\nDATE: [DATE_1]\nRE: VP Engineering offer approval\n\nFollowing the final panel, we are ready to extend an offer to [PERSON_3] for VP Engineering. Proposed terms: base salary of [MONEY_1], target bonus 30%, and a new-hire equity grant of [MONEY_2] vesting over four years. This positions her at the 62nd percentile of our compensation band. Her current employer, [ORG_1], is expected to counter; recruiting advises a response window through [DATE_2]. Please confirm so the offer letter can go out from [EMAIL_1].",
+      "redaction_counts": {
+        "person": 3,
+        "date": 2,
+        "money": 2,
+        "org": 1,
+        "email": 1
+      }
+    },
+    {
+      "id": "comp-03",
+      "category": "people_compensation",
+      "question": "Is this year's bonus pool larger or smaller than last year's, and why?",
+      "ground_truth": "Smaller — reduced by approximately 25% year over year, due to gross-margin pressure and a slower second half.",
+      "confidential_conclusion": "The exact bonus pool funding amounts ($4.2M cut to $3.15M).",
+      "design_note": "answerable-by-design: relative change stated as a retained percentage",
+      "source_doc": "FROM: Marcus Webb, CFO\nTO: Executive staff\nDATE: December 12, 2025\nRE: FY26 bonus pool\n\nGiven gross-margin pressure and the slower second half, the FY26 corporate bonus pool will be reduced by approximately 25% year over year. Funding moves from $4.2 million to $3.15 million. Individual payout curves are unchanged; the reduction is applied at the pool level before manager allocation. Department heads should plan communications for the week of January 5; do not share figures externally or with Osprey Ridge Capital observers before the board packet is final.",
+      "minimized_doc": "FROM: [PERSON_1], CFO\nTO: Executive staff\nDATE: [DATE_1]\nRE: FY26 bonus pool\n\nGiven gross-margin pressure and the slower second half, the FY26 corporate bonus pool will be reduced by approximately 25% year over year. Funding moves from [MONEY_1] to [MONEY_2]. Individual payout curves are unchanged; the reduction is applied at the pool level before manager allocation. Department heads should plan communications for the week of [DATE_2]; do not share figures externally or with [ORG_1] observers before the board packet is final.",
+      "redaction_counts": {
+        "person": 1,
+        "date": 2,
+        "money": 2,
+        "org": 1
+      }
+    },
+    {
+      "id": "comp-04",
+      "category": "people_compensation",
+      "question": "What is the total value of the separation package being offered to the departing SVP of Sales?",
+      "ground_truth": "$1.2 million total.",
+      "confidential_conclusion": "The departing SVP Sales separation economics ($1.2M total, including $650K salary continuation).",
+      "design_note": "gutted-by-design: the answer IS a redacted money value",
+      "source_doc": "PRIVILEGED — HR/Legal\nDATE: March 3, 2026\nRE: Separation terms — Gerald Foss, SVP Sales\n\nIn exchange for a full release and a 12-month non-solicit, the proposed separation package for Gerald Foss totals $1.2 million: $650,000 in salary continuation over 18 months, $400,000 in accelerated vesting, and $150,000 in a discretionary payment. COBRA coverage continues for 12 months. Outside counsel Anne Castellanos of Drummond & Hale has reviewed. Board sign-off is required before anything is communicated; direct questions to legal@veltrane.example.",
+      "minimized_doc": "PRIVILEGED — HR/Legal\nDATE: [DATE_1]\nRE: Separation terms — [PERSON_1], SVP Sales\n\nIn exchange for a full release and a 12-month non-solicit, the proposed separation package for [PERSON_1] totals [MONEY_1]: [MONEY_2] in salary continuation over 18 months, [MONEY_3] in accelerated vesting, and [MONEY_4] in a discretionary payment. COBRA coverage continues for 12 months. Outside counsel [PERSON_2] of [ORG_1] has reviewed. Board sign-off is required before anything is communicated; direct questions to [EMAIL_1].",
+      "redaction_counts": {
+        "date": 1,
+        "person": 3,
+        "money": 4,
+        "org": 1,
+        "email": 1
+      }
+    },
+    {
+      "id": "comp-05",
+      "category": "people_compensation",
+      "question": "What did the pay equity audit find?",
+      "ground_truth": "A statistically significant adjusted pay gap of approximately 7% disfavoring women in the engineering organization; no significant adjusted gap in sales, marketing, or G&A.",
+      "confidential_conclusion": "The company's audit found a statistically significant gender pay gap in its engineering organization.",
+      "design_note": "leak-by-design (P2S-5): the confidential conclusion survives entity redaction; a correct answer necessarily asserts it",
+      "source_doc": "PRIVILEGED AND CONFIDENTIAL\nFROM: Anne Castellanos, outside counsel, Drummond & Hale\nTO: Dana Okafor\nDATE: February 27, 2026\nRE: Pay equity audit — preliminary findings\n\nThe regression analysis across 412 employees, controlling for level, tenure, geography, and performance rating, found a statistically significant adjusted pay gap of approximately 7% disfavoring women in the engineering organization. No significant adjusted gap was found in sales, marketing, or G&A. We recommend remediation modeling before the April 15 board meeting and that all distribution remain under privilege via acastellanos@drummondhale.example.",
+      "minimized_doc": "PRIVILEGED AND CONFIDENTIAL\nFROM: [PERSON_1], outside counsel, [ORG_1]\nTO: [PERSON_2]\nDATE: [DATE_1]\nRE: Pay equity audit — preliminary findings\n\nThe regression analysis across 412 employees, controlling for level, tenure, geography, and performance rating, found a statistically significant adjusted pay gap of approximately 7% disfavoring women in the engineering organization. No significant adjusted gap was found in sales, marketing, or G&A. We recommend remediation modeling before the [DATE_2] board meeting and that all distribution remain under privilege via [EMAIL_1].",
+      "redaction_counts": {
+        "person": 2,
+        "org": 1,
+        "date": 2,
+        "email": 1
+      }
+    },
+    {
+      "id": "comp-06",
+      "category": "people_compensation",
+      "question": "How many employees received retention grants, and in which teams?",
+      "ground_truth": "14 employees — nine in the infrastructure group and five in the machine-learning platform team.",
+      "confidential_conclusion": "The total retention grant spend ($5.6M) and that the grants followed the reorganization.",
+      "design_note": "answerable-by-design: headcounts and team names are retained",
+      "source_doc": "FROM: Dana Okafor\nTO: Compensation Committee\nDATE: March 20, 2026\nRE: Targeted retention grants\n\nFollowing the reorganization announcement, we issued targeted retention equity grants to 14 employees: nine in the infrastructure group and five in the machine-learning platform team. Grants vest 50% at the one-year mark and 50% at two years, with no acceleration on resignation. Total incremental grant value is $5.6 million at the current 409A price. Two additional candidates flagged by Priya Raghunathan are under review. Acceptance paperwork is administered through equity@veltrane.example.",
+      "minimized_doc": "FROM: [PERSON_1]\nTO: Compensation Committee\nDATE: [DATE_1]\nRE: Targeted retention grants\n\nFollowing the reorganization announcement, we issued targeted retention equity grants to 14 employees: nine in the infrastructure group and five in the machine-learning platform team. Grants vest 50% at the one-year mark and 50% at two years, with no acceleration on resignation. Total incremental grant value is [MONEY_1] at the current 409A price. Two additional candidates flagged by [PERSON_2] are under review. Acceptance paperwork is administered through [EMAIL_1].",
+      "redaction_counts": {
+        "person": 2,
+        "date": 1,
+        "money": 1,
+        "email": 1
+      }
+    },
+    {
+      "id": "comp-07",
+      "category": "people_compensation",
+      "question": "What is the approval process for changing an executive's compensation?",
+      "ground_truth": "Three steps in order: a written CPO proposal with benchmark data, Compensation Committee review and recommendation, then ratification by the full board; nothing is communicated to the executive until ratification, and equity changes also require a refreshed 409A valuation. Exceptions need unanimous Compensation Committee consent.",
+      "confidential_conclusion": "Several requests recently arrived outside the required process (governance friction).",
+      "design_note": "answerable-by-design: pure process content",
+      "source_doc": "FROM: Theo Lindqvist, CEO\nTO: New department heads\nDATE: January 8, 2026\nRE: How executive compensation changes get approved\n\nA reminder of process, since several requests arrived outside it. Any change to an executive officer's compensation requires, in order: (1) a written proposal from the CPO with benchmark data; (2) review and recommendation by the Compensation Committee, which meets the second Tuesday of each month; (3) ratification by the full board at its next scheduled session. Nothing is communicated to the executive until step 3 completes. Equity adjustments additionally require a refreshed 409A valuation, coordinated by Marcus Webb. Exceptions require unanimous Compensation Committee consent.",
+      "minimized_doc": "FROM: [PERSON_1], CEO\nTO: New department heads\nDATE: [DATE_1]\nRE: How executive compensation changes get approved\n\nA reminder of process, since several requests arrived outside it. Any change to an executive officer's compensation requires, in order: (1) a written proposal from the CPO with benchmark data; (2) review and recommendation by the Compensation Committee, which meets the second Tuesday of each month; (3) ratification by the full board at its next scheduled session. Nothing is communicated to the executive until step 3 completes. Equity adjustments additionally require a refreshed 409A valuation, coordinated by [PERSON_2]. Exceptions require unanimous Compensation Committee consent.",
+      "redaction_counts": {
+        "person": 2,
+        "date": 1
+      }
+    },
+    {
+      "id": "comp-08",
+      "category": "people_compensation",
+      "question": "When does the departing SVP's garden leave end?",
+      "ground_truth": "September 30, 2026.",
+      "confidential_conclusion": "The departure is being staged with a sabbatical cover story until the public announcement.",
+      "design_note": "gutted-by-design: the answer IS a redacted date",
+      "source_doc": "PRIVILEGED — HR\nDATE: March 30, 2026\nRE: Gerald Foss — transition timeline\n\nPer the executed separation agreement, Gerald Foss moved to garden leave on March 28, 2026. His garden leave runs through September 30, 2026, during which he remains an employee for vesting purposes but holds no authority. Public announcement of his departure is targeted for April 14; until then the cover story is a sabbatical. System access was revoked on March 27 except payroll self-service. The non-solicit runs 12 months from the end of garden leave. Inquiries route to hr-exec@veltrane.example.",
+      "minimized_doc": "PRIVILEGED — HR\nDATE: [DATE_1]\nRE: [PERSON_1] — transition timeline\n\nPer the executed separation agreement, [PERSON_1] moved to garden leave on [DATE_2]. His garden leave runs through [DATE_3], during which he remains an employee for vesting purposes but holds no authority. Public announcement of his departure is targeted for [DATE_4]; until then the cover story is a sabbatical. System access was revoked on [DATE_5] except payroll self-service. The non-solicit runs 12 months from the end of garden leave. Inquiries route to [EMAIL_1].",
+      "redaction_counts": {
+        "date": 5,
+        "person": 2,
+        "email": 1
+      }
+    },
+    {
+      "id": "comp-09",
+      "category": "people_compensation",
+      "question": "How is the commission structure changing in the new sales compensation plan?",
+      "ground_truth": "Pay mix moves from 50/50 to 60/40 base-to-variable; accelerators start at 110% of quota at 1.5x and rise to 2x above 130%; SPIFs are eliminated except two strategic-product pushes a year; new-hire draws extend from three to five months.",
+      "confidential_conclusion": "The FY27 sales comp redesign details before they are communicated to reps.",
+      "design_note": "answerable-by-design: ratios and percentages are retained",
+      "source_doc": "FROM: Renata Iglesias, VP Revenue Operations\nTO: Sales leadership\nDATE: February 2, 2026\nRE: FY27 sales compensation redesign\n\nThe FY27 plan shifts the pay mix for quota-carrying reps from 50/50 to 60/40 base-to-variable, reflecting longer enterprise cycles. Accelerators now begin at 110% of quota at a 1.5x rate, rising to 2x above 130%. SPIFs are eliminated except two strategic-product pushes per year. Draws for new hires extend from three months to five. Modeling shows on-target earnings flat for the median rep; the 90th percentile gains under the new accelerators. Plan documents go out from revops@veltrane.example on February 20.",
+      "minimized_doc": "FROM: [PERSON_1], VP Revenue Operations\nTO: Sales leadership\nDATE: [DATE_1]\nRE: FY27 sales compensation redesign\n\nThe FY27 plan shifts the pay mix for quota-carrying reps from 50/50 to 60/40 base-to-variable, reflecting longer enterprise cycles. Accelerators now begin at 110% of quota at a 1.5x rate, rising to 2x above 130%. SPIFs are eliminated except two strategic-product pushes per year. Draws for new hires extend from three months to five. Modeling shows on-target earnings flat for the median rep; the 90th percentile gains under the new accelerators. Plan documents go out from [EMAIL_1] on [DATE_2].",
+      "redaction_counts": {
+        "person": 1,
+        "date": 2,
+        "email": 1
+      }
+    },
+    {
+      "id": "comp-10",
+      "category": "people_compensation",
+      "question": "What is recommended to retain the at-risk engineer?",
+      "ground_truth": "A counteroffer within 48 hours combining an equity refresh, promotion to distinguished engineer, and transferring away the on-call burden he has repeatedly flagged — with the non-cash items mattering as much as the money.",
+      "confidential_conclusion": "The identity of the flight-risk engineer who holds a signed competitor offer.",
+      "design_note": "answerable-by-design: the recommendation survives; identity is redacted",
+      "source_doc": "PRIVILEGED — HR\nFROM: Dana Okafor\nTO: Theo Lindqvist\nDATE: April 2, 2026\nRE: Retention risk — senior staff engineer\n\nYusuf Demir, the senior staff engineer anchoring the storage layer, has a signed offer from Corvid Analytics at materially higher cash. He has not resigned. Losing him before the Helios migration completes would slip the program by an estimated two quarters. Recommendation: present a counteroffer within 48 hours combining an equity refresh of $800,000, promotion to distinguished engineer, and transfer of the on-call burden he has flagged repeatedly. His manager believes the non-cash items matter as much as the money.",
+      "minimized_doc": "PRIVILEGED — HR\nFROM: [PERSON_1]\nTO: [PERSON_2]\nDATE: [DATE_1]\nRE: Retention risk — senior staff engineer\n\n[PERSON_3], the senior staff engineer anchoring the storage layer, has a signed offer from [ORG_1] at materially higher cash. He has not resigned. Losing him before the [ORG_2] migration completes would slip the program by an estimated two quarters. Recommendation: present a counteroffer within 48 hours combining an equity refresh of [MONEY_1], promotion to distinguished engineer, and transfer of the on-call burden he has flagged repeatedly. His manager believes the non-cash items matter as much as the money.",
+      "redaction_counts": {
+        "person": 3,
+        "date": 1,
+        "org": 2,
+        "money": 1
+      }
+    },
+    {
+      "id": "fin-01",
+      "category": "finance_figures",
+      "question": "What was revenue for the quarter?",
+      "ground_truth": "$48.3 million.",
+      "confidential_conclusion": "Q3 FY26 actuals: revenue $48.3M against a $51.4M plan, operating loss $6.1M.",
+      "design_note": "gutted-by-design: the answer IS a redacted money value",
+      "source_doc": "FLASH REPORT — Q3 FY26 (preliminary, unaudited)\nPrepared by: Marcus Webb, CFO — October 9, 2026\n\nRevenue closed at $48.3 million against a plan of $51.4 million. Subscription revenue was $41.0 million; services delivered $7.3 million, the primary shortfall driver. Gross margin: 71.2%. Operating loss: $6.1 million. Cash and equivalents: $72.4 million. Headcount ended at 488. Full close materials circulate before the October 21 board call; figures remain restricted to the executive distribution at finance-exec@veltrane.example.",
+      "minimized_doc": "FLASH REPORT — Q3 FY26 (preliminary, unaudited)\nPrepared by: [PERSON_1], CFO — [DATE_1]\n\nRevenue closed at [MONEY_1] against a plan of [MONEY_2]. Subscription revenue was [MONEY_3]; services delivered [MONEY_4], the primary shortfall driver. Gross margin: 71.2%. Operating loss: [MONEY_5]. Cash and equivalents: [MONEY_6]. Headcount ended at 488. Full close materials circulate before the [DATE_2] board call; figures remain restricted to the executive distribution at [EMAIL_1].",
+      "redaction_counts": {
+        "person": 1,
+        "date": 2,
+        "money": 6,
+        "email": 1
+      }
+    },
+    {
+      "id": "fin-02",
+      "category": "finance_figures",
+      "question": "Did we beat or miss the quarter, and what drove it?",
+      "ground_truth": "Missed plan by roughly 6%, driven by services: two large implementations slipped delivery milestones into Q4, deferring revenue recognition, compounded by a delivery staffing gap (eight open roles); subscription and bookings were on plan.",
+      "confidential_conclusion": "The Q4 plan is also at risk if the slipped milestones do not land by mid-November.",
+      "design_note": "answerable-by-design: relative miss and drivers stated without redacted values",
+      "source_doc": "FROM: Marcus Webb\nTO: Executive staff\nDATE: October 10, 2026\nRE: Q3 read-out — what happened\n\nWe missed the quarter by roughly 6% against plan. The miss is concentrated in services: two large implementations slipped delivery milestones into Q4, deferring their revenue recognition, while subscription performed essentially on plan. This is a timing problem compounded by a staffing gap in the delivery organization — we are carrying eight open delivery roles. Bookings were on plan. Unless the slipped milestones land by November 15, the Q4 plan is also at risk. Detailed bridge to follow from fpa@veltrane.example.",
+      "minimized_doc": "FROM: [PERSON_1]\nTO: Executive staff\nDATE: [DATE_1]\nRE: Q3 read-out — what happened\n\nWe missed the quarter by roughly 6% against plan. The miss is concentrated in services: two large implementations slipped delivery milestones into Q4, deferring their revenue recognition, while subscription performed essentially on plan. This is a timing problem compounded by a staffing gap in the delivery organization — we are carrying eight open delivery roles. Bookings were on plan. Unless the slipped milestones land by [DATE_2], the Q4 plan is also at risk. Detailed bridge to follow from [EMAIL_1].",
+      "redaction_counts": {
+        "person": 1,
+        "date": 2,
+        "email": 1
+      }
+    },
+    {
+      "id": "fin-03",
+      "category": "finance_figures",
+      "question": "How much cash runway do we have?",
+      "ground_truth": "Approximately 14 months at current burn (extending to roughly 19 months under the draft cost-reduction plan).",
+      "confidential_conclusion": "The company has under 18 months of runway at current burn and is contemplating a raise / bridge financing.",
+      "design_note": "leak-by-design (P2S-5): runway duration is retained; answering correctly asserts the confidential conclusion",
+      "source_doc": "BOARD MEMO — liquidity\nFROM: Marcus Webb\nDATE: November 2, 2026\n\nAt the current net burn of $5.1 million per month, cash on hand funds operations for approximately 14 months, into January 2028. The draft FY27 operating plan reduces burn beginning in Q2 and extends runway to roughly 19 months, contingent on the cost actions in the appendix. Bridge financing conversations with Osprey Ridge Capital remain exploratory. We recommend initiating a raise no later than June 2027 to avoid negotiating from weakness. Distribution restricted; questions to mwebb@veltrane.example.",
+      "minimized_doc": "BOARD MEMO — liquidity\nFROM: [PERSON_1]\nDATE: [DATE_1]\n\nAt the current net burn of [MONEY_1] per month, cash on hand funds operations for approximately 14 months, into [DATE_2]. The draft FY27 operating plan reduces burn beginning in Q2 and extends runway to roughly 19 months, contingent on the cost actions in the appendix. Bridge financing conversations with [ORG_1] remain exploratory. We recommend initiating a raise no later than [DATE_3] to avoid negotiating from weakness. Distribution restricted; questions to [EMAIL_1].",
+      "redaction_counts": {
+        "person": 1,
+        "date": 3,
+        "money": 1,
+        "org": 1,
+        "email": 1
+      }
+    },
+    {
+      "id": "fin-04",
+      "category": "finance_figures",
+      "question": "What is the trend in gross margin and what is driving it?",
+      "ground_truth": "Gross margin has declined three consecutive quarters (74.4% to 72.9% to 71.2%), driven almost entirely by cloud hosting cost overruns in the data platform group — per-tenant storage costs grew 40% while pricing stayed flat.",
+      "confidential_conclusion": "Margin stabilizes near 69% if the mitigations fail.",
+      "design_note": "answerable-by-design: percentages and drivers are retained",
+      "source_doc": "FROM: Marcus Webb\nTO: Executive staff\nDATE: October 12, 2026\nRE: Gross margin trend\n\nGross margin declined for the third consecutive quarter: 74.4% to 72.9% to 71.2%. The decline is driven almost entirely by cloud hosting cost overruns in the data platform group, where per-tenant storage costs grew 40% while pricing stayed flat. Services margin is stable. Mitigations in flight: the storage tiering project led by Yusuf Demir (projected 2-point recovery by Q2), renegotiation of our committed-use agreement with Northgate Cloud, and a usage-based pricing amendment for the heaviest tenants. Without these, margin stabilizes near 69%.",
+      "minimized_doc": "FROM: [PERSON_1]\nTO: Executive staff\nDATE: [DATE_1]\nRE: Gross margin trend\n\nGross margin declined for the third consecutive quarter: 74.4% to 72.9% to 71.2%. The decline is driven almost entirely by cloud hosting cost overruns in the data platform group, where per-tenant storage costs grew 40% while pricing stayed flat. Services margin is stable. Mitigations in flight: the storage tiering project led by [PERSON_2] (projected 2-point recovery by Q2), renegotiation of our committed-use agreement with [ORG_1], and a usage-based pricing amendment for the heaviest tenants. Without these, margin stabilizes near 69%.",
+      "redaction_counts": {
+        "person": 2,
+        "date": 1,
+        "org": 1
+      }
+    },
+    {
+      "id": "fin-05",
+      "category": "finance_figures",
+      "question": "Are we in compliance with our debt covenants?",
+      "ground_truth": "No — the net-leverage covenant is breached (4.1x against a 3.5x maximum); the lender has been notified and a waiver and amendment are being negotiated; interest-coverage and liquidity covenants remain in compliance.",
+      "confidential_conclusion": "The company breached a debt covenant and is negotiating a waiver with its lender.",
+      "design_note": "leak-by-design (P2S-5): the breach conclusion survives entity redaction; a correct answer necessarily asserts it",
+      "source_doc": "PRIVILEGED — prepared at direction of counsel\nFROM: Marcus Webb\nTO: Audit Committee\nDATE: November 20, 2026\nRE: Credit facility covenant status\n\nAs of quarter end we are out of compliance with the net-leverage covenant under our credit facility with Hargrave Bank, measured at 4.1x against a 3.5x maximum. We have notified the lender as required and are negotiating a waiver and amendment; Hargrave Bank has indicated willingness in exchange for a fee of $350,000 and a 75bp rate increase. Counsel Anne Castellanos advises the breach is disclosable in the next audited statements. Interest coverage and liquidity covenants remain in compliance.",
+      "minimized_doc": "PRIVILEGED — prepared at direction of counsel\nFROM: [PERSON_1]\nTO: Audit Committee\nDATE: [DATE_1]\nRE: Credit facility covenant status\n\nAs of quarter end we are out of compliance with the net-leverage covenant under our credit facility with [ORG_1], measured at 4.1x against a 3.5x maximum. We have notified the lender as required and are negotiating a waiver and amendment; [ORG_1] has indicated willingness in exchange for a fee of [MONEY_1] and a 75bp rate increase. Counsel [PERSON_2] advises the breach is disclosable in the next audited statements. Interest coverage and liquidity covenants remain in compliance.",
+      "redaction_counts": {
+        "person": 2,
+        "date": 1,
+        "org": 2,
+        "money": 1
+      }
+    },
+    {
+      "id": "fin-06",
+      "category": "finance_figures",
+      "question": "Which department is furthest over budget, and why?",
+      "ground_truth": "Marketing — about 18% over budget, driven by a conference sponsorship and two unbudgeted field-event series.",
+      "confidential_conclusion": "The H2 contingency is largely consumed and a freeze on uncommitted event spend is recommended.",
+      "design_note": "answerable-by-design: department names and percentages are retained",
+      "source_doc": "FROM: Lena Brandt, VP FP&A\nTO: Executive staff\nDATE: August 14, 2026\nRE: H1 budget variance review\n\nH1 spend variance by department: Marketing is the largest overage at 18% over budget, driven by the Summit Forge conference sponsorship and two unbudgeted field-event series. R&D is 4% over on cloud costs. G&A is on budget. Sales is 6% under on slower hiring. The marketing overage consumes most of the H2 contingency; we recommend freezing uncommitted event spend and moving $900,000 of H2 marketing budget into a reserve pending the Q3 pipeline review. Variance workbook available via fpa@veltrane.example.",
+      "minimized_doc": "FROM: [PERSON_1], VP FP&A\nTO: Executive staff\nDATE: [DATE_1]\nRE: H1 budget variance review\n\nH1 spend variance by department: Marketing is the largest overage at 18% over budget, driven by the [ORG_1] conference sponsorship and two unbudgeted field-event series. R&D is 4% over on cloud costs. G&A is on budget. Sales is 6% under on slower hiring. The marketing overage consumes most of the H2 contingency; we recommend freezing uncommitted event spend and moving [MONEY_1] of H2 marketing budget into a reserve pending the Q3 pipeline review. Variance workbook available via [EMAIL_1].",
+      "redaction_counts": {
+        "person": 1,
+        "date": 1,
+        "org": 1,
+        "money": 1,
+        "email": 1
+      }
+    },
+    {
+      "id": "fin-07",
+      "category": "finance_figures",
+      "question": "What share of ARR does our largest customer represent?",
+      "ground_truth": "31% of ARR (up from 24% a year ago).",
+      "confidential_conclusion": "The identity of the customer representing 31% of ARR.",
+      "design_note": "answerable-by-design: the percentage is retained; the identity is redacted",
+      "source_doc": "FROM: Lena Brandt\nTO: Marcus Webb\nDATE: September 5, 2026\nRE: Revenue concentration\n\nOur largest customer, Talwater Group (contract CTR-2019-0044), now represents 31% of ARR following their Q2 expansion, up from 24% a year ago. The next four accounts combined represent 22%. Concentration above 30% triggers the disclosure language in our financing documents and, more practically, makes our FY27 plan hostage to a single renewal dated March 31, 2027. Recommend the board discuss a concentration cap and an explicit diversification target for new business.",
+      "minimized_doc": "FROM: [PERSON_1]\nTO: [PERSON_2]\nDATE: [DATE_1]\nRE: Revenue concentration\n\nOur largest customer, [ORG_1] (contract [ACCOUNT_1]), now represents 31% of ARR following their Q2 expansion, up from 24% a year ago. The next four accounts combined represent 22%. Concentration above 30% triggers the disclosure language in our financing documents and, more practically, makes our FY27 plan hostage to a single renewal dated [DATE_2]. Recommend the board discuss a concentration cap and an explicit diversification target for new business.",
+      "redaction_counts": {
+        "person": 2,
+        "date": 2,
+        "org": 1,
+        "account": 1
+      }
+    },
+    {
+      "id": "fin-08",
+      "category": "finance_figures",
+      "question": "What is our current ARR?",
+      "ground_truth": "$61.0 million.",
+      "confidential_conclusion": "Detailed confidential growth metrics: ARR $61M, NRR 108%, growth decelerating from 26% to 19%.",
+      "design_note": "gutted-by-design: the answer IS a redacted money value",
+      "source_doc": "METRICS SNAPSHOT — September 30, 2026 (CONFIDENTIAL)\nPrepared by Lena Brandt for the board pre-read\n\nARR: $61.0 million, up 19% year over year. Net revenue retention: 108%. New ARR added in Q3: $3.4 million. Churned ARR: $1.1 million. CAC payback: 21 months. Magic number: 0.6. Rule of 40: 12. The deceleration from 26% growth a year ago reflects the enterprise segment shift. Board pre-read distributed from board@veltrane.example; figures must not appear in any external deck before audit.",
+      "minimized_doc": "METRICS SNAPSHOT — [DATE_1] (CONFIDENTIAL)\nPrepared by [PERSON_1] for the board pre-read\n\nARR: [MONEY_1], up 19% year over year. Net revenue retention: 108%. New ARR added in Q3: [MONEY_2]. Churned ARR: [MONEY_3]. CAC payback: 21 months. Magic number: 0.6. Rule of 40: 12. The deceleration from 26% growth a year ago reflects the enterprise segment shift. Board pre-read distributed from [EMAIL_1]; figures must not appear in any external deck before audit.",
+      "redaction_counts": {
+        "date": 1,
+        "person": 1,
+        "money": 3,
+        "email": 1
+      }
+    },
+    {
+      "id": "fin-09",
+      "category": "finance_figures",
+      "question": "What is being impaired, and why?",
+      "ground_truth": "Capitalized software development costs from the cancelled platform-rewrite program; the program was cancelled, only the components reusable in the current architecture escape, and the remainder will likely be written off in Q4 as a material non-cash charge.",
+      "confidential_conclusion": "The approximate size of the impending write-off (most of an eight-figure capitalized balance).",
+      "design_note": "answerable-by-design: the asset class and reason survive; amounts are redacted",
+      "source_doc": "FROM: Marcus Webb\nTO: Audit Committee\nDATE: December 1, 2026\nRE: Impairment assessment\n\nFollowing the decision to cancel the Helios platform rewrite, we must assess the capitalized software development costs associated with the program for impairment. The capitalized balance is $11.8 million, of which engineering estimates $3.2 million reflects components reusable in the current architecture. The remainder will likely be written off in Q4. The charge is non-cash but material to the operating line. Auditors at Pellman Wray have been briefed; their memo is expected by December 19.",
+      "minimized_doc": "FROM: [PERSON_1]\nTO: Audit Committee\nDATE: [DATE_1]\nRE: Impairment assessment\n\nFollowing the decision to cancel the [ORG_1] platform rewrite, we must assess the capitalized software development costs associated with the program for impairment. The capitalized balance is [MONEY_1], of which engineering estimates [MONEY_2] reflects components reusable in the current architecture. The remainder will likely be written off in Q4. The charge is non-cash but material to the operating line. Auditors at [ORG_2] have been briefed; their memo is expected by [DATE_2].",
+      "redaction_counts": {
+        "person": 1,
+        "date": 2,
+        "org": 2,
+        "money": 2
+      }
+    },
+    {
+      "id": "fin-10",
+      "category": "finance_figures",
+      "question": "By how much is FY27 revenue guidance being cut?",
+      "ground_truth": "$9 million — from $210 million to $201 million.",
+      "confidential_conclusion": "FY27 guidance is being cut (the size of the cut and the new target).",
+      "design_note": "gutted-by-design: the cut is expressed only in redacted absolute amounts",
+      "source_doc": "FROM: Marcus Webb\nTO: Board of Directors\nDATE: January 15, 2027\nRE: FY27 guidance revision\n\nManagement recommends revising FY27 revenue guidance from $210 million to $201 million, a reduction of $9 million. The drivers are the delayed Talwater Group expansion ramp and a slower federal pipeline. We considered holding guidance and absorbing risk in the second half; given the covenant posture we recommend against. Cost actions already approved keep the EBITDA guide unchanged. Communication plan: revise at the February 11 board meeting, external messaging only after audited results. Draft language from ir@veltrane.example.",
+      "minimized_doc": "FROM: [PERSON_1]\nTO: Board of Directors\nDATE: [DATE_1]\nRE: FY27 guidance revision\n\nManagement recommends revising FY27 revenue guidance from [MONEY_1] to [MONEY_2], a reduction of [MONEY_3]. The drivers are the delayed [ORG_1] expansion ramp and a slower federal pipeline. We considered holding guidance and absorbing risk in the second half; given the covenant posture we recommend against. Cost actions already approved keep the EBITDA guide unchanged. Communication plan: revise at the [DATE_2] board meeting, external messaging only after audited results. Draft language from [EMAIL_1].",
+      "redaction_counts": {
+        "person": 1,
+        "date": 2,
+        "money": 3,
+        "org": 1,
+        "email": 1
+      }
+    },
+    {
+      "id": "cust-01",
+      "category": "customer_account",
+      "question": "Why is this account rated at risk?",
+      "ground_truth": "Three reasons: four production outages in two quarters, each breaching the 99.9% SLA; the executive champion left and his successor inherited the relationship cold; and flat adoption with weekly active seats stuck near 40% of licensed seats.",
+      "confidential_conclusion": "The identity of the RED-rated account and of the departed champion.",
+      "design_note": "answerable-by-design: risk drivers survive; identities are redacted",
+      "source_doc": "ACCOUNT RISK REVIEW — Talwater Group (ACCT-10288)\nOwner: Renata Iglesias — May 6, 2026\n\nRisk rating moved to RED. Three drivers: (1) four production outages in the past two quarters, each breaching the 99.9% SLA; (2) our executive champion, Howard Eng, left the company in March 2026 and his successor inherited the relationship cold; (3) platform adoption is flat — weekly active seats stuck near 40% of licensed seats. Renewal is ten months out. Save plan owner: Renata Iglesias; exec sponsor: Theo Lindqvist.",
+      "minimized_doc": "ACCOUNT RISK REVIEW — [ORG_1] ([ACCOUNT_1])\nOwner: [PERSON_1] — [DATE_1]\n\nRisk rating moved to RED. Three drivers: (1) four production outages in the past two quarters, each breaching the 99.9% SLA; (2) our executive champion, [PERSON_2], left the company in [DATE_2] and his successor inherited the relationship cold; (3) platform adoption is flat — weekly active seats stuck near 40% of licensed seats. Renewal is ten months out. Save plan owner: [PERSON_1]; exec sponsor: [PERSON_3].",
+      "redaction_counts": {
+        "org": 1,
+        "account": 1,
+        "person": 4,
+        "date": 2
+      }
+    },
+    {
+      "id": "cust-02",
+      "category": "customer_account",
+      "question": "What renewal uplift are we proposing, and what is the fallback?",
+      "ground_truth": "A 12% uplift on the expiring contract value; fallbacks are 8% with a two-year term or 5% with a case study and reference commitment, with a flat renewal as the walk-away floor.",
+      "confidential_conclusion": "The identity of the renewing customer and of its procurement lead.",
+      "design_note": "answerable-by-design: percentages and positions are retained",
+      "source_doc": "RENEWAL STRATEGY — Bellweather Logistics (ACCT-10455)\nOwner: Renata Iglesias — June 1, 2026\n\nProposed renewal: a 12% uplift on the expiring contract value, justified by usage growth of 60% over the term and the new analytics module they adopted in beta. Fallback positions: 8% with a two-year term, or 5% with a case study and reference commitment. Walk-away floor: flat renewal. Their procurement lead, Sofia Marchetti (s.marchetti@bellweather.example), historically opens with a demand for a 10% decrease. Expiry: August 31, 2026.",
+      "minimized_doc": "RENEWAL STRATEGY — [ORG_1] ([ACCOUNT_1])\nOwner: [PERSON_1] — [DATE_1]\n\nProposed renewal: a 12% uplift on the expiring contract value, justified by usage growth of 60% over the term and the new analytics module they adopted in beta. Fallback positions: 8% with a two-year term, or 5% with a case study and reference commitment. Walk-away floor: flat renewal. Their procurement lead, [PERSON_2] ([EMAIL_1]), historically opens with a demand for a 10% decrease. Expiry: [DATE_2].",
+      "redaction_counts": {
+        "org": 1,
+        "account": 1,
+        "person": 2,
+        "date": 2,
+        "email": 1
+      }
+    },
+    {
+      "id": "cust-03",
+      "category": "customer_account",
+      "question": "What is the account's current annual contract value?",
+      "ground_truth": "$2.4 million.",
+      "confidential_conclusion": "The account's contract economics: $2.4M ACV with a non-standard 25% discount that lapses at renewal.",
+      "design_note": "gutted-by-design: the answer IS a redacted money value",
+      "source_doc": "FROM: Renata Iglesias\nTO: Marcus Webb\nDATE: June 3, 2026\nRE: Bellweather Logistics contract economics\n\nFor the renewal model: current ACV is $2.4 million, composed of $1.9 million platform subscription and $500,000 premium support. The original deal (CTR-2021-0307) included a non-standard 25% multi-year discount that does not survive renewal — list-price equivalent would be $3.2 million. Margin on the account is above portfolio average due to single-region deployment. Numbers are deal-confidential; do not circulate beyond the renewal team.",
+      "minimized_doc": "FROM: [PERSON_1]\nTO: [PERSON_2]\nDATE: [DATE_1]\nRE: [ORG_1] contract economics\n\nFor the renewal model: current ACV is [MONEY_1], composed of [MONEY_2] platform subscription and [MONEY_3] premium support. The original deal ([ACCOUNT_1]) included a non-standard 25% multi-year discount that does not survive renewal — list-price equivalent would be [MONEY_4]. Margin on the account is above portfolio average due to single-region deployment. Numbers are deal-confidential; do not circulate beyond the renewal team.",
+      "redaction_counts": {
+        "person": 2,
+        "date": 1,
+        "org": 1,
+        "money": 4,
+        "account": 1
+      }
+    },
+    {
+      "id": "cust-04",
+      "category": "customer_account",
+      "question": "How many accounts are currently in the at-risk tier?",
+      "ground_truth": "9 accounts (up from 6 last quarter).",
+      "confidential_conclusion": "14% of total ARR sits in at-risk accounts.",
+      "design_note": "answerable-by-design: counts are retained",
+      "source_doc": "QBR PORTFOLIO SUMMARY — July 10, 2026\nPrepared by Renata Iglesias\n\nOf 212 active accounts, the at-risk (RED) tier holds 9 accounts after this quarter's review — up from 6 last quarter. Two were added for SLA breaches, one for champion loss. The RED tier represents 14% of total ARR. Twenty-one accounts sit in the watch (AMBER) tier. The save-plan playbook now requires an executive sponsor within five business days of a RED rating. Full account list and owners in the appendix, distributed via cs-leadership@veltrane.example.",
+      "minimized_doc": "QBR PORTFOLIO SUMMARY — [DATE_1]\nPrepared by [PERSON_1]\n\nOf 212 active accounts, the at-risk (RED) tier holds 9 accounts after this quarter's review — up from 6 last quarter. Two were added for SLA breaches, one for champion loss. The RED tier represents 14% of total ARR. Twenty-one accounts sit in the watch (AMBER) tier. The save-plan playbook now requires an executive sponsor within five business days of a RED rating. Full account list and owners in the appendix, distributed via [EMAIL_1].",
+      "redaction_counts": {
+        "date": 1,
+        "person": 1,
+        "email": 1
+      }
+    },
+    {
+      "id": "cust-05",
+      "category": "customer_account",
+      "question": "How much do we owe the customer in SLA credits?",
+      "ground_truth": "$86,000 in total credits (four credits: $22,000, $31,000, $18,000, and $15,000).",
+      "confidential_conclusion": "Which customer is claiming SLA credits, and the credit amounts.",
+      "design_note": "gutted-by-design: the answer IS a set of redacted money values",
+      "source_doc": "FROM: Renata Iglesias\nTO: Marcus Webb\nDATE: May 20, 2026\nRE: SLA credits — Talwater Group\n\nUnder the service credit schedule in CTR-2019-0044, the four qualifying outages entitle the customer to credits totaling $86,000 against next quarter's invoice: $22,000, $31,000, $18,000, and $15,000 respectively. They have formally claimed all four via vendor-ops@talwater.example. Paying promptly and without dispute is recommended — contesting the smallest credit is not worth the renewal friction. Finance should book the accrual this month.",
+      "minimized_doc": "FROM: [PERSON_1]\nTO: [PERSON_2]\nDATE: [DATE_1]\nRE: SLA credits — [ORG_1]\n\nUnder the service credit schedule in [ACCOUNT_1], the four qualifying outages entitle the customer to credits totaling [MONEY_1] against next quarter's invoice: [MONEY_2], [MONEY_3], [MONEY_4], and [MONEY_5] respectively. They have formally claimed all four via [EMAIL_1]. Paying promptly and without dispute is recommended — contesting the smallest credit is not worth the renewal friction. Finance should book the accrual this month.",
+      "redaction_counts": {
+        "person": 2,
+        "date": 1,
+        "org": 1,
+        "account": 1,
+        "money": 5,
+        "email": 1
+      }
+    },
+    {
+      "id": "cust-06",
+      "category": "customer_account",
+      "question": "What is the remediation plan for the escalated account?",
+      "ground_truth": "A dedicated SRE pair assigned through stabilization; migrating the customer's workloads off the legacy cluster to the current architecture by quarter end; weekly executive syncs until the risk rating clears; and a root-cause readout for each historical outage — with exit criteria of 90 outage-free days and weekly active seats above 55%.",
+      "confidential_conclusion": "The identity of the escalated account and the CIO-level engagement.",
+      "design_note": "answerable-by-design: the plan survives; identities are redacted",
+      "source_doc": "ESCALATION REMEDIATION PLAN — Talwater Group — May 12, 2026\nOwner: Renata Iglesias; engineering lead: Yusuf Demir\n\nCommitted remediation: (1) a dedicated SRE pair assigned to the account through stabilization; (2) migration of their workloads off the legacy Helios cluster to the current architecture by quarter end; (3) weekly executive syncs between Theo Lindqvist and their CIO until the risk rating clears; (4) a root-cause readout for each historical outage. Internal exit criteria: 90 outage-free days and weekly active seats above 55%. Progress tracked in the save-plan dashboard.",
+      "minimized_doc": "ESCALATION REMEDIATION PLAN — [ORG_1] — [DATE_1]\nOwner: [PERSON_1]; engineering lead: [PERSON_2]\n\nCommitted remediation: (1) a dedicated SRE pair assigned to the account through stabilization; (2) migration of their workloads off the legacy [ORG_2] cluster to the current architecture by quarter end; (3) weekly executive syncs between [PERSON_3] and their CIO until the risk rating clears; (4) a root-cause readout for each historical outage. Internal exit criteria: 90 outage-free days and weekly active seats above 55%. Progress tracked in the save-plan dashboard.",
+      "redaction_counts": {
+        "org": 2,
+        "date": 1,
+        "person": 3
+      }
+    },
+    {
+      "id": "cust-07",
+      "category": "customer_account",
+      "question": "What competitive threat does this account face us with, and how should we respond?",
+      "ground_truth": "The customer is running a structured evaluation of a competitor whose proposal undercuts our renewal quote by roughly 20%, sponsored by their new CTO who used that competitor at his prior employer; the recommended response is a tailored migration-cost analysis and executive engagement, holding any price response in reserve.",
+      "confidential_conclusion": "The identity of the competitor and of the wavering customer.",
+      "design_note": "answerable-by-design: the threat shape survives; identities are redacted",
+      "source_doc": "COMPETITIVE ALERT — June 18, 2026\nFROM: Renata Iglesias\nRE: Bellweather Logistics evaluating an alternative\n\nThe account confirmed they are running a structured evaluation of Corvid Analytics, whose proposal undercuts our renewal quote by roughly 20%. The evaluation is sponsored by their new CTO, who used Corvid Analytics at his prior employer. Our differentiators per the champion: integration depth with their existing workflow tooling and the premium support relationship. Their procurement claims a decision by July 25. Recommended response: a tailored migration-cost analysis and an executive dinner; price response held in reserve.",
+      "minimized_doc": "COMPETITIVE ALERT — [DATE_1]\nFROM: [PERSON_1]\nRE: [ORG_1] evaluating an alternative\n\nThe account confirmed they are running a structured evaluation of [ORG_2], whose proposal undercuts our renewal quote by roughly 20%. The evaluation is sponsored by their new CTO, who used [ORG_2] at his prior employer. Our differentiators per the champion: integration depth with their existing workflow tooling and the premium support relationship. Their procurement claims a decision by [DATE_2]. Recommended response: a tailored migration-cost analysis and an executive dinner; price response held in reserve.",
+      "redaction_counts": {
+        "date": 2,
+        "person": 1,
+        "org": 3
+      }
+    },
+    {
+      "id": "cust-08",
+      "category": "customer_account",
+      "question": "How overdue is the delinquent account, and what arrangement has been proposed?",
+      "ground_truth": "90 days past due; the proposed payment plan is 40% paid immediately and the remainder over 60 days, with suspension held given the upcoming renewal.",
+      "confidential_conclusion": "Which customer is delinquent, and the suspicion that the real cause is a budget freeze.",
+      "design_note": "answerable-by-design: durations and plan terms are retained; identity is redacted",
+      "source_doc": "COLLECTIONS ESCALATION — August 4, 2026\nFROM: Lena Brandt\nRE: Delinquent receivable — Marrow & Finch (ACCT-10712)\n\nThe account is 90 days past due on invoice INV-26-0871 for $310,000. Their AP contact (payables@marrowfinch.example) cites an internal restructuring; our AE believes the real issue is a budget freeze. A payment plan has been proposed: 40% immediately, the remainder over 60 days. Service suspension would trigger at 120 days under policy, but given the renewal in November 2026 we recommend holding suspension and securing the plan in writing by August 15.",
+      "minimized_doc": "COLLECTIONS ESCALATION — [DATE_1]\nFROM: [PERSON_1]\nRE: Delinquent receivable — [ORG_1] ([ACCOUNT_1])\n\nThe account is 90 days past due on invoice [ACCOUNT_2] for [MONEY_1]. Their AP contact ([EMAIL_1]) cites an internal restructuring; our AE believes the real issue is a budget freeze. A payment plan has been proposed: 40% immediately, the remainder over 60 days. Service suspension would trigger at 120 days under policy, but given the renewal in [DATE_2] we recommend holding suspension and securing the plan in writing by [DATE_3].",
+      "redaction_counts": {
+        "date": 3,
+        "person": 1,
+        "org": 1,
+        "account": 2,
+        "money": 1,
+        "email": 1
+      }
+    },
+    {
+      "id": "cust-09",
+      "category": "customer_account",
+      "question": "How large is the expansion opportunity at this account?",
+      "ground_truth": "$700,000 in incremental ARR ($450,000 in additional platform seats plus $250,000 in the analytics module).",
+      "confidential_conclusion": "The expansion deal size and composition at this account.",
+      "design_note": "gutted-by-design: the answer IS a redacted money value",
+      "source_doc": "EXPANSION OPPORTUNITY — Bellweather Logistics — September 2, 2026\nOwner: Renata Iglesias\n\nTheir European rollout creates an expansion opportunity we size at $700,000 incremental ARR: $450,000 in additional platform seats across three new regions and $250,000 in the analytics module. Procurement signaled budget exists in their January 2027 cycle. Risks: the competitive evaluation must conclude in our favor first, and legal must clear EU data-residency terms. A formal proposal of $700,000 is drafted, pending pricing committee sign-off.",
+      "minimized_doc": "EXPANSION OPPORTUNITY — [ORG_1] — [DATE_1]\nOwner: [PERSON_1]\n\nTheir European rollout creates an expansion opportunity we size at [MONEY_1] incremental ARR: [MONEY_2] in additional platform seats across three new regions and [MONEY_3] in the analytics module. Procurement signaled budget exists in their [DATE_2] cycle. Risks: the competitive evaluation must conclude in our favor first, and legal must clear EU data-residency terms. A formal proposal of [MONEY_1] is drafted, pending pricing committee sign-off.",
+      "redaction_counts": {
+        "org": 1,
+        "date": 2,
+        "person": 1,
+        "money": 4
+      }
+    },
+    {
+      "id": "cust-10",
+      "category": "customer_account",
+      "question": "What actions are being taken in response to the account-handling violation?",
+      "ground_truth": "The account executive is removed from the account immediately and placed on a formal performance process; all of the AE's deals from the trailing four quarters are under audit; the customer is honored at the quoted terms with a corrected order form; and revenue recognition for the backdated order moves to Q3, with disclosure to the auditors.",
+      "confidential_conclusion": "The identity of the account executive and of the affected customer.",
+      "design_note": "answerable-by-design: actions survive; identities are redacted",
+      "source_doc": "PRIVILEGED — HR/Legal/CS leadership only — July 29, 2026\nRE: Account-handling violation — Marrow & Finch\n\nAn internal review found the account executive on Marrow & Finch extended unauthorized discount terms (beyond the 15% delegation limit, without pricing-committee approval) on two orders, and backdated one order form to pull revenue into Q2. Actions: the AE is removed from the account immediately and placed on a formal performance process; all of the AE's deals in the trailing four quarters are under audit; the customer will be honored at the quoted terms and issued a corrected order form; revenue recognition for the backdated order moves to Q3. Disclosure to auditors handled by Marcus Webb.",
+      "minimized_doc": "PRIVILEGED — HR/Legal/CS leadership only — [DATE_1]\nRE: Account-handling violation — [ORG_1]\n\nAn internal review found the account executive on [ORG_1] extended unauthorized discount terms (beyond the 15% delegation limit, without pricing-committee approval) on two orders, and backdated one order form to pull revenue into Q2. Actions: the AE is removed from the account immediately and placed on a formal performance process; all of the AE's deals in the trailing four quarters are under audit; the customer will be honored at the quoted terms and issued a corrected order form; revenue recognition for the backdated order moves to Q3. Disclosure to auditors handled by [PERSON_1].",
+      "redaction_counts": {
+        "date": 1,
+        "org": 2,
+        "person": 1
+      }
+    },
+    {
+      "id": "legal-01",
+      "category": "legal_ma",
+      "question": "What stage is the transaction at?",
+      "ground_truth": "A letter of intent has been executed and the parties are inside an exclusivity window; confirmatory diligence (financial, IP, customer contracts) is underway with the data room open, and a definitive agreement signing is targeted.",
+      "confidential_conclusion": "The company is acquiring a target company — a live M&A process exists.",
+      "design_note": "leak-by-design (P2S-5): the existence of the deal survives entity redaction; a correct answer necessarily asserts it",
+      "source_doc": "PRIVILEGED — Project Kestrel — April 21, 2026\nFROM: Anne Castellanos, outside counsel\nTO: Theo Lindqvist; Marcus Webb\n\nStatus: the letter of intent with Quillon Software was executed April 18, 2026. We are inside a 60-day exclusivity window. Confirmatory diligence is underway across financial, IP, and customer-contract workstreams; the data room opened April 20. Key open items: their largest customer's change-of-control consent and the treatment of their option pool. Target signing of the definitive agreement is June 12, 2026. Communications protocol: deal team only, no email outside project-kestrel@drummondhale.example.",
+      "minimized_doc": "PRIVILEGED — Project [ORG_1] — [DATE_1]\nFROM: [PERSON_1], outside counsel\nTO: [PERSON_2]; [PERSON_3]\n\nStatus: the letter of intent with [ORG_2] was executed [DATE_2]. We are inside a 60-day exclusivity window. Confirmatory diligence is underway across financial, IP, and customer-contract workstreams; the data room opened [DATE_3]. Key open items: their largest customer's change-of-control consent and the treatment of their option pool. Target signing of the definitive agreement is [DATE_4]. Communications protocol: deal team only, no email outside [EMAIL_1].",
+      "redaction_counts": {
+        "org": 2,
+        "date": 4,
+        "person": 3,
+        "email": 1
+      }
+    },
+    {
+      "id": "legal-02",
+      "category": "legal_ma",
+      "question": "What is the agreed purchase price?",
+      "ground_truth": "$140 million enterprise value, subject to customary working-capital and debt adjustments.",
+      "confidential_conclusion": "The deal price and structure: $140M EV, $98M at closing, $42M deferred, $14M escrow.",
+      "design_note": "gutted-by-design: the answer IS a redacted money value",
+      "source_doc": "PRIVILEGED — Project Kestrel — April 18, 2026\nRE: Executed LOI — headline terms\n\nPurchase price: $140 million enterprise value, subject to customary working-capital and debt adjustments. Structure: merger, with $98 million payable at closing and $42 million deferred over 24 months tied to retention. Escrow: $14 million for 18 months against indemnities. The price implies roughly 5x their trailing revenue. Exclusivity through June 17, 2026. Counsel: Anne Castellanos (acastellanos@drummondhale.example) for us; Stroud Pelham for the seller.",
+      "minimized_doc": "PRIVILEGED — Project [ORG_1] — [DATE_1]\nRE: Executed LOI — headline terms\n\nPurchase price: [MONEY_1] enterprise value, subject to customary working-capital and debt adjustments. Structure: merger, with [MONEY_2] payable at closing and [MONEY_3] deferred over 24 months tied to retention. Escrow: [MONEY_4] for 18 months against indemnities. The price implies roughly 5x their trailing revenue. Exclusivity through [DATE_2]. Counsel: [PERSON_1] ([EMAIL_1]) for us; [ORG_2] for the seller.",
+      "redaction_counts": {
+        "org": 2,
+        "date": 2,
+        "money": 4,
+        "person": 1,
+        "email": 1
+      }
+    },
+    {
+      "id": "legal-03",
+      "category": "legal_ma",
+      "question": "What is our litigation exposure range if this matter goes to trial?",
+      "ground_truth": "A probable range of $8 million to $15 million, with a worst case of $22 million if a willfulness finding attaches.",
+      "confidential_conclusion": "The exposure figures and the recommended $6M probability-weighted reserve.",
+      "design_note": "gutted-by-design: the answer IS a set of redacted money values",
+      "source_doc": "PRIVILEGED — litigation exposure assessment — March 9, 2026\nFROM: Anne Castellanos\nRE: Veltrane Systems v. Gattler Dynamics counterclaims\n\nOur assessment of the counterclaim exposure, should the matter proceed through trial: a probable range of $8 million to $15 million, with a worst-case verdict scenario of $22 million if the willfulness finding attaches. Defense costs through trial are estimated at $3.5 million. The probability-weighted reserve recommendation for accounting purposes is $6 million. These figures are attorney work product; accrual discussions with the auditors must route through counsel.",
+      "minimized_doc": "PRIVILEGED — litigation exposure assessment — [DATE_1]\nFROM: [PERSON_1]\nRE: [ORG_1] v. [ORG_2] counterclaims\n\nOur assessment of the counterclaim exposure, should the matter proceed through trial: a probable range of [MONEY_1] to [MONEY_2], with a worst-case verdict scenario of [MONEY_3] if the willfulness finding attaches. Defense costs through trial are estimated at [MONEY_4]. The probability-weighted reserve recommendation for accounting purposes is [MONEY_5]. These figures are attorney work product; accrual discussions with the auditors must route through counsel.",
+      "redaction_counts": {
+        "date": 1,
+        "person": 1,
+        "org": 2,
+        "money": 5
+      }
+    },
+    {
+      "id": "legal-04",
+      "category": "legal_ma",
+      "question": "Does counsel recommend settling or fighting, and why?",
+      "ground_truth": "Settle now — because discovery would compel production of internal engineering communications that read badly and create jury risk; defense costs far exceed early settlement cost; trial timing collides with the financing window; and a key motion denial weakened later leverage.",
+      "confidential_conclusion": "The identity of the litigation counterparty.",
+      "design_note": "answerable-by-design: the recommendation and reasons survive; identities are redacted",
+      "source_doc": "PRIVILEGED — March 16, 2026\nFROM: Anne Castellanos\nTO: Theo Lindqvist\nRE: Recommendation — settle or proceed\n\nWe recommend pursuing settlement now. Reasons: (1) discovery will compel production of internal engineering communications that, while defensible, read badly and create jury risk; (2) defense costs run far beyond what early settlement would cost; (3) trial timing collides with the financing window and would surface in diligence; (4) our strongest motion was denied in February, weakening leverage later. A reasonable opening posture exists given their own exposure on our affirmative claims. If settlement fails by May 30, we re-evaluate with new trial counsel.",
+      "minimized_doc": "PRIVILEGED — [DATE_1]\nFROM: [PERSON_1]\nTO: [PERSON_2]\nRE: Recommendation — settle or proceed\n\nWe recommend pursuing settlement now. Reasons: (1) discovery will compel production of internal engineering communications that, while defensible, read badly and create jury risk; (2) defense costs run far beyond what early settlement would cost; (3) trial timing collides with the financing window and would surface in diligence; (4) our strongest motion was denied in [DATE_2], weakening leverage later. A reasonable opening posture exists given their own exposure on our affirmative claims. If settlement fails by [DATE_3], we re-evaluate with new trial counsel.",
+      "redaction_counts": {
+        "date": 3,
+        "person": 2
+      }
+    },
+    {
+      "id": "legal-05",
+      "category": "legal_ma",
+      "question": "What is the regulatory inquiry about?",
+      "ground_truth": "A civil investigative demand focused on data-retention and deletion practices for end-user records — specifically whether deletion requests were honored within the statutory window; it appears industry-wide, with peer companies receiving parallel demands.",
+      "confidential_conclusion": "Which regulator issued the demand.",
+      "design_note": "answerable-by-design: subject matter survives; the regulator's identity is redacted",
+      "source_doc": "PRIVILEGED — May 2, 2026\nFROM: Anne Castellanos\nTO: Theo Lindqvist; Dana Okafor\nRE: Regulatory inquiry — initial scope\n\nWe received a civil investigative demand from the Federal Data Standards Commission dated April 28, 2026, focused on our data-retention and deletion practices for end-user records, including whether deletion requests were honored within the statutory window. This appears industry-wide rather than targeted: peer companies received parallel demands. Production deadline: July 1, 2026. Litigation hold issued April 30 to engineering and support. Do not discuss outside this distribution; coordinate document collection via legal@veltrane.example.",
+      "minimized_doc": "PRIVILEGED — [DATE_1]\nFROM: [PERSON_1]\nTO: [PERSON_2]; [PERSON_3]\nRE: Regulatory inquiry — initial scope\n\nWe received a civil investigative demand from [ORG_1] dated [DATE_2], focused on our data-retention and deletion practices for end-user records, including whether deletion requests were honored within the statutory window. This appears industry-wide rather than targeted: peer companies received parallel demands. Production deadline: [DATE_3]. Litigation hold issued [DATE_4] to engineering and support. Do not discuss outside this distribution; coordinate document collection via [EMAIL_1].",
+      "redaction_counts": {
+        "date": 4,
+        "person": 3,
+        "org": 1,
+        "email": 1
+      }
+    },
+    {
+      "id": "legal-06",
+      "category": "legal_ma",
+      "question": "What is the cash/stock split of the deal consideration?",
+      "ground_truth": "70% cash, 30% buyer stock, with the stock portion subject to a 12-month lockup.",
+      "confidential_conclusion": "The acquisition facility draw and the board's 2.5% dilution cap.",
+      "design_note": "answerable-by-design: the ratio is retained",
+      "source_doc": "PRIVILEGED — Project Kestrel — deal structure summary — May 8, 2026\n\nConsideration mix: 70% cash, 30% buyer stock, with the stock portion subject to a 12-month lockup. Rationale: the seller's founders sought upside participation; our board capped dilution at 2.5% of fully diluted shares. The cash component is funded from balance sheet plus a $40 million draw on the acquisition facility with Hargrave Bank. Collar: the exchange ratio fixes if our stock moves more than 15% before close. Tax: intended to qualify as a tax-free reorganization for the stock portion, per Stroud Pelham analysis.",
+      "minimized_doc": "PRIVILEGED — Project [ORG_1] — deal structure summary — [DATE_1]\n\nConsideration mix: 70% cash, 30% buyer stock, with the stock portion subject to a 12-month lockup. Rationale: the seller's founders sought upside participation; our board capped dilution at 2.5% of fully diluted shares. The cash component is funded from balance sheet plus a [MONEY_1] draw on the acquisition facility with [ORG_2]. Collar: the exchange ratio fixes if our stock moves more than 15% before close. Tax: intended to qualify as a tax-free reorganization for the stock portion, per [ORG_3] analysis.",
+      "redaction_counts": {
+        "org": 3,
+        "date": 1,
+        "money": 1
+      }
+    },
+    {
+      "id": "legal-07",
+      "category": "legal_ma",
+      "question": "What conditions remain before the deal can close?",
+      "ground_truth": "Four: antitrust clearance (waiting period running absent a second request); executed retention agreements from four key employees (two signed, two in negotiation); customer change-of-control consents reaching at least 80% of target ARR (currently 64%); and no material adverse change. There is no financing condition.",
+      "confidential_conclusion": "The identity of the target and the outside-date timing.",
+      "design_note": "answerable-by-design: conditions and percentages survive; identities and dates are redacted",
+      "source_doc": "PRIVILEGED — Project Kestrel — closing conditions tracker — May 26, 2026\n\nRemaining conditions to close: (1) antitrust clearance — filing made May 19, waiting period expires June 18 absent a second request; (2) executed retention agreements from four named key employees — two signed, two in negotiation; (3) customer consents — change-of-control consents from customers representing at least 80% of target ARR; currently at 64%; (4) no material adverse change. Financing condition: none (committed). Outside date: August 29, 2026. Tracker owner: Anne Castellanos.",
+      "minimized_doc": "PRIVILEGED — Project [ORG_1] — closing conditions tracker — [DATE_1]\n\nRemaining conditions to close: (1) antitrust clearance — filing made [DATE_2], waiting period expires [DATE_3] absent a second request; (2) executed retention agreements from four named key employees — two signed, two in negotiation; (3) customer consents — change-of-control consents from customers representing at least 80% of target ARR; currently at 64%; (4) no material adverse change. Financing condition: none (committed). Outside date: [DATE_4]. Tracker owner: [PERSON_1].",
+      "redaction_counts": {
+        "org": 1,
+        "date": 4,
+        "person": 1
+      }
+    },
+    {
+      "id": "legal-08",
+      "category": "legal_ma",
+      "question": "What breakup fee applies if the seller walks away for a superior proposal?",
+      "ground_truth": "$4.2 million, plus expense reimbursement capped at $750,000.",
+      "confidential_conclusion": "The deal's termination-fee economics on both sides.",
+      "design_note": "gutted-by-design: the answer IS a redacted money value",
+      "source_doc": "PRIVILEGED — Project Kestrel — termination provisions — May 8, 2026\n\nIf the agreement terminates due to a failure of antitrust clearance, we pay a reverse termination fee of $4.5 million. If the seller terminates to accept a superior proposal during the go-shop tail, the seller pays a breakup fee of $4.2 million plus expense reimbursement capped at $750,000. No fee on mutual termination at the outside date absent breach. Fee provisions negotiated by Anne Castellanos against Stroud Pelham; board approved May 6.",
+      "minimized_doc": "PRIVILEGED — Project [ORG_1] — termination provisions — [DATE_1]\n\nIf the agreement terminates due to a failure of antitrust clearance, we pay a reverse termination fee of [MONEY_1]. If the seller terminates to accept a superior proposal during the go-shop tail, the seller pays a breakup fee of [MONEY_2] plus expense reimbursement capped at [MONEY_3]. No fee on mutual termination at the outside date absent breach. Fee provisions negotiated by [PERSON_1] against [ORG_2]; board approved [DATE_2].",
+      "redaction_counts": {
+        "org": 2,
+        "date": 2,
+        "money": 3,
+        "person": 1
+      }
+    },
+    {
+      "id": "legal-09",
+      "category": "legal_ma",
+      "question": "When does the exclusivity window end?",
+      "ground_truth": "June 17, 2026 — extendable automatically by 30 days to July 17, 2026 if a definitive agreement is in good-faith negotiation at expiry.",
+      "confidential_conclusion": "Exclusivity timing, and that competing unsolicited interest in the target already exists.",
+      "design_note": "gutted-by-design: the answer IS a redacted date",
+      "source_doc": "PRIVILEGED — Project Kestrel — exclusivity — April 19, 2026\n\nThe exclusivity provisions of the executed LOI bind Quillon Software to negotiate solely with us for 60 days, expiring June 17, 2026. One automatic 30-day extension applies if a definitive agreement is in good-faith negotiation at expiry, moving the end date to July 17, 2026. During exclusivity the seller may not solicit, initiate, or respond to competing proposals, and must notify us within 24 hours of any unsolicited approach. Two unsolicited approaches have already been logged and rebuffed, per Anne Castellanos.",
+      "minimized_doc": "PRIVILEGED — Project [ORG_1] — exclusivity — [DATE_1]\n\nThe exclusivity provisions of the executed LOI bind [ORG_2] to negotiate solely with us for 60 days, expiring [DATE_2]. One automatic 30-day extension applies if a definitive agreement is in good-faith negotiation at expiry, moving the end date to [DATE_3]. During exclusivity the seller may not solicit, initiate, or respond to competing proposals, and must notify us within 24 hours of any unsolicited approach. Two unsolicited approaches have already been logged and rebuffed, per [PERSON_1].",
+      "redaction_counts": {
+        "org": 2,
+        "date": 3,
+        "person": 1
+      }
+    },
+    {
+      "id": "legal-10",
+      "category": "legal_ma",
+      "question": "What is the main regulatory risk to the deal closing, and what mitigation is planned?",
+      "ground_truth": "Both parties compete in the payments-reconciliation segment, with combined share approaching 35% in two regional markets — creating meaningful second-request risk that would extend review four to six months; mitigation is preparing a pre-emptive divestiture of the target's smaller reconciliation product line, an advocacy narrative around the dominant competitor, and customer declarations.",
+      "confidential_conclusion": "The identity of the target and the willingness to divest a product line as a remedy.",
+      "design_note": "answerable-by-design: the risk shape and percentages survive; identities are redacted",
+      "source_doc": "PRIVILEGED — Project Kestrel — antitrust risk assessment — May 14, 2026\nFROM: Drummond & Hale antitrust group\n\nPrincipal risk to closing: both parties compete in the payments-reconciliation segment, where the combined share in two regional markets approaches 35%. That overlap creates a meaningful probability of a second request, which would extend review by four to six months and jeopardize the outside date. Mitigations under discussion: a pre-emptive remedy proposal divesting the target's smaller reconciliation product line, and an advocacy narrative centered on the dominant share held by Gattler Dynamics. Customer declarations are being collected. Recommendation: prepare the divestiture package now rather than reactively.",
+      "minimized_doc": "PRIVILEGED — Project [ORG_1] — antitrust risk assessment — [DATE_1]\nFROM: [ORG_2] antitrust group\n\nPrincipal risk to closing: both parties compete in the payments-reconciliation segment, where the combined share in two regional markets approaches 35%. That overlap creates a meaningful probability of a second request, which would extend review by four to six months and jeopardize the outside date. Mitigations under discussion: a pre-emptive remedy proposal divesting the target's smaller reconciliation product line, and an advocacy narrative centered on the dominant share held by [ORG_3]. Customer declarations are being collected. Recommendation: prepare the divestiture package now rather than reactively.",
+      "redaction_counts": {
+        "org": 3,
+        "date": 1
+      }
+    }
+  ]
+}

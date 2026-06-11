@@ -45,6 +45,30 @@ def _log(line: str) -> None:
         pass
 
 
+def _gateway_loop_builder(cfg: dict):
+    """Return the pinned core ``loop_builder`` (P4S-2): a thin shim over
+    ``builder.build_loop`` with ``surface="gateway"`` HARD-CODED.
+
+    The transport name never reaches ``build_loop`` (P4S-1): every gateway
+    message is served on the literal ``"gateway"`` loop surface. The core
+    injects ``ceiling_override``/``write_actor``/``write_gate`` itself; this
+    shim merely forwards them -- there is no path by which an adapter or serve
+    wiring can substitute any of the four (the holder hack is gone).
+    """
+    from ..agentloop.builder import build_loop
+
+    def loop_builder(user_id, instance, root, *, ceiling_override,
+                     write_actor, write_gate):
+        return build_loop(
+            cfg, root, surface="gateway",
+            ceiling_override=ceiling_override,
+            write_actor=write_actor,
+            write_gate=write_gate,
+        )
+
+    return loop_builder
+
+
 def _build_gateway(cfg: dict):
     """Construct the Telegram gateway if enabled, else None."""
     tg = ((cfg.get("gateway") or {}).get("telegram") or {})
@@ -54,25 +78,58 @@ def _build_gateway(cfg: dict):
     if not token:
         _log("gateway: telegram enabled but token unresolved; skipping")
         return None
-    from ..agentloop.builder import build_loop
-    from ..gateway.telegram import TelegramGateway, TelegramAPI
+    from ..gateway.core import GatewayCore
+    from ..gateway.telegram import TelegramAdapter, TelegramAPI
 
     instances = config.instance_roots(cfg)
-    gw_ceiling = tg.get("max_sensitivity", "internal")
-    holder: dict = {}
+    adapter = TelegramAdapter(TelegramAPI(token), logger=_log)
+    core = GatewayCore(tg, "telegram", instances, _gateway_loop_builder(cfg),
+                       logger=_log)
+    return _TelegramDriver(adapter, core, logger=_log)
 
-    def loop_factory(user_id, instance, root):
-        gw = holder.get("gw")
-        gate = (lambda uid=str(user_id): gw.allow_write(uid)) if gw else None
-        return build_loop(cfg, root, surface="gateway",
-                          ceiling_override=gw_ceiling,
-                          write_actor=f"gateway_user:{user_id}",
-                          write_gate=gate)
 
-    gateway = TelegramGateway(TelegramAPI(token), cfg, instances, loop_factory,
-                              logger=_log)
-    holder["gw"] = gateway
-    return gateway
+class _TelegramDriver:
+    """Drive one poll-capable telegram adapter through its core (P4S-4).
+
+    ``poll() -> core.handle() -> adapter.send() -> adapter.commit()``. Honors
+    the adapter's non-blocking ``next_poll_not_before`` backoff (P4S-18) -- no
+    in-line sleep in the poll path.
+    """
+
+    def __init__(self, adapter, core, *, logger=None, clock=time.time):
+        self.adapter = adapter
+        self.core = core
+        self.logger = logger or (lambda *a: None)
+        self.clock = clock
+
+    def poll_once(self) -> int:
+        # Non-blocking backoff: skip until the window elapses (P4S-18).
+        if self.clock() < getattr(self.adapter, "next_poll_not_before", 0.0):
+            return 0
+        updates = self.adapter.fetch()
+        handled = 0
+        for upd in updates:
+            self.adapter.advance(upd)
+            try:
+                msg = self.adapter.parse(upd)
+                if msg is None:
+                    continue
+                reply = self.core.handle(msg)
+                if reply is not None:
+                    self.adapter.send(reply)
+                    handled += 1
+            except Exception as exc:
+                self.logger(f"gateway: unhandled exception in handle: "
+                            f"{type(exc).__name__}: {exc}")
+                try:
+                    raw = upd.get("message") or upd.get("edited_message") or {}
+                    cid = (raw.get("chat") or {}).get("id")
+                    if cid is not None:
+                        self.adapter.error_reply(cid)
+                except Exception:
+                    pass
+        self.adapter.commit()
+        return handled
 
 
 def serve(cfg: dict, *, once: bool = False) -> int:

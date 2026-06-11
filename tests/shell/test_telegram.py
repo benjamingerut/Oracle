@@ -379,9 +379,11 @@ def test_lru_cache_evicts_least_recently_used(tmp_path):
     # Adding one more user should evict user "1" (LRU), NOT user "0".
     gw._loop_for("new_user", "main", root)
     assert len(gw._loops) == _LOOP_CACHE_SIZE
-    assert ("0", "main") in gw._loops        # was re-accessed, not evicted
-    assert ("1", "main") not in gw._loops    # was LRU, evicted
-    assert ("new_user", "main") in gw._loops
+    # P4-T1 seam: the core cache key gained the effective ceiling dimension
+    # (user_id, instance, ceiling); telegram is always private -> "internal".
+    assert ("0", "main", "internal") in gw._loops        # re-accessed, not evicted
+    assert ("1", "main", "internal") not in gw._loops    # was LRU, evicted
+    assert ("new_user", "main", "internal") in gw._loops
 
 
 # S2 #7 -- no-redirect opener: ensure TelegramAPI uses _OPENER (no redirects)

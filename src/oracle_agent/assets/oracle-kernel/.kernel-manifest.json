@@ -1,5 +1,5 @@
 {
-  "aggregate_sha256": "c1a126d0c2d3fd35c76891f7687564da44498fc5b29b5641bfc6344ee54ef452",
+  "aggregate_sha256": "4a0fb33697b029a4c517151d89b83343260cdc2b23fdd8f1f9970da3449a5007",
   "files": {
     "_tools/KERNEL_VERSION": "eb0cd1f1d199956d3cb6a119202fe1c98f31b6ae513e4326d57ca1f9946f7a31",
     "_tools/_CONTEXT.md": "661ae48ec92ac8c7e0eda8f65fce86f0ffeae498fdde9de4d758774c4f7abd0d",
@@ -32,15 +32,16 @@
     "_tools/improvements.py": "6dcb8585ec77380517d17265b76f0daf73a6665b55e371a49227b87ae3adff39",
     "_tools/ingest_pipeline.py": "bc9e520a4d91f84f1a25796b7dc9c89696b5bc766aeca2582b304ece70027211",
     "_tools/intake_classify.py": "c816c935aedfca14b6835fa09f354d92160f945a0f0e4b4c7ec573a554cdbd17",
-    "_tools/knowledge_index.py": "109341e1019a818bf9b41a79fbaa40886b44f8278a639cee931d5963cd7306cc",
+    "_tools/knowledge_index.py": "87bea01af66d51483151bb85db9f632646e43ab941b74f0012e15a1580cbdf04",
     "_tools/ledger.py": "e8fd415c716decfca3785e38461e2a4bf5a49bb86ee25a0da3589a62339bcf52",
     "_tools/loops.py": "3dfd3df696b256f6e823bebce71a50adb12e5af0dd52a38b8692996697d7d8da",
     "_tools/meta_health.py": "f22a79b1e1da9cd92a687b57af028ce4fd287247db382ece11f95a5d06b03e52",
     "_tools/migrations/0001_kernel_version_stamp.py": "852b028661c6ac34c0121418960a149de95766e536399967fe3b42468418b61a",
     "_tools/migrations/0002_session_interfaces.py": "643bb8e1bc16ee9dbd8bdcabb8ea49ad32212c264e96d28aaf5be7f004e5c5a9",
     "_tools/migrations/0003_knowledge_index_dedup.py": "9f324588f62a9d0f640822dfc0b364ff5d7f46af8ef4519a6aa74f6aa3fb9fe3",
+    "_tools/migrations/0004_chunk_vectors.py": "7b71eb877a616aa9693fdecc8887b70a48ab3b4a220a2843c50b406b6f7d8d14",
     "_tools/migrations/__init__.py": "d045715b83ea65a7899df248a834988a61d0d3ef05827d54f7447ed9aa35aa4f",
-    "_tools/oracle_cli.py": "e07bbd72dd77c8895d0a2a198caa9fca80b11aa6859618ffd216e758b0889f02",
+    "_tools/oracle_cli.py": "a44f591b9aaae3bb5e1603be4009240784b887410bd43ee0e527ee7a92b45891",
     "_tools/oracle_lint.py": "886398a8ab107f93ddc564e3cb60906d44469d68cb3c732922f0249ca45724aa",
     "_tools/oracle_status.py": "4ddd6ff23eee60b1cf84828d24bafeb10a3da73c439f8e0fde5997ce3b1ad4c3",
     "_tools/oracle_yaml.py": "201c4a57311d3e07b7bfb5ccfb2a168c6af5dc9f3145ac9607c194ae7977397c",
@@ -72,6 +73,6 @@
     "_tools/truth_map.py": "32f230610bc6764c7d46629142ad50844ead2c176f3de4027b26c31e3c7ac55f",
     "_tools/upgrade.py": "b4a0b49e7f2fa3eb8beacc2e5a6d024e95e514868b8c4b949d052b71481e2c3a"
   },
-  "generated": "2026-06-10T23:08:43",
+  "generated": "2026-06-11T00:22:52",
   "tools_version": "3.0.0"
 }

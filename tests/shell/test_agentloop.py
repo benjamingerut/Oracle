@@ -508,3 +508,54 @@ def test_build_loop_local_observe_is_v1_behavior(profile, spawned_root):
     loop2 = build_loop(cfg, spawned_root, surface="local",
                        grounding_override="enforce")
     assert loop2.grounding is GroundingPolicy.ENFORCE
+
+
+# --------------------------------------------------------------------------- #
+# P4-T1 (P4S-1) -- grounding_for fails CLOSED on surface
+# --------------------------------------------------------------------------- #
+def test_grounding_for_fails_closed_on_nonlocal_surface():
+    """Any surface that is not exactly 'local' yields ENFORCE (P4S-1).
+
+    The fail-closed inversion: a future wiring mistake leaking a transport name
+    ('http', 'slack', 'email', or any unknown string) into build_loop must NOT
+    fall through to the local OBSERVE default. Only 'local' reads config.
+    """
+    from oracle_agent.agentloop.builder import grounding_for
+
+    cfg = {"chat": {"grounding_default": "observe"}}
+    for surface in ("http", "slack", "email", "telegram", "gateway", "wat"):
+        assert grounding_for(cfg, surface) is GroundingPolicy.ENFORCE, surface
+        # An override cannot lower it on a non-local surface, either.
+        assert grounding_for(cfg, surface,
+                             grounding_override="observe") is GroundingPolicy.ENFORCE
+
+
+def test_build_loop_http_surface_is_gateway_class(profile, spawned_root):
+    """ENFORCER (P4S-1): build_loop(surface='http') yields ENFORCE + gateway
+    tools + wall clock -- the fail-closed builder treats any non-local surface
+    as gateway-class even though production never passes a transport name."""
+    from oracle_agent import config as _config
+    from oracle_agent.agentloop.builder import (
+        _GATEWAY_TURN_WALL_CLOCK, build_loop,
+    )
+    from oracle_agent.agentloop.verbtools import tool_schemas
+
+    cfg = _config.load_config()
+    cfg["provider"]["base_url"] = "http://127.0.0.1:1/v1"
+    loop = build_loop(cfg, spawned_root, surface="http")
+
+    # ENFORCE grounding (fail-closed).
+    assert loop.grounding is GroundingPolicy.ENFORCE
+    # Gateway wall clock applied (not None, == the gateway cap).
+    assert loop.turn_wall_clock == _GATEWAY_TURN_WALL_CLOCK
+    # Gateway (reduced) tool surface: the dispatcher carries surface="http",
+    # which tool_schemas treats as the non-local (gateway) tool set -- the
+    # control-plane verbs (oracle_ingest et al.) are structurally absent.
+    names = {t["function"]["name"]
+             for t in tool_schemas(loop.dispatcher.surface,
+                                   loop.dispatcher.environment)}
+    gateway_names = {t["function"]["name"]
+                     for t in tool_schemas("gateway",
+                                           loop.dispatcher.environment)}
+    assert names == gateway_names
+    assert "oracle_ingest" not in names

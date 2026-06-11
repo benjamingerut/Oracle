@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 from oracle_agent.llm.client import (
-    LLMClient, LLMError, chat_with_retry, classify_error,
+    EmbedClient, LLMClient, LLMError, chat_with_retry, classify_error,
 )
 
 
@@ -262,3 +262,159 @@ def test_per_request_guard_external_client_has_no_constraint(server):
     # No per-request guard for external clients — must succeed.
     resp = client.chat([{"role": "user", "content": "x"}])
     assert resp.content == "fine"
+
+
+# ---------------------------------------------------------------------------
+# P8-T3 — EmbedClient: the separate one-purpose embeddings client (P8S-2)
+# ---------------------------------------------------------------------------
+
+class _PathHandler(BaseHTTPRequestHandler):
+    """Records every requested path so tests can assert endpoint separation."""
+
+    script = {}   # {"status": int, "body": str, "headers": {...}}
+    paths: list[str] = []  # shared per-test; reset by the fixture
+
+    def log_message(self, *a):  # silence
+        pass
+
+    def do_POST(self):
+        type(self).paths.append(self.path)
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        s = self.script
+        status = s.get("status", 200)
+        self.send_response(status)
+        for k, v in (s.get("headers") or {}).items():
+            self.send_header(k, v)
+        if status in (301, 302, 307, 308):
+            self.end_headers()
+            return
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(s.get("body", "{}").encode("utf-8"))
+
+
+@pytest.fixture
+def path_server():
+    _PathHandler.paths = []
+    srv = HTTPServer(("127.0.0.1", 0), _PathHandler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}/v1"
+    yield base, _PathHandler
+    srv.shutdown()
+
+
+def _embed_body(*vectors):
+    data = [{"index": i, "embedding": list(v)} for i, v in enumerate(vectors)]
+    return json.dumps({"object": "list", "data": data,
+                       "model": "embed-m", "usage": {"total_tokens": 3}})
+
+
+def test_embed_batch_roundtrips(path_server):
+    base, H = path_server
+    H.script = {"status": 200, "body": _embed_body([0.1, 0.2], [0.3, 0.4])}
+    vecs = EmbedClient(base).embed(["alpha", "beta"], model="embed-m")
+    assert vecs == [[0.1, 0.2], [0.3, 0.4]]
+    assert H.paths == ["/v1/embeddings"]  # never /chat/completions
+
+
+def test_embed_preserves_input_order_by_index(path_server):
+    base, H = path_server
+    # Server returns out-of-order; client must sort by 'index'.
+    body = json.dumps({"data": [
+        {"index": 1, "embedding": [9.0]},
+        {"index": 0, "embedding": [1.0]},
+    ]})
+    H.script = {"status": 200, "body": body}
+    vecs = EmbedClient(base).embed(["first", "second"], model="embed-m")
+    assert vecs == [[1.0], [9.0]]
+
+
+def test_embed_redirect_is_blocked(path_server):
+    base, H = path_server
+    H.script = {"status": 302, "headers": {"Location": "https://evil.example.com/"}}
+    with pytest.raises(LLMError) as ei:
+        EmbedClient(base, api_key="sk-secret").embed(["x"], model="embed-m")
+    assert ei.value.status in (302, None) or ei.value.kind in (
+        "server", "bad_request", "network")
+
+
+def test_embed_api_key_never_in_error(path_server):
+    base, H = path_server
+    H.script = {"status": 500, "body": "boom"}
+    try:
+        EmbedClient(base, api_key="sk-EMBEDSECRET-DONOTLEAK").embed(
+            ["x"], model="embed-m")
+    except LLMError as exc:
+        assert "EMBEDSECRET" not in str(exc)
+        assert "EMBEDSECRET" not in repr(exc)
+
+
+def test_embed_plaintext_key_to_nonloopback_refused_at_construction():
+    """Plaintext-key refusal keys to the EMBEDDINGS base_url (P8S-2)."""
+    with pytest.raises(LLMError) as ei:
+        EmbedClient("http://embeds.example.com/v1", api_key="sk-secret")
+    assert ei.value.kind == "bad_request"
+    assert ei.value.retryable is False
+    assert "embeddings" in str(ei.value).lower() or "plaintext" in str(ei.value).lower()
+
+
+def test_embed_plaintext_loopback_with_key_allowed(path_server):
+    base, H = path_server  # http://127.0.0.1:PORT/v1
+    H.script = {"status": 200, "body": _embed_body([0.5])}
+    client = EmbedClient(base, api_key="sk-localtoken")  # must not raise
+    assert client.embed(["x"], model="embed-m") == [[0.5]]
+
+
+def test_embed_local_agent_guard_blocks_swapped_url(path_server):
+    """A local_agent embed client refuses a non-loopback URL at send time."""
+    base, H = path_server
+    H.script = {"status": 200, "body": _embed_body([0.0])}
+    client = EmbedClient(base, environment="local_agent")
+    client.base_url = "http://embeds.example.com/v1"  # simulate rebind/swap
+    with pytest.raises(LLMError) as ei:
+        client.embed(["x"], model="embed-m")
+    assert ei.value.kind == "bad_request"
+    assert "local_agent" in str(ei.value) or "non-loopback" in str(ei.value)
+
+
+def test_embed_external_client_unconstrained(path_server):
+    base, H = path_server
+    H.script = {"status": 200, "body": _embed_body([1.0])}
+    client = EmbedClient(base, environment="external")
+    assert client.embed(["x"], model="embed-m") == [[1.0]]
+
+
+def test_embed_default_timeout_is_10s(path_server):
+    base, _ = path_server
+    assert EmbedClient(base).timeout == 10.0
+    assert EmbedClient.DEFAULT_TIMEOUT == 10.0
+
+
+def test_embed_auth_error_classified(path_server):
+    base, H = path_server
+    H.script = {"status": 401, "body": '{"error":"bad key"}'}
+    with pytest.raises(LLMError) as ei:
+        EmbedClient(base, api_key="sk-localtoken").embed(["x"], model="embed-m")
+    # 127.0.0.1 is loopback so the http+key construction is allowed; the 401
+    # then classifies as a non-retryable auth error.
+    assert ei.value.kind == "auth"
+    assert ei.value.retryable is False
+
+
+def test_chat_client_never_hits_embeddings(path_server):
+    """The chat client posts to /chat/completions, never /embeddings (P8S-2)."""
+    base, H = path_server
+    H.script = {"status": 200, "body": _ok_body("hi")}
+    LLMClient(base, "m").chat([{"role": "user", "content": "x"}])
+    assert H.paths == ["/v1/chat/completions"]
+    assert "/v1/embeddings" not in H.paths
+
+
+def test_embed_malformed_response_raises(path_server):
+    base, H = path_server
+    H.script = {"status": 200, "body": '{"no_data": true}'}
+    with pytest.raises(LLMError) as ei:
+        EmbedClient(base).embed(["x"], model="embed-m")
+    assert ei.value.kind == "server"

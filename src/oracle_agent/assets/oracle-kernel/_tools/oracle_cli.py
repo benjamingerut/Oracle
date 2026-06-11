@@ -162,6 +162,17 @@ def _translate(group: str, rest: list[str]) -> tuple[str, list[str]]:
 
     if group == "search":
         # ./oracle search "<terms...>" [--k N] [--max-sensitivity S] [--json]
+        #                              [--qvec-stdin]
+        # The passthrough allowlist (P8S-4) MUST include the vector subcommands:
+        # without 'vectors-add' here, ``oracle search vectors-add --file ...``
+        # would be silently rewritten into a TEXT QUERY for the literal string
+        # "vectors-add" and exit 0, no-opping the whole vector pipeline while
+        # looking green. ``--qvec-stdin`` is a bare flag, so it passes through
+        # the flags loop unchanged.
+        _SEARCH_SUBCOMMANDS = (
+            "query", "build", "add", "stats", "reindex",
+            "vectors-add", "vectors-pending", "vectors-prune",
+        )
         terms = [a for a in tail if not a.startswith("-")]
         flags: list[str] = []
         skip_next = False
@@ -174,7 +185,7 @@ def _translate(group: str, rest: list[str]) -> tuple[str, list[str]]:
                 flags.append(a)
                 if a in ("--k", "--max-sensitivity") and i + 1 < len(tail):
                     skip_next = True
-        if terms and _first_positional(tail) not in ("query", "build", "add", "stats", "reindex"):
+        if terms and _first_positional(tail) not in _SEARCH_SUBCOMMANDS:
             return "knowledge_index", [*root_args, "query", "--q", " ".join(terms), *flags]
         return "knowledge_index", [*root_args, *tail]
 

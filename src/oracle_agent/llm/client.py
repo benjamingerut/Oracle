@@ -18,6 +18,10 @@ Security-relevant behavior (STRESS C2):
 
 Errors are classified into a small, action-oriented taxonomy so the retry
 layer can decide retry/backoff/fail without provider-specific branching.
+
+Phase 8 (P8-T3) adds :class:`EmbedClient` -- a SEPARATE one-purpose client for
+``/embeddings`` (never ``/chat/completions``), with the same C2 posture keyed
+to the EMBEDDING endpoint's own base_url and post-veto environment (P8S-2).
 """
 from __future__ import annotations
 
@@ -246,6 +250,164 @@ class LLMClient:
             finish_reason=(choices[0] or {}).get("finish_reason"),
             usage=obj.get("usage", {}) or {},
         )
+
+
+class EmbedClient:
+    """One-purpose stdlib embeddings client (Phase 8 / P8-T3, P8S-2).
+
+    A SEPARATE instance from the chat ``LLMClient`` -- never the chat client
+    with a swapped path. It POSTs ONLY to ``{base_url}/embeddings`` and never
+    to ``/chat/completions``; the chat client, symmetrically, never issues an
+    ``/embeddings`` request. This separation makes the construction-time
+    plaintext-key refusal and the ``local_agent`` per-request loopback guard
+    key to the EMBEDDING endpoint's own base_url and POST-VETO environment,
+    so a local chat model paired with an external embedder cannot inherit the
+    chat endpoint's classification (P8S-1/P8S-2).
+
+    Same STRESS C2 posture as ``LLMClient``:
+      * redirects are NEVER followed (``_NoRedirect``);
+      * the API key never appears in any exception message;
+      * non-loopback ``http://`` with an API key is refused at construction;
+      * a ``local_agent`` client refuses any non-loopback target at send time
+        (``_check_request_host``), closing the TOCTOU window.
+
+    The default timeout is SHORT (10 s) -- the spec pins it for the query path,
+    where ANY transport failure degrades silently to lexical search (the
+    degradation itself lives in the P8-T4 enforcer, not here). ``Retry-After``
+    discipline is inherited via ``classify_error`` + ``_retry_after_seconds``;
+    the embedder does NOT compute sensitivity ceilings -- that is P8-T4's
+    enforcer -- but its constructor accepts the post-veto ``environment``
+    string so the per-request guard knows whether it is loopback-pinned.
+    """
+
+    #: Query-path embedding timeout (seconds). The spec pins 10 s so a slow or
+    #: unresponsive embedder cannot stall a search -- it degrades to lexical.
+    DEFAULT_TIMEOUT: float = 10.0
+
+    def __init__(self, base_url: str, api_key: str | None = None,
+                 timeout: float = DEFAULT_TIMEOUT,
+                 extra_headers: dict | None = None,
+                 environment: str | None = None):
+        self.base_url = (base_url or "").rstrip("/")
+        self._api_key = api_key  # never logged
+        self.timeout = timeout
+        self.extra_headers = dict(extra_headers or {})
+        self.environment = environment or "external"
+        self._opener = urllib.request.build_opener(_NoRedirect())
+
+        # Plaintext-key refusal keyed to the EMBEDDINGS base_url (P8S-2): a
+        # bearer token must never travel over plaintext http:// to an off-box
+        # host. Identical discipline to LLMClient, against this endpoint.
+        if api_key and self.base_url:
+            parsed = urllib.parse.urlsplit(self.base_url)
+            if parsed.scheme == "http":
+                host = (parsed.hostname or "").lower()
+                if not _is_literal_loopback_host(host):
+                    raise LLMError(
+                        "bad_request",
+                        "Refusing to send API key over plaintext http:// to "
+                        f"non-loopback embeddings host {host!r}. Use https:// "
+                        "or a loopback address.",
+                        retryable=False,
+                    )
+
+    def _endpoint(self) -> str:
+        return f"{self.base_url}/embeddings"
+
+    def _headers(self) -> dict:
+        h = {"Content-Type": "application/json"}
+        if self._api_key:
+            h["Authorization"] = f"Bearer {self._api_key}"
+        h.update(self.extra_headers)
+        return h
+
+    def _check_request_host(self, url: str) -> None:
+        """Per-request loopback guard for ``local_agent`` embed clients.
+
+        Identical TOCTOU close to ``LLMClient._check_request_host`` (STRESS C2),
+        applied to the ``/embeddings`` URL: a client classified ``local_agent``
+        refuses to send to any host that is not a literal loopback, even if the
+        base_url was swapped after construction.
+        """
+        if self.environment != "local_agent":
+            return
+        try:
+            host = urllib.parse.urlsplit(url).hostname or ""
+        except Exception:
+            host = ""
+        if not _is_literal_loopback_host(host):
+            raise LLMError(
+                "bad_request",
+                f"local_agent embed client refused to send to non-loopback "
+                f"host {host!r}. Possible DNS rebinding or endpoint swap.",
+                retryable=False,
+            )
+
+    def embed(self, texts: list[str], *, model: str) -> list[list[float]]:
+        """POST ``texts`` to ``{base_url}/embeddings`` and return float vectors.
+
+        One request carries the whole ``texts`` batch (OpenAI-compatible
+        ``input`` array). Returns vectors in input order. The per-request
+        loopback guard runs on the ``/embeddings`` URL BEFORE the send; the
+        key never appears in any raised error; ``classify_error`` is reused so
+        the caller gets the same action-oriented taxonomy as ``chat()``.
+        """
+        payload = {"model": model, "input": list(texts)}
+        endpoint = self._endpoint()
+        self._check_request_host(endpoint)
+
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(endpoint, data=data,
+                                     headers=self._headers(), method="POST")
+        try:
+            with self._opener.open(req, timeout=self.timeout) as resp:
+                body = resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", "replace")
+            except Exception:
+                pass
+            err = classify_error(exc.code, body)
+            err.retry_after = _retry_after_seconds(getattr(exc, "headers", None))
+            raise err from None
+        except urllib.error.URLError as exc:
+            # Network-level failure; key never appears in the message.
+            raise LLMError("network", f"{exc.reason}", status=None,
+                           retryable=True) from None
+
+        return self._parse_embeddings(body)
+
+    @staticmethod
+    def _parse_embeddings(body: str) -> list[list[float]]:
+        """Parse an OpenAI-compatible embeddings response into vectors.
+
+        Shape: ``{"data": [{"index": i, "embedding": [...]}, ...]}``. Vectors
+        are returned ordered by ``index`` when present, else in array order.
+        """
+        try:
+            obj = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise LLMError("server", f"non-JSON response: {exc}", status=None,
+                           retryable=True) from None
+        data = obj.get("data") if isinstance(obj, dict) else None
+        if not isinstance(data, list):
+            raise LLMError("server", "embeddings response missing 'data' array",
+                           status=None, retryable=True) from None
+        indexed: list[tuple[int, list[float]]] = []
+        for i, item in enumerate(data):
+            if not isinstance(item, dict):
+                raise LLMError("server", "embeddings 'data' item is not an object",
+                               status=None, retryable=True) from None
+            vec = item.get("embedding")
+            if not isinstance(vec, list):
+                raise LLMError("server", "embeddings item missing 'embedding' list",
+                               status=None, retryable=True) from None
+            idx = item.get("index")
+            order = idx if isinstance(idx, int) else i
+            indexed.append((order, [float(x) for x in vec]))
+        indexed.sort(key=lambda p: p[0])
+        return [vec for _, vec in indexed]
 
 
 def chat_with_retry(client: LLMClient, messages: list[dict], *,

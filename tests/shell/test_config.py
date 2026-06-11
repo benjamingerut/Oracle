@@ -472,6 +472,94 @@ def test_already_v2_config_loads_without_migration(profile):
     assert cfg["provider"]["name"] == "already-v2"
 
 
+# --------------------------------------------------------------------------- #
+# P8-T3 — provider.embeddings block + SECURITY_KEYS (P8S-16)
+# --------------------------------------------------------------------------- #
+def test_embeddings_block_present_and_defaults_null(profile):
+    """The provider.embeddings block ships, disabled by default (model=None)."""
+    cfg = config.load_config()
+    emb = cfg["provider"]["embeddings"]
+    assert emb["model"] is None        # None => embedding/vector search off
+    assert emb["base_url"] is None     # None => inherit provider.base_url
+    assert emb["api_key_env"] is None  # None => inherit provider.api_key_env
+
+
+def test_embeddings_security_keys_registered():
+    """Both embedding-endpoint paths are SECURITY_KEYS (P8S-16)."""
+    assert "provider.embeddings.api_key_env" in config.SECURITY_KEYS
+    assert "provider.embeddings.base_url" in config.SECURITY_KEYS
+
+
+def test_embeddings_dotted_paths_resolve_through_nesting():
+    """The non-wildcard dotted keys actually match the singular 'provider'
+    nesting — the wildcard 'providers.*' entry is DEAD (real key is singular).
+    This guards against the P4 stress finding recurring for embeddings.
+    """
+    d = {"provider": {"embeddings": {"api_key_env": "EMB_KEY",
+                                     "base_url": "https://e/v1"}}}
+    assert config._get_dotted(d, "provider.embeddings.api_key_env") == "EMB_KEY"
+    assert config._get_dotted(d, "provider.embeddings.base_url") == "https://e/v1"
+    # And the dead wildcard entry resolves to nothing on the real config shape.
+    assert config._get_dotted_wildcard(
+        config.DEFAULT_CONFIG, "providers.*.api_key_env") == []
+
+
+def test_embeddings_security_key_drop_caught(profile, monkeypatch):
+    """A migration dropping provider.embeddings.api_key_env is a hard error.
+
+    The binding regression: confirms the new dotted SECURITY_KEY is live
+    (matches through the singular-provider nesting), not dead like the
+    wildcard 'providers.*' entry.
+    """
+    import copy as _copy
+
+    def _bad_migrate(raw: dict) -> dict:
+        out = _copy.deepcopy(raw)
+        out["version"] = 2
+        try:
+            del out["provider"]["embeddings"]["api_key_env"]
+        except KeyError:
+            pass
+        return out
+
+    monkeypatch.setitem(config.MIGRATIONS, 1, _bad_migrate)
+
+    p = config.config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    v1 = {"provider": {"embeddings": {"model": "text-embedding-3-small",
+                                      "api_key_env": "EMB_KEY",
+                                      "base_url": "https://e/v1"}}}
+    p.write_text(json.dumps(v1) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"[Ss]ecurity key"):
+        config.load_config()
+
+    # File unchanged after the hard error.
+    assert json.loads(p.read_text())["provider"]["embeddings"]["api_key_env"] == "EMB_KEY"
+
+
+def test_embeddings_base_url_alter_caught(profile, monkeypatch):
+    """A migration that REPOINTS provider.embeddings.base_url is refused."""
+    import copy as _copy
+
+    def _bad_migrate(raw: dict) -> dict:
+        out = _copy.deepcopy(raw)
+        out["version"] = 2
+        out["provider"]["embeddings"]["base_url"] = "https://attacker.example/v1"
+        return out
+
+    monkeypatch.setitem(config.MIGRATIONS, 1, _bad_migrate)
+
+    p = config.config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    v1 = {"provider": {"embeddings": {"base_url": "https://e/v1",
+                                      "api_key_env": "EMB_KEY"}}}
+    p.write_text(json.dumps(v1) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"[Ss]ecurity key"):
+        config.load_config()
+
+
 def test_security_key_preserved_for_wildcard_providers(profile, monkeypatch):
     """providers.*.api_key_env wildcard must be checked for each provider entry."""
     import copy as _copy

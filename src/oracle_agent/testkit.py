@@ -301,8 +301,18 @@ class Harness:
         )
 
     def gateway(self, updates: list[dict], allowlist: dict):
-        """Return a :class:`~oracle_agent.gateway.telegram.TelegramGateway`
-        wired with a fake API that replays *updates*.
+        """Return the Telegram adapter+core composite
+        (:class:`~oracle_agent.gateway.telegram.TelegramGateway`) wired with a
+        fake API that replays *updates* (P4-T1 / P4S-6 amendment).
+
+        The P1-frozen ``Harness.gateway`` is deliberately amended here: it now
+        returns the adapter+core composite (the Phase-4 ``TelegramGateway`` IS
+        that composite) with the same assertion hooks -- ``_loops_ref``,
+        ``_api_ref``, and ``sent``. Its loop factory STOPS hand-mirroring the
+        builder's grounding decision and instead goes through the same
+        fail-closed path: it consults ``builder.grounding_for`` so a fake model
+        scripting ungrounded prose through the gateway is gated exactly as
+        production gates it (P4S-1 fail-closed: surface != "local" => ENFORCE).
 
         The ledger dir is created under the root if not already present so
         the gateway can record turns without failing.
@@ -324,7 +334,8 @@ class Harness:
         loops: dict = {}
 
         def factory(user_id, instance, r):
-            from oracle_agent.agentloop.loop import AgentLoop, GroundingPolicy
+            from oracle_agent.agentloop.builder import grounding_for
+            from oracle_agent.agentloop.loop import AgentLoop
             from oracle_agent.agentloop.verbtools import Dispatcher
             from oracle_agent.agentloop import policy_bridge as pb
 
@@ -336,13 +347,14 @@ class Harness:
                 environment="external",
                 max_sensitivity=ceiling, order=order,
             )
+            # Go through the SAME fail-closed decision the builder makes -- not a
+            # hand-pinned ENFORCE. The loop surface is the literal "gateway", so
+            # grounding_for returns ENFORCE via the fail-closed (!= "local")
+            # branch (P4S-1).
+            grounding = grounding_for(cfg, "gateway")
             loop = AgentLoop(
                 fake_llm, dispatcher, "SYS",
-                # P3-T4: the gateway is ENFORCE, hard-coded -- the testkit
-                # factory mirrors the real builder.grounding_for decision so a
-                # fake model that scripts ungrounded prose through the gateway is
-                # gated exactly as production would gate it.
-                grounding=GroundingPolicy.ENFORCE,
+                grounding=grounding,
                 turn_wall_clock=120.0,
                 retry_kwargs={"sleep": lambda *_: None},
             )
@@ -358,6 +370,7 @@ class Harness:
         )
         gw._loops_ref = loops  # expose for assertions
         gw._api_ref = api      # expose for assertions
+        gw.sent = api.sent     # expose sent replies for assertions (P4S-6)
         return gw
 
 

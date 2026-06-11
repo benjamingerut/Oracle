@@ -8,12 +8,22 @@ back to a PURE-PYTHON inverted index stored in ordinary SQLite tables. Either
 way the public API is identical and results are comparable, so the kernel's
 retrieval behaviour does not depend on a particular SQLite build.
 
-The index database is a DERIVED, REBUILDABLE artifact: it lives at the fixed
-internal path ``_data.nosync/index/knowledge.db`` under the oracle root. It is
-never a user-supplied destination -- the only varying segment is the oracle
-root the caller already trusts -- and it is created via ``sqlite3.connect``
-(not ``open(...,'w')`` / ``shutil.*``), so it is outside the no-bypass guard's
+The index database is a DERIVED artifact: it lives at the fixed internal path
+``_data.nosync/index/knowledge.db`` under the oracle root. It is never a
+user-supplied destination -- the only varying segment is the oracle root the
+caller already trusts -- and it is created via ``sqlite3.connect`` (not
+``open(...,'w')`` / ``shutil.*``), so it is outside the no-bypass guard's
 remit. Nothing user-influenced is written through raw file I/O here.
+
+REBUILDABLE WITH A COST (P8S-13): the lexical index is freely rebuildable from
+the source corpus, but the OPTIONAL embedding vectors are NOT free to rebuild.
+A ``reindex`` / ``_wipe`` / DB loss drops every ``chunk_vectors`` row, and
+restoring coverage requires a FULL-CORPUS RE-EMBED through the shell's egress
+endpoint -- a real cost (network, money) and a mass re-egress of content that
+is ledgered (one ``embedding_event`` per batch) so the re-send is auditable.
+"Derived, rebuildable" therefore holds for the lexical engine; for vectors it
+means "rebuildable only by re-embedding, which the new sensitivity labels'
+ceilings may rightly forbid". Doctor warns on the resulting coverage collapse.
 
 Public API:
     KnowledgeIndex(root, *, force_fallback=False) -> instance
@@ -21,11 +31,26 @@ Public API:
          provenance='', chunk_index=0, start=0, end=0, title='') -> None
     .add_chunks(chunks) -> int          # bulk add list[dict]; upserts on (source_id, chunk_index)
     .delete_source(source_id) -> int    # remove all chunks for source_id; both engines
-    .search(query, *, k=10, max_sensitivity=None) -> list[dict]
+    .add_vectors(rows) -> int           # upsert chunk vectors (float32 BLOB); reject degenerate
+    .pending_vectors(*, embedding_model, max_sensitivity=None, limit=None)
+    .orphan_vectors() -> list[dict]     # doctor backstop: vectors with no chunk
+    .prune_vectors(*, keep_model) -> int
+    .search(query, *, k=10, max_sensitivity=None,
+            query_vector=None, embedding_model=None) -> list[dict]
     .stats() -> dict
     .reindex(chunks) -> int             # wipe + rebuild from a fresh chunk set
     .engine -> 'fts5' | 'fallback'
     .close() -> None
+
+The OPTIONAL embedding vector store (chunk_vectors) lives in the SAME SQLite DB
+for BOTH engines (the lexical engine choice does not change where vectors are
+stored -- the fallback engine stores vectors in exactly the same table as the
+FTS5 engine, since vectors are an ordinary relational table independent of the
+full-text engine). Vectors are keyed (source_id, chunk_index, embedding_model)
+with NO sensitivity column -- sensitivity is ALWAYS join-read from ``chunks``
+so a reclassified chunk's label is authoritative immediately (P8S-6). Vectors
+are content-equivalent to their chunk and are removed in the SAME transaction
+as the chunk-row mutation in delete_source / upsert / _wipe.
 
 Module helpers:
     default_db_path(root) -> Path
@@ -36,10 +61,22 @@ CLI:
     python3 knowledge_index.py --root R build  [--file chunks.json]
     python3 knowledge_index.py --root R add    --doc-id D --text T [...]
     python3 knowledge_index.py --root R query  --q "..." [--k N] [--max-sensitivity S]
+                                               [--qvec-stdin]
     python3 knowledge_index.py --root R stats
     python3 knowledge_index.py --root R reindex --file chunks.json
+    python3 knowledge_index.py --root R vectors-add     --file vectors.json
+    python3 knowledge_index.py --root R vectors-pending --embedding-model M
+                                               [--max-sensitivity S] [--limit N]
+    python3 knowledge_index.py --root R vectors-prune   --keep-model M
 
-Stdlib only (sqlite3, re, json, math, os, argparse, pathlib).
+The query vector travels on STDIN, never argv (size + ps-visibility): with
+``--qvec-stdin`` the process reads ``{"embedding_model": M, "vector": [...]}``
+from stdin, capped at 1 MiB / 8192 dims / finite floats, and the vector is
+never echoed in an error. The ``vectors-*`` subcommands are NEVER exposed as a
+model tool on any surface (P8S-10): ``vectors-pending`` emits chunk text and
+``vectors-add`` injects vectors, so they are operator/shell-only.
+
+Stdlib only (sqlite3, re, json, math, os, array, argparse, pathlib).
 """
 from __future__ import annotations
 
@@ -50,6 +87,7 @@ import os
 import re
 import sqlite3
 import sys
+from array import array
 from collections import Counter
 from pathlib import Path
 from typing import Iterable, Optional
@@ -63,7 +101,37 @@ __all__ = [
     "list_chunks",
     "tokenize",
     "SENSITIVITY_ORDER",
+    "RRF_K",
+    "VECTOR_CONTINGENCY_THRESHOLD",
 ]
+
+# Reciprocal-rank-fusion constant, frozen by the spec: score(d) = Σ_r 1/(K + rank_r(d)).
+# K=60 is the canonical RRF constant; it also CAPS any single ranking's
+# contribution at 1/(K+1) per document, bounding token-stuffing influence.
+RRF_K = 60
+
+# Hybrid query-vector caps (P8S-3): the kernel never trusts the stdin payload.
+_QVEC_MAX_BYTES = 1 << 20  # 1 MiB
+_QVEC_MAX_DIMS = 8192
+
+# Per-ranking candidate-pool depth for RRF fusion. The ceiling filter is applied
+# IN each scan BEFORE this truncation (P8S-5), so it never alters which
+# above-ceiling rows are excluded -- it only bounds how deep each ceiling-FILTERED
+# list reaches before fusion, keeping the fused candidate set O(depth).
+_HYBRID_CANDIDATE_DEPTH = 200
+
+# Corpus-size contingency threshold (P8S-7). Brute-force cosine is measured on
+# the FLOOR interpreter (Python 3.10, the pure-Python _dot fallback -- NOT the
+# 3.12+ math.sumprod fast path), at the post-P7 design point of >= 100k chunks.
+# A 1536-dim brute-force scan there is ~150M+ multiply-adds plus the per-query
+# BLOB reads, which on the floor interpreter approaches the interactive budget.
+# Past this many vectors for the ACTIVE model, doctor warns and the contingency
+# ladder activates IN ORDER: (1) reduced dimensions first (provider `dimensions`
+# param, e.g. 256-512 -- cuts storage and scan 3-6x for minor recall loss),
+# (2) int8 quantization (x4 smaller, ~x2 faster). An ANN index is out of scope.
+# This is a CORPUS-driven trigger, exposed for the shell's doctor to consume via
+# stats()['vectors']; it is not a one-time laptop measurement.
+VECTOR_CONTINGENCY_THRESHOLD = 100_000
 
 # Least -> most sensitive. A query's ``max_sensitivity`` ceiling admits any row
 # whose rank is <= the ceiling's rank; an unknown row sensitivity is treated as
@@ -78,6 +146,97 @@ def _sens_rank(label: Optional[str]) -> int:
     if label is None:
         return _STRICTEST
     return _SENS_RANK.get(str(label).strip().lower(), _STRICTEST)
+
+
+# --------------------------------------------------------------------------- #
+# vector math (stdlib only; float32 BLOBs; unit-normalized so cosine == dot)
+# --------------------------------------------------------------------------- #
+def _dot(a, b) -> float:
+    """Dot product of two equal-length float sequences.
+
+    Uses ``math.sumprod`` (C-speed, Python 3.12+) when available, with a
+    pure-Python fallback on 3.10/3.11. The Python FLOOR stays >=3.10 (P8S-7):
+    installability is a product property and is not traded for the fast path.
+    """
+    sumprod = getattr(math, "sumprod", None)
+    if sumprod is not None:
+        return float(sumprod(a, b))
+    total = 0.0
+    for x, y in zip(a, b):
+        total += x * y
+    return float(total)
+
+
+def _vec_norm(values) -> float:
+    """L2 norm of a float sequence."""
+    return math.sqrt(_dot(values, values))
+
+
+def _normalize_vector(values) -> tuple[array, float]:
+    """Return (unit-normalized float32 array, original L2 norm).
+
+    Rejects zero-norm and non-finite vectors (P8S-11): a zero norm divides by
+    zero at normalization, and a NaN/inf vector poisons every cosine it
+    touches. The caller (add_vectors) raises ValueError on a returned norm of
+    0.0 -- but we raise here so the rejection is single-sourced.
+    """
+    arr = array("f")
+    for v in values:
+        fv = float(v)
+        if not math.isfinite(fv):
+            raise ValueError("vector contains a non-finite component")
+        arr.append(fv)
+    norm = _vec_norm(arr)
+    if not math.isfinite(norm) or norm <= 0.0:
+        raise ValueError("vector has zero or non-finite norm")
+    unit = array("f", (x / norm for x in arr))
+    return unit, norm
+
+
+def _blob_to_floats(blob: bytes) -> array:
+    """Decode a little-endian float32 BLOB into an ``array('f')``."""
+    arr = array("f")
+    arr.frombytes(blob)
+    if sys.byteorder != "little":  # pragma: no cover - little-endian dev/CI
+        arr.byteswap()
+    return arr
+
+
+def _floats_to_blob(arr: array) -> bytes:
+    """Encode an ``array('f')`` to a little-endian float32 BLOB."""
+    if sys.byteorder != "little":  # pragma: no cover - little-endian dev/CI
+        swapped = array("f", arr)
+        swapped.byteswap()
+        return swapped.tobytes()
+    return arr.tobytes()
+
+
+def _validate_query_vector(payload) -> tuple[str, array]:
+    """Validate a stdin query-vector payload; never echo the vector on error.
+
+    Returns (embedding_model, unit-normalized float32 array). Enforces the
+    frozen caps (P8S-3): <= 8192 dims, finite floats only. The byte cap is
+    enforced by the CLI read before JSON parse. The vector is NEVER included in
+    any error message.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("query-vector payload must be a JSON object")
+    model = payload.get("embedding_model")
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("query-vector payload missing 'embedding_model'")
+    raw = payload.get("vector")
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("query-vector payload missing non-empty 'vector'")
+    if len(raw) > _QVEC_MAX_DIMS:
+        raise ValueError(
+            f"query vector exceeds {_QVEC_MAX_DIMS} dims ({len(raw)} supplied)"
+        )
+    try:
+        unit, _norm = _normalize_vector(raw)
+    except ValueError:
+        # Re-raise WITHOUT the vector contents.
+        raise ValueError("query vector is degenerate (zero/non-finite)")
+    return model.strip(), unit
 
 
 # --------------------------------------------------------------------------- #
@@ -201,6 +360,9 @@ class KnowledgeIndex:
         env_force = os.environ.get("ORACLE_INDEX_FORCE_FALLBACK", "").strip().lower()
         forced = force_fallback or env_force in ("1", "true", "yes", "on")
         self.engine = "fts5" if (not forced and fts5_available()) else "fallback"
+        # Count of same-model/different-dim vectors skipped by the LAST vector
+        # scan; surfaced through stats().dim_mismatches (P8S-11).
+        self._last_dim_mismatches = 0
         # Constant, non-user-influenced internal path; created via sqlite3.
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._con = sqlite3.connect(str(self.db_path))
@@ -256,6 +418,22 @@ class KnowledgeIndex:
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS ix_postings_chunk ON postings(chunk_rowid)"
             )
+        # The optional vector store lives in the SAME DB for BOTH engines: it is
+        # an ordinary relational table, independent of the full-text engine, so
+        # the fallback and FTS5 builds store vectors identically (the spec's
+        # "same DB" pin). Keyed (source_id, chunk_index, embedding_model); NO
+        # sensitivity column -- sensitivity is always join-read from chunks.
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS chunk_vectors ("
+            "source_id TEXT NOT NULL, chunk_index INTEGER NOT NULL, "
+            "embedding_model TEXT NOT NULL, dim INTEGER NOT NULL, "
+            "norm REAL NOT NULL, vector BLOB NOT NULL, "
+            "PRIMARY KEY (source_id, chunk_index, embedding_model))"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_chunk_vectors_model "
+            "ON chunk_vectors(embedding_model)"
+        )
         cur.commit()
 
     def _meta_get(self, k: str) -> Optional[str]:
@@ -269,6 +447,17 @@ class KnowledgeIndex:
             (k, v),
         )
         self._con.commit()
+
+    def active_embedding_model(self) -> Optional[str]:
+        """The ACTIVE embedding model recorded in index_meta, or None.
+
+        Changing this makes every chunk "pending" for the new model without
+        deleting old vectors until ``prune_vectors`` is called.
+        """
+        return self._meta_get("embedding_model")
+
+    def set_active_embedding_model(self, model: str) -> None:
+        self._meta_set("embedding_model", str(model).strip())
 
     # -- add ---------------------------------------------------------------- #
     def add(
@@ -292,7 +481,11 @@ class KnowledgeIndex:
         if self.engine == "fts5":
             # Upsert: if a row with the same (source_id, chunk_index) already
             # exists, delete the FTS5 row first (via the shadow key table), then
-            # insert the new one.
+            # insert the new one. The chunk's vectors (content-equivalent, minted
+            # under the OLD sensitivity label) are dropped IN THE SAME
+            # TRANSACTION (P8S-6): a re-ingested/reclassified chunk must not keep
+            # a vector minted under its prior label. The drop forces a re-embed
+            # that the new label's ceiling may rightly forbid -> lexical-only.
             existing = self._con.execute(
                 "SELECT fts_rowid FROM chunks_key WHERE source_id=? AND chunk_index=?",
                 (sid, cidx),
@@ -300,6 +493,10 @@ class KnowledgeIndex:
             if existing is not None:
                 self._con.execute(
                     "DELETE FROM chunks WHERE rowid=?", (existing[0],)
+                )
+                self._con.execute(
+                    "DELETE FROM chunk_vectors WHERE source_id=? AND chunk_index=?",
+                    (sid, cidx),
                 )
             cur = self._con.execute(
                 "INSERT INTO chunks("
@@ -325,6 +522,11 @@ class KnowledgeIndex:
             if old is not None:
                 self._con.execute(
                     "DELETE FROM postings WHERE chunk_rowid=?", (old[0],)
+                )
+                # Same-transaction vector drop (P8S-6) -- see fts5 branch.
+                self._con.execute(
+                    "DELETE FROM chunk_vectors WHERE source_id=? AND chunk_index=?",
+                    (sid, cidx),
                 )
             cur = self._con.execute(
                 "INSERT OR REPLACE INTO chunks("
@@ -369,6 +571,14 @@ class KnowledgeIndex:
 
         Returns the number of chunk rows deleted.  Safe to call when the
         source has no chunks (returns 0).
+
+        The source's ``chunk_vectors`` rows are removed IN THE SAME SQLite
+        TRANSACTION as the chunk-row deletion (P8S-6): vectors are
+        content-equivalent and must never outlive their chunk. A single commit
+        covers both mutations, so a crash can never leave a vector orphaned
+        behind a deleted source. We always sweep the vector rows (even when the
+        source has no chunk rows) so a prior crash that orphaned vectors is
+        also healed here.
         """
         sid = str(source_id)
         if self.engine == "fts5":
@@ -401,9 +611,142 @@ class KnowledgeIndex:
                     rowids,
                 )
                 self._con.execute("DELETE FROM chunks WHERE source_id=?", (sid,))
-        if count:
+        # Drop vectors for this source in the SAME (uncommitted) transaction.
+        vec_cur = self._con.execute(
+            "DELETE FROM chunk_vectors WHERE source_id=?", (sid,)
+        )
+        vec_deleted = vec_cur.rowcount or 0
+        if count or vec_deleted:
             self._con.commit()
         return count
+
+    # -- vectors ------------------------------------------------------------ #
+    def add_vectors(self, rows: Iterable[dict]) -> int:
+        """Upsert chunk vectors. Returns the number of rows written.
+
+        Each row: ``{source_id, chunk_index, embedding_model, vector:
+        list[float]}``. Vectors are stored unit-normalized as little-endian
+        float32 BLOBs (``array('f')``) with the original L2 ``norm`` recorded,
+        so cosine similarity is a plain dot product at search time. Zero-norm
+        and non-finite vectors are REJECTED (P8S-11) -- they divide by zero at
+        normalization or poison every cosine they touch. The key
+        (source_id, chunk_index, embedding_model) upserts, so re-embedding a
+        chunk under the same model replaces its vector. The vector is NEVER
+        echoed in a rejection error.
+        """
+        n = 0
+        to_write: list[tuple] = []
+        for r in rows:
+            sid = str(r.get("source_id") or "")
+            cidx = int(r.get("chunk_index", 0))
+            model = str(r.get("embedding_model") or "").strip()
+            if not model:
+                raise ValueError("vector row missing 'embedding_model'")
+            raw = r.get("vector")
+            if not isinstance(raw, (list, tuple)) or not raw:
+                raise ValueError(
+                    f"vector row for ({sid!r},{cidx}) missing non-empty 'vector'"
+                )
+            try:
+                unit, norm = _normalize_vector(raw)
+            except ValueError:
+                # Reject WITHOUT echoing the vector contents.
+                raise ValueError(
+                    f"degenerate vector for ({sid!r},{cidx},{model!r}) rejected "
+                    "(zero or non-finite norm)"
+                )
+            to_write.append((sid, cidx, model, len(unit), float(norm),
+                             _floats_to_blob(unit)))
+        for tpl in to_write:
+            self._con.execute(
+                "INSERT INTO chunk_vectors("
+                "source_id, chunk_index, embedding_model, dim, norm, vector) "
+                "VALUES(?,?,?,?,?,?) "
+                "ON CONFLICT(source_id, chunk_index, embedding_model) DO UPDATE SET "
+                "dim=excluded.dim, norm=excluded.norm, vector=excluded.vector",
+                tpl,
+            )
+            n += 1
+        if n:
+            self._con.commit()
+        return n
+
+    def pending_vectors(
+        self,
+        *,
+        embedding_model: str,
+        max_sensitivity: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> list[dict]:
+        """Chunks lacking a vector for ``embedding_model``.
+
+        Returns chunk dicts (including ``text``) for chunks with no
+        ``chunk_vectors`` row under the given model, optionally ceiling-filtered.
+        The ceiling here is a CONVENIENCE pre-filter -- the shell enforcer
+        re-reads each chunk's CURRENT sensitivity at dispatch (P8S-14), so this
+        is not the security boundary.
+        """
+        model = str(embedding_model or "").strip()
+        sql = (
+            "SELECT c.doc_id, c.source_id, c.sensitivity, c.provenance, c.title, "
+            "c.chunk_index, c.start_off, c.end_off, c.body "
+            "FROM chunks c "
+            "WHERE NOT EXISTS ("
+            "  SELECT 1 FROM chunk_vectors v "
+            "  WHERE v.source_id=c.source_id AND v.chunk_index=c.chunk_index "
+            "    AND v.embedding_model=?) "
+            "ORDER BY c.source_id, c.chunk_index"
+        )
+        rows = self._con.execute(sql, (model,)).fetchall()
+        out: list[dict] = []
+        ceiling = _sens_rank(max_sensitivity) if max_sensitivity is not None else None
+        for row in rows:
+            if ceiling is not None and _sens_rank(row["sensitivity"]) > ceiling:
+                continue
+            out.append(self._row_to_chunk(row))
+            if limit is not None and len(out) >= max(0, int(limit)):
+                break
+        return out
+
+    def orphan_vectors(self) -> list[dict]:
+        """Doctor backstop (P8S-6): vector rows with no matching chunk row.
+
+        A single-transaction lifecycle means this should ALWAYS be empty; a
+        non-empty result is the crash-tolerance signal that a vector outlived
+        its chunk. Cheap: a NOT EXISTS anti-join keyed on the chunk PK.
+        """
+        rows = self._con.execute(
+            "SELECT v.source_id, v.chunk_index, v.embedding_model "
+            "FROM chunk_vectors v "
+            "WHERE NOT EXISTS ("
+            "  SELECT 1 FROM chunks c "
+            "  WHERE c.source_id=v.source_id AND c.chunk_index=v.chunk_index) "
+            "ORDER BY v.source_id, v.chunk_index, v.embedding_model"
+        ).fetchall()
+        return [
+            {
+                "source_id": r["source_id"],
+                "chunk_index": r["chunk_index"],
+                "embedding_model": r["embedding_model"],
+            }
+            for r in rows
+        ]
+
+    def prune_vectors(self, *, keep_model: str) -> int:
+        """Drop every vector whose embedding_model != ``keep_model``.
+
+        Used after a model migration to reclaim superseded-model vectors once
+        the new model's backfill has covered the corpus. Returns the count
+        dropped.
+        """
+        keep = str(keep_model or "").strip()
+        cur = self._con.execute(
+            "DELETE FROM chunk_vectors WHERE embedding_model != ?", (keep,)
+        )
+        dropped = cur.rowcount or 0
+        if dropped:
+            self._con.commit()
+        return dropped
 
     # -- search ------------------------------------------------------------- #
     def search(
@@ -412,6 +755,8 @@ class KnowledgeIndex:
         *,
         k: int = 10,
         max_sensitivity: Optional[str] = None,
+        query_vector=None,
+        embedding_model: Optional[str] = None,
     ) -> list[dict]:
         """Return up to ``k`` ranked hits for ``query``.
 
@@ -422,20 +767,144 @@ class KnowledgeIndex:
         unless the ceiling is also the strictest. Each hit is a dict with:
         doc_id, source_id, sensitivity, provenance, title, chunk_index, start,
         end, text, score.
+
+        HYBRID PATH (P8-T2): when ``query_vector`` is supplied (a unit-normalized
+        float sequence) together with its ``embedding_model``, the lexical
+        ranking is FUSED with a brute-force cosine ranking over same-(model, dim)
+        vectors via reciprocal-rank fusion (RRF, k=60). The sensitivity ceiling
+        is applied IN each scan -- BEFORE any ranking or candidate truncation --
+        and RRF ranks are the DENSE positions within the ceiling-FILTERED lists,
+        so an above-ceiling chunk can never perturb the visible ranks or scores
+        (P8S-5; existence leak closed). When ``query_vector`` is None the output
+        is BYTE-IDENTICAL to the lexical-only path (the early-return guard
+        above stands and nothing below changes).
         """
         terms = tokenize(query)
         if not terms:
             return []
         ceiling = _sens_rank(max_sensitivity) if max_sensitivity is not None else None
+
+        # -- lexical scan (ceiling applied in-scan, before truncation) ------- #
         if self.engine == "fts5":
-            hits = self._search_fts5(query, terms)
+            lexical = self._search_fts5(query, terms)
         else:
-            hits = self._search_fallback(terms)
+            lexical = self._search_fallback(terms)
         if ceiling is not None:
-            hits = [h for h in hits if _sens_rank(h["sensitivity"]) <= ceiling]
+            lexical = [h for h in lexical if _sens_rank(h["sensitivity"]) <= ceiling]
+
+        if query_vector is None:
+            # Lexical-only path -- byte-identical to today.
+            hits = lexical
+            self._apply_rerank(hits)
+            hits.sort(key=lambda h: (-h["score"], h["doc_id"], h["chunk_index"]))
+            return hits[: max(0, int(k))]
+
+        # -- hybrid path: fuse lexical + dense via RRF ----------------------- #
+        dense = self._search_vectors(
+            query_vector,
+            embedding_model=embedding_model,
+            ceiling=ceiling,
+        )
+        # Candidate truncation happens AFTER the in-scan ceiling filter (P8S-5):
+        # each ceiling-filtered list is capped to a fixed depth before fusion so
+        # the fused candidate set stays bounded. The cap NEVER changes which
+        # above-ceiling rows are excluded (that already happened in-scan); it
+        # only limits how deep each visible list reaches.
+        lexical_pool = lexical[:_HYBRID_CANDIDATE_DEPTH]
+        dense_pool = dense[:_HYBRID_CANDIDATE_DEPTH]
+        hits = self._fuse_rrf(lexical_pool, dense_pool)
         self._apply_rerank(hits)
         hits.sort(key=lambda h: (-h["score"], h["doc_id"], h["chunk_index"]))
         return hits[: max(0, int(k))]
+
+    # -- dense (vector) scan + RRF fusion ----------------------------------- #
+    def _search_vectors(
+        self,
+        query_vector,
+        *,
+        embedding_model: Optional[str],
+        ceiling: Optional[int],
+    ) -> list[dict]:
+        """Brute-force cosine ranking over same-(model, dim) chunk vectors.
+
+        Sensitivity is JOIN-READ from ``chunks`` (never a copied label) so a
+        reclassified chunk's vector is filtered by its CURRENT label. The
+        ceiling is applied IN this scan, before any truncation, so above-ceiling
+        chunks are invisible AND rank-inert (P8S-5). Returns hits sorted by
+        descending cosine, carrying the same row shape as lexical hits (with the
+        offset-exact start/end the chunker minted).
+        """
+        if not embedding_model:
+            return []
+        qmodel = str(embedding_model).strip()
+        qarr = query_vector if isinstance(query_vector, array) else array(
+            "f", (float(x) for x in query_vector)
+        )
+        qdim = len(qarr)
+        if qdim == 0:
+            return []
+        # Only vectors with the SAME model name AND the SAME dim are eligible;
+        # a same-name-different-dim vector is skipped + counted (P8S-11). Join to
+        # chunks for the authoritative sensitivity label and the row payload.
+        rows = self._con.execute(
+            "SELECT c.doc_id, c.source_id, c.sensitivity, c.provenance, c.title, "
+            "c.chunk_index, c.start_off, c.end_off, c.body, "
+            "v.dim AS vdim, v.vector AS vblob "
+            "FROM chunk_vectors v "
+            "JOIN chunks c ON c.source_id=v.source_id "
+            "  AND c.chunk_index=v.chunk_index "
+            "WHERE v.embedding_model=?",
+            (qmodel,),
+        ).fetchall()
+        scored: list[dict] = []
+        mismatches = 0
+        for row in rows:
+            if int(row["vdim"]) != qdim:
+                mismatches += 1
+                continue
+            # Ceiling filter IN the scan -- before any ranking/truncation.
+            if ceiling is not None and _sens_rank(row["sensitivity"]) > ceiling:
+                continue
+            cand = _blob_to_floats(row["vblob"])
+            cos = _dot(qarr, cand)  # both unit-normalized -> dot == cosine
+            hit = self._row_to_hit(row, cos)
+            scored.append(hit)
+        self._last_dim_mismatches = mismatches
+        scored.sort(
+            key=lambda h: (-h["score"], h["doc_id"], h["chunk_index"])
+        )
+        return scored
+
+    def _fuse_rrf(self, lexical: list[dict], dense: list[dict]) -> list[dict]:
+        """Reciprocal-rank fusion of two ranked, ceiling-FILTERED hit lists.
+
+        ``score(d) = Σ_r 1/(RRF_K + rank_r(d))`` where ``rank_r`` is the DENSE
+        (1-based) position of d within ranking r's ceiling-filtered list. A
+        document missing from a ranking simply contributes nothing from that
+        ranking. Identity is (source_id, chunk_index). The fused ``score``
+        replaces the per-engine score (which is not cross-comparable); the
+        original lexical/cosine signals are preserved as ``lexical_score`` and
+        ``cosine`` for transparency.
+        """
+        def _key(h: dict) -> tuple:
+            return (str(h.get("source_id", "")), int(h.get("chunk_index", 0)))
+
+        fused: dict[tuple, dict] = {}
+
+        def _accumulate(ranked: list[dict], signal_field: str) -> None:
+            for rank, h in enumerate(ranked, start=1):
+                key = _key(h)
+                entry = fused.get(key)
+                if entry is None:
+                    entry = dict(h)
+                    entry["score"] = 0.0
+                    fused[key] = entry
+                entry["score"] = float(entry["score"]) + 1.0 / (RRF_K + rank)
+                entry[signal_field] = float(h["score"])
+
+        _accumulate(lexical, "lexical_score")
+        _accumulate(dense, "cosine")
+        return list(fused.values())
 
     # -- authority/recency rerank (v2) -------------------------------------- #
     def _apply_rerank(self, hits: list[dict]) -> None:
@@ -719,12 +1188,43 @@ class KnowledgeIndex:
                 "SELECT COUNT(DISTINCT doc_id) AS d FROM chunks"
             ).fetchone()["d"]
         )
+        # -- vector coverage (P8-T1) ---------------------------------------- #
+        vec_total = int(
+            self._con.execute(
+                "SELECT COUNT(*) AS n FROM chunk_vectors"
+            ).fetchone()["n"]
+        )
+        by_model_rows = self._con.execute(
+            "SELECT embedding_model, COUNT(*) AS c FROM chunk_vectors "
+            "GROUP BY embedding_model"
+        ).fetchall()
+        by_model = {r["embedding_model"]: int(r["c"]) for r in by_model_rows}
+        # vector_coverage: per-model share of CHUNKS that carry a vector for
+        # that model (a chunk may be covered by one model and pending another).
+        coverage: dict[str, float] = {}
+        for model, _count in by_model.items():
+            covered = int(
+                self._con.execute(
+                    "SELECT COUNT(*) AS c FROM ("
+                    "  SELECT DISTINCT v.source_id, v.chunk_index "
+                    "  FROM chunk_vectors v "
+                    "  JOIN chunks c ON c.source_id=v.source_id "
+                    "    AND c.chunk_index=v.chunk_index "
+                    "  WHERE v.embedding_model=?)",
+                    (model,),
+                ).fetchone()["c"]
+            )
+            coverage[model] = (covered / n) if n else 0.0
         return {
             "engine": self.engine,
             "db_path": str(self.db_path),
             "chunks": n,
             "documents": docs,
             "by_sensitivity": by_sens,
+            "vectors": vec_total,
+            "vector_coverage": coverage,
+            "by_embedding_model": by_model,
+            "dim_mismatches": int(self._last_dim_mismatches),
         }
 
     def _wipe(self) -> None:
@@ -733,6 +1233,9 @@ class KnowledgeIndex:
             self._con.execute("DELETE FROM chunks_key")
         else:
             self._con.execute("DELETE FROM postings")
+        # Vectors go with the chunks, in the SAME transaction (P8S-6). A wipe
+        # therefore implies a full-corpus re-embed to restore coverage (P8S-13).
+        self._con.execute("DELETE FROM chunk_vectors")
         self._con.commit()
 
     def reindex(self, chunks: Iterable[dict]) -> int:
@@ -764,6 +1267,43 @@ def _load_chunks_file(path: Path) -> list[dict]:
     if not isinstance(data, list):
         raise ValueError("chunks file must be a JSON list (or {chunks: [...]})")
     return data
+
+
+def _load_vectors_file(path: Path) -> list[dict]:
+    """Load the vectors handoff file: a JSON list (or {vectors: [...]}).
+
+    Each entry: ``{source_id, chunk_index, embedding_model, vector: [...]}``.
+    The file is the 0600 in-root handoff the shell writes and deletes (P8S-10);
+    this function only parses it.
+    """
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(data, dict) and "vectors" in data:
+        data = data["vectors"]
+    if not isinstance(data, list):
+        raise ValueError("vectors file must be a JSON list (or {vectors: [...]})")
+    return data
+
+
+def _read_query_vector_stdin(stream=None) -> tuple[str, list]:
+    """Read + validate the query-vector stdin payload (P8S-3).
+
+    Caps the read at 1 MiB BEFORE JSON parse, validates the shape and dims, and
+    NEVER echoes the vector contents in an error. Returns (embedding_model,
+    unit-normalized float list) ready to hand to ``search``.
+    """
+    src = stream if stream is not None else sys.stdin
+    buf = src.buffer if hasattr(src, "buffer") else src
+    raw = buf.read(_QVEC_MAX_BYTES + 1)
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    if len(raw) > _QVEC_MAX_BYTES:
+        raise ValueError(f"query-vector stdin exceeds {_QVEC_MAX_BYTES} bytes")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise ValueError("query-vector stdin is not valid JSON")
+    model, unit = _validate_query_vector(payload)
+    return model, list(unit)
 
 
 def _jsonish(value) -> str:
@@ -876,11 +1416,31 @@ def main(argv: Optional[list] = None) -> int:
     p_query.add_argument("--q", required=True)
     p_query.add_argument("--k", type=int, default=10)
     p_query.add_argument("--max-sensitivity", default=None)
+    p_query.add_argument(
+        "--qvec-stdin", action="store_true",
+        help="read {embedding_model, vector} from stdin and run hybrid search",
+    )
 
     sub.add_parser("stats", help="index statistics")
 
     p_re = sub.add_parser("reindex", help="wipe + rebuild from a JSON file")
     p_re.add_argument("--file", required=True)
+
+    # -- vector store subcommands (operator/shell-only; never a model tool) --- #
+    p_vadd = sub.add_parser("vectors-add", help="upsert chunk vectors from a JSON file")
+    p_vadd.add_argument("--file", required=True)
+
+    p_vpend = sub.add_parser(
+        "vectors-pending", help="chunks lacking a vector for the given model"
+    )
+    p_vpend.add_argument("--embedding-model", required=True)
+    p_vpend.add_argument("--max-sensitivity", default=None)
+    p_vpend.add_argument("--limit", type=int, default=None)
+
+    p_vprune = sub.add_parser(
+        "vectors-prune", help="drop vectors for every model except --keep-model"
+    )
+    p_vprune.add_argument("--keep-model", required=True)
 
     args = ap.parse_args(argv)
     idx = KnowledgeIndex(args.root, force_fallback=args.force_fallback)
@@ -899,7 +1459,21 @@ def main(argv: Optional[list] = None) -> int:
             print(json.dumps({"added": 1, "engine": idx.engine}, indent=2))
             return 0
         if args.cmd == "query":
-            hits = idx.search(args.q, k=args.k, max_sensitivity=args.max_sensitivity)
+            qvec = None
+            qmodel = None
+            if getattr(args, "qvec_stdin", False):
+                try:
+                    qmodel, qvec = _read_query_vector_stdin()
+                except ValueError as exc:
+                    # The error never carries the vector (P8S-3). Degrade to a
+                    # lexical query rather than failing the search outright.
+                    sys.stderr.write(f"knowledge_index: {exc}; lexical only\n")
+                    qvec = None
+                    qmodel = None
+            hits = idx.search(
+                args.q, k=args.k, max_sensitivity=args.max_sensitivity,
+                query_vector=qvec, embedding_model=qmodel,
+            )
             print(json.dumps(hits, indent=2, ensure_ascii=False))
             return 0
         if args.cmd == "stats":
@@ -908,6 +1482,24 @@ def main(argv: Optional[list] = None) -> int:
         if args.cmd == "reindex":
             n = idx.reindex(_load_chunks_file(Path(args.file)))
             print(json.dumps({"reindexed": n, "engine": idx.engine}, indent=2))
+            return 0
+        if args.cmd == "vectors-add":
+            n = idx.add_vectors(_load_vectors_file(Path(args.file)))
+            # Frozen response shape {"added": N} (P8S-4): the shell validates
+            # THIS shape rather than trusting rc 0.
+            print(json.dumps({"added": n}, indent=2))
+            return 0
+        if args.cmd == "vectors-pending":
+            pend = idx.pending_vectors(
+                embedding_model=args.embedding_model,
+                max_sensitivity=args.max_sensitivity,
+                limit=args.limit,
+            )
+            print(json.dumps(pend, indent=2, ensure_ascii=False))
+            return 0
+        if args.cmd == "vectors-prune":
+            dropped = idx.prune_vectors(keep_model=args.keep_model)
+            print(json.dumps({"pruned": dropped}, indent=2))
             return 0
     finally:
         idx.close()

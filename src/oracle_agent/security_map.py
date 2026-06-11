@@ -800,6 +800,60 @@ GUARANTEES: list[Guarantee] = [
         kind="test",
         source="P7S-22",
     ),
+
+    # ------------------------------------------------------------------
+    # P4 -- gateway platform (Phase 4). The builder fails CLOSED on surface,
+    # the gateway core is the sole decision point, and write provenance is
+    # surface-namespaced (P4S-1/2/17).
+    # ------------------------------------------------------------------
+    Guarantee(
+        id="SH-066",
+        statement=(
+            "builder.grounding_for fails CLOSED on surface: any surface that is not "
+            "exactly 'local' yields GroundingPolicy.ENFORCE plus the gateway "
+            "wall-clock cap and the reduced gateway tool surface. A wiring mistake "
+            "that leaks a transport name (http/slack/email) into build_loop cannot "
+            "fall through to the local OBSERVE default; the loop surface is always "
+            "the literal 'gateway' and the transport name lives only in "
+            "InboundMessage.surface."
+        ),
+        enforcer=(
+            "tests/shell/test_agentloop.py::test_build_loop_http_surface_is_gateway_class"
+        ),
+        kind="test",
+        source="P4S-1",
+    ),
+    Guarantee(
+        id="SH-067",
+        statement=(
+            "GatewayCore injects the ceiling (per-surface max_sensitivity, "
+            "public-capped on a non-private channel), the surface-namespaced write "
+            "actor, and its own allow_write write-gate into a pinned loop_builder "
+            "signature -- not a prebuilt factory closed over someone else's ceiling. "
+            "An adapter bug or a serve-wiring slip can drop a message but can never "
+            "substitute any of the three (the 'holder' hack is gone)."
+        ),
+        enforcer=(
+            "tests/shell/test_gateway_core.py::test_core_injects_ceiling_actor_and_gate"
+        ),
+        kind="test",
+        source="P4S-2",
+    ),
+    Guarantee(
+        id="SH-068",
+        statement=(
+            "Gateway write provenance is surface-namespaced as "
+            "gateway_user:<surface>:<id> so M4 attribution survives multiple "
+            "surfaces (the seam Phase 5's identity model consumes). The metadata-only "
+            "gateway_turn ledger row carries the transport 'surface' and never "
+            "serializes message bodies or the adapter 'meta' dict."
+        ),
+        enforcer=(
+            "tests/shell/test_gateway_core.py::test_core_namespaces_actor_per_surface"
+        ),
+        kind="test",
+        source="P4S-17",
+    ),
 ]
 
 # ---------------------------------------------------------------------------

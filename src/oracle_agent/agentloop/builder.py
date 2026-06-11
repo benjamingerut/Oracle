@@ -25,16 +25,22 @@ _GATEWAY_TURN_WALL_CLOCK = 120.0
 
 def grounding_for(cfg: dict, surface: str,
                   grounding_override: str | None = None) -> GroundingPolicy:
-    """Decide the forced-grounding policy for ``surface`` (P3-T4, P3S-9/11).
+    """Decide the forced-grounding policy for ``surface`` (P3-T4, P3S-9/11; P4S-1).
 
-    ``build_loop`` is the SOLE decision point. The rule is:
+    ``build_loop`` is the SOLE decision point. The rule, INVERTED to fail
+    CLOSED on surface (P4S-1):
 
-      * ``surface == "gateway"`` -> ``ENFORCE``, HARD-CODED. Config cannot lower
-        it; there is no gateway grounding key at all (P3S-11). A
-        ``grounding_override`` is ignored on the gateway -- unbacked claims reach
-        other people there, so it never waits on the budget gate (gateway-first
-        rollout). This is the ``security_map``-enforced guarantee.
-      * any local surface -> the single config key ``chat.grounding_default``
+      * any surface that is NOT exactly ``"local"`` -> ``ENFORCE``, HARD-CODED,
+        plus the gateway wall-clock cap (applied in ``build_loop``). The literal
+        gateway loop surface is ``"gateway"``, but a future wiring mistake that
+        leaks a transport name (``"http"``, ``"slack"``, ...) into ``build_loop``
+        must NOT silently fall through to the local OBSERVE default. So the
+        branch is fail-closed: anything but ``"local"`` is gateway-class. Config
+        cannot lower it; there is no gateway grounding key at all (P3S-11). A
+        ``grounding_override`` is ignored on every non-local surface -- unbacked
+        claims reach other people there, so it never waits on the budget gate
+        (gateway-first rollout). This is the ``security_map``-enforced guarantee.
+      * ``surface == "local"`` -> the single config key ``chat.grounding_default``
         (default ``observe`` until the P3-T7 budget gate flips it), unless the
         operator passes ``grounding_override`` (the ``oracle chat --grounding``
         opt-up/opt-down, logged by the CLI).
@@ -42,8 +48,8 @@ def grounding_for(cfg: dict, surface: str,
     An unknown mode string raises ``ValueError`` so the caller surfaces a clear
     error rather than silently falling back to a less-strict mode.
     """
-    if surface == "gateway":
-        return GroundingPolicy.ENFORCE  # hard-coded, config-immutable (P3S-11)
+    if surface != "local":
+        return GroundingPolicy.ENFORCE  # fail-closed, config-immutable (P4S-1/P3S-11)
     raw = grounding_override
     if raw is None:
         raw = ((cfg.get("chat") or {}).get("grounding_default") or "observe")
@@ -131,8 +137,10 @@ def build_loop(cfg: dict, root: Path, *, surface: str,
     grounding = grounding_for(cfg, surface, grounding_override)
     # The gateway runs the whole turn (original + repairs) under a wall-clock
     # ceiling so a repair storm cannot stall the serve loop (P3S-7). Local chat
-    # has no wall-clock ceiling (the operator owns the terminal).
-    turn_wall_clock = _GATEWAY_TURN_WALL_CLOCK if surface == "gateway" else None
+    # has no wall-clock ceiling (the operator owns the terminal). Fail-closed on
+    # surface (P4S-1): any non-local surface gets the wall-clock cap, so a leaked
+    # transport name can never run the gateway uncapped.
+    turn_wall_clock = None if surface == "local" else _GATEWAY_TURN_WALL_CLOCK
     # P3-T7 shadow capture (P3S-10): consent is read from config ONLY for a LOCAL
     # surface. The gateway NEVER gets shadow capture -- structurally it is
     # ENFORCE (never reaches the OBSERVE branch where capture lives) and here the
