@@ -8,6 +8,9 @@
     oracle doctor [NAME]
     oracle model [show|set --provider P --model M --base-url U --key-env E]
     oracle kernel NAME -- <args...>      pass-through to the root's ./oracle
+    oracle upgrade [--check]             per-instance direction report
+    oracle upgrade kernel NAME [--approve ADMIN] [--force-downgrade]
+    oracle upgrade self --from-dir DIR   maintainer re-vendor (git checkout only)
     oracle version
 
 Instance resolution: explicit NAME > cwd inside a registered root >
@@ -34,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
         "setup": _cmd_setup, "spawn": _cmd_spawn, "instances": _cmd_instances,
         "chat": _cmd_chat, "serve": _cmd_serve, "doctor": _cmd_doctor,
         "model": _cmd_model, "kernel": _cmd_kernel, "version": _cmd_version,
+        "upgrade": _cmd_upgrade,
     }.get(cmd)
     if handler is None:
         print(f"oracle: unknown command {cmd!r} (try `oracle help`)", file=sys.stderr)
@@ -262,6 +266,11 @@ def _cmd_kernel(rest: list[str]) -> int:
         proc = subprocess.run([sys.executable, str(root / "oracle"), *tail],
                               cwd=str(root), env=_scrubbed_env())
     return proc.returncode
+
+
+def _cmd_upgrade(rest: list[str]) -> int:
+    from .upgrade_shell import cmd_upgrade
+    return cmd_upgrade(rest)
 
 
 def _cmd_version(rest: list[str]) -> int:

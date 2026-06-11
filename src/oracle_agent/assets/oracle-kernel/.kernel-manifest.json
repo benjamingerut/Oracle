@@ -1,6 +1,7 @@
 {
-  "aggregate_sha256": "e565b50e472a9e72fe5396fe734caf1b16f9a5880dce6e3ca7551ca4090029f3",
+  "aggregate_sha256": "97b96693c58d4a20d97669f995220a7ac97355f38e125d98de60b3ef3fc35bd8",
   "files": {
+    "_tools/KERNEL_VERSION": "eb0cd1f1d199956d3cb6a119202fe1c98f31b6ae513e4326d57ca1f9946f7a31",
     "_tools/_CONTEXT.md": "661ae48ec92ac8c7e0eda8f65fce86f0ffeae498fdde9de4d758774c4f7abd0d",
     "_tools/actions.py": "3508b8d585e1ecf185b8ce3710beca4028b6fb9404593e305c51caa4dbd6e885",
     "_tools/answer_protocol.py": "642a557698302901113c39082fe6d9f6e7e2ff60c27883e857e03a4c9d34055d",
@@ -34,7 +35,7 @@
     "_tools/migrations/0003_knowledge_index_dedup.py": "9f324588f62a9d0f640822dfc0b364ff5d7f46af8ef4519a6aa74f6aa3fb9fe3",
     "_tools/migrations/__init__.py": "d045715b83ea65a7899df248a834988a61d0d3ef05827d54f7447ed9aa35aa4f",
     "_tools/oracle_cli.py": "e07bbd72dd77c8895d0a2a198caa9fca80b11aa6859618ffd216e758b0889f02",
-    "_tools/oracle_lint.py": "7ca1b42075e139d00924b06e29e2c85b5f28dd4461126e70eb6a10726cc72c15",
+    "_tools/oracle_lint.py": "d123386860fb98f0ca3395a5f926c5d8b379d71809550e3a47b6c24a1eaa629f",
     "_tools/oracle_status.py": "4ddd6ff23eee60b1cf84828d24bafeb10a3da73c439f8e0fde5997ce3b1ad4c3",
     "_tools/oracle_yaml.py": "201c4a57311d3e07b7bfb5ccfb2a168c6af5dc9f3145ac9607c194ae7977397c",
     "_tools/policy.py": "4c5a93e48d21811794741dcedc2614f934eed54396ac9797cc51fbba96ce1dae",
@@ -65,6 +66,6 @@
     "_tools/truth_map.py": "32f230610bc6764c7d46629142ad50844ead2c176f3de4027b26c31e3c7ac55f",
     "_tools/upgrade.py": "b4a0b49e7f2fa3eb8beacc2e5a6d024e95e514868b8c4b949d052b71481e2c3a"
   },
-  "generated": "2026-06-10T20:25:01",
+  "generated": "2026-06-10T20:48:40",
   "tools_version": "3.0.0"
 }

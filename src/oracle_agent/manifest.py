@@ -51,6 +51,27 @@ from pathlib import Path
 _TOOLS = "_tools"
 _MANIFEST = ".kernel-manifest.json"
 _DEFAULT_TOOLS_VERSION = "3.0.0"
+_KERNEL_VERSION_FILE = "_tools/KERNEL_VERSION"
+
+
+def _read_kernel_version(kernel_dir: Path) -> str:
+    """Read tools_version from ``_tools/KERNEL_VERSION`` in *kernel_dir*.
+
+    Falls back to ``_DEFAULT_TOOLS_VERSION`` if the file is absent or
+    unreadable (so old kernel trees that predate the file still work).
+    Only the last non-comment, non-blank line is used; comment lines
+    start with ``#``.
+    """
+    vfile = Path(kernel_dir) / _KERNEL_VERSION_FILE
+    try:
+        lines = vfile.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return _DEFAULT_TOOLS_VERSION
+    for line in reversed(lines):
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return stripped
+    return _DEFAULT_TOOLS_VERSION
 
 
 def sha256_file(path: Path) -> str:
@@ -97,8 +118,15 @@ def aggregate_sha256(files: dict[str, str]) -> str:
     return h.hexdigest()
 
 
-def build_manifest(kernel_dir: Path, *, tools_version: str = _DEFAULT_TOOLS_VERSION) -> dict:
-    """Build the full manifest dict for ``kernel_dir`` (does not write it)."""
+def build_manifest(kernel_dir: Path, *, tools_version: str | None = None) -> dict:
+    """Build the full manifest dict for ``kernel_dir`` (does not write it).
+
+    If *tools_version* is ``None`` (the default), the version is read from
+    ``_tools/KERNEL_VERSION`` inside *kernel_dir*, falling back to
+    ``_DEFAULT_TOOLS_VERSION`` when that file is absent.
+    """
+    if tools_version is None:
+        tools_version = _read_kernel_version(kernel_dir)
     files = compute_files(kernel_dir)
     return {
         "tools_version": tools_version,
@@ -108,11 +136,13 @@ def build_manifest(kernel_dir: Path, *, tools_version: str = _DEFAULT_TOOLS_VERS
     }
 
 
-def render(kernel_dir: Path, *, tools_version: str = _DEFAULT_TOOLS_VERSION) -> dict:
+def render(kernel_dir: Path, *, tools_version: str | None = None) -> dict:
     """Compute and WRITE ``<kernel>/.kernel-manifest.json``; return the manifest.
 
-    The destination is a fixed internal path under ``kernel_dir`` (not
-    user-influenced), so a plain ``write_text`` is correct here.
+    If *tools_version* is ``None`` (the default), the version is read from
+    ``_tools/KERNEL_VERSION`` inside *kernel_dir*. The destination is a fixed
+    internal path under ``kernel_dir`` (not user-influenced), so a plain
+    ``write_text`` is correct here.
     """
     kernel_dir = Path(kernel_dir)
     if not kernel_dir.exists():

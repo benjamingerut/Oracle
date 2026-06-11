@@ -1,0 +1,19 @@
+# KERNEL_VERSION -- authoritative version string for this kernel tool layer.
+#
+# Bump discipline (upstream kernel duty):
+#   - Increment on EVERY change to any file under _tools/ before shipping.
+#   - Use semver: MAJOR.MINOR.PATCH
+#     * PATCH: bug-fix / no API or behaviour change.
+#     * MINOR: new backward-compatible capability.
+#     * MAJOR: breaking change in tool API or oracle.yml schema.
+#   - The version here MUST match the tools_version recorded in
+#     .kernel-manifest.json after `make manifest` is run.
+#   - Never leave this at the same value while changing tool files --
+#     version-string comparisons become meaningless if the version never moves.
+#
+# This file is read by manifest.render() (oracle_agent/manifest.py) so the
+# tools_version in the manifest is always derived from this single source of
+# truth rather than a hardcoded default.  The manifest's aggregate_sha256
+# (which hashes every _tools file including this one) is the definitive
+# integrity fingerprint; the version string is human-readable bookkeeping.
+3.0.0

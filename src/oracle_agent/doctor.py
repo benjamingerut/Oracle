@@ -168,9 +168,11 @@ def run(instance: str | None = None) -> Report:
             rep.add(WARN, f"instance '{name}': kernel manifest not stamped",
                     "re-spawn to stamp the manifest")
         elif vendored and rtv != vendored:
+            _kernel_src = str(Path(__file__).resolve().parent / "assets" / "oracle-kernel")
             rep.add(WARN, f"instance '{name}': kernel {rtv} != packaged {vendored}",
-                    "run `oracle kernel {name} -- admin upgrade apply --from-kernel {vendored}`".format(
-                        name=name, vendored=vendored))
+                    f"run `oracle upgrade kernel {name}` "
+                    f"(or: oracle kernel {name} -- admin upgrade apply "
+                    f"--from-kernel {_kernel_src})")
         else:
             rep.add(OK, f"instance '{name}': kernel {rtv}")
         # zero-sources check
