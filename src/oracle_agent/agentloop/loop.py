@@ -243,6 +243,10 @@ class AgentLoop:
         self.shadow_consent = bool(shadow_consent)
         self._clock = clock
         self.retry_kwargs = retry_kwargs or {}
+        # Set once if the provider rejects tool-calling (some OpenAI-compatible
+        # endpoints 400 on tools/tool_choice they don't support). After that the
+        # session runs tool-free / conversational; see ``_call``.
+        self._tools_unsupported = False
         # The loop owns ONE message list, mutated only by append + eviction.
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
 
@@ -344,6 +348,10 @@ class AgentLoop:
         return out
 
     def _call(self, tools) -> ChatResponse:
+        # Once a provider has rejected tool-calling this session, never send
+        # tools again — degrade straight to conversational.
+        if tools and self._tools_unsupported:
+            tools = None
         try:
             return chat_with_retry(self.client, self._wire_messages(), tools=tools,
                                    max_tokens=self.max_tokens, **self.retry_kwargs)
@@ -352,7 +360,31 @@ class AgentLoop:
                 self._evict_if_needed(force=True)
                 return chat_with_retry(self.client, self._wire_messages(), tools=tools,
                                        max_tokens=self.max_tokens, **self.retry_kwargs)
+            # Provider rejected the request while we were sending tools. Many
+            # OpenAI-compatible endpoints (notably some NVIDIA NIM hosted
+            # models) 400 on tools / `tool_choice: "auto"` they can't parse.
+            # Degrade ONCE to a tool-free call so chat keeps working
+            # (conversational; under ENFORCE the absent grounding fails closed
+            # to redaction). Warn once so the lost verb capability is visible.
+            if tools and exc.kind == "bad_request" and not self._tools_unsupported:
+                self._tools_unsupported = True
+                self._warn_tools_disabled(exc)
+                return chat_with_retry(self.client, self._wire_messages(),
+                                       tools=None, max_tokens=self.max_tokens,
+                                       **self.retry_kwargs)
             raise
+
+    def _warn_tools_disabled(self, exc: "LLMError") -> None:
+        """One-time stderr note that the provider rejected tool-calling, so the
+        oracle is running conversationally (no verbs / no grounding)."""
+        import sys as _sys
+        print(
+            "oracle: this provider/model rejected tool-calling "
+            f"({exc}); running in conversational mode for this session — the "
+            "oracle cannot run verbs or ground answers. Pick a tool-capable "
+            "model with `oracle model set --model <id>` (or use Ollama / Claude).",
+            file=_sys.stderr,
+        )
 
     def _run_tool(self, tc):
         try:

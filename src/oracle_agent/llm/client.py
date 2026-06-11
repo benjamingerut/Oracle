@@ -99,6 +99,32 @@ _CONTEXT_MARKERS = ("context_length", "maximum context", "context window",
                     "too many tokens", "reduce the length")
 
 
+def _error_detail(body: str, limit: int = 300) -> str:
+    """A short, single-line snippet of a provider's error body for diagnostics.
+
+    The API key is sent in the request header and never appears in a response
+    body, so echoing the body is safe. Prefers the OpenAI-style
+    ``{"error": {"message": ...}}`` / ``{"detail": ...}`` shapes, else a
+    whitespace-collapsed prefix of the raw body.
+    """
+    if not body:
+        return ""
+    try:
+        obj = json.loads(body)
+        if isinstance(obj, dict):
+            err = obj.get("error")
+            if isinstance(err, dict) and err.get("message"):
+                return str(err["message"])[:limit]
+            if isinstance(err, str) and err.strip():
+                return err.strip()[:limit]
+            for k in ("detail", "message"):
+                if obj.get(k):
+                    return str(obj[k])[:limit]
+    except Exception:
+        pass
+    return " ".join(body.split())[:limit]
+
+
 def classify_error(status: int | None, body: str) -> LLMError:
     """Map an HTTP status + response body to an :class:`LLMError`."""
     low = (body or "").lower()
@@ -111,10 +137,17 @@ def classify_error(status: int | None, body: str) -> LLMError:
     if status is not None and 500 <= status < 600:
         return LLMError("server", f"server error {status}", status=status, retryable=True)
     if status == 400:
-        return LLMError("bad_request", "bad request", status=status)
+        detail = _error_detail(body)
+        return LLMError("bad_request",
+                        f"bad request: {detail}" if detail else "bad request",
+                        status=status)
     if status is None:
         return LLMError("network", "network failure", status=None, retryable=True)
-    return LLMError("bad_request", f"unexpected status {status}", status=status)
+    detail = _error_detail(body)
+    return LLMError("bad_request",
+                    f"unexpected status {status}: {detail}" if detail
+                    else f"unexpected status {status}",
+                    status=status)
 
 
 def _retry_after_seconds(headers) -> float | None:

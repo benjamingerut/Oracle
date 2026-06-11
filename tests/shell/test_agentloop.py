@@ -49,6 +49,46 @@ def test_simple_text_turn_gets_conversational_footer():
     assert res.iterations == 1
 
 
+@dataclass
+class _ToolReject409Client:
+    """400s any request that carries tools (mimics an NVIDIA NIM model that
+    can't parse tool calls); answers normally when tools are omitted."""
+    reply: str = "hi there"
+    saw_tools: bool = False
+    saw_no_tools: bool = False
+
+    def chat(self, messages, tools=None, **kw):
+        from oracle_agent.llm.client import LLMError
+        if tools:
+            self.saw_tools = True
+            raise LLMError("bad_request",
+                           "bad request: \"auto\" tool choice requires "
+                           "--enable-auto-tool-choice", status=400)
+        self.saw_no_tools = True
+        return ChatResponse(content=self.reply)
+
+
+def test_tool_reject_falls_back_to_conversational(capsys):
+    """A provider that 400s on tools must degrade to a tool-free call so chat
+    still works, warn once, and stay tool-free for the rest of the session."""
+    client = _ToolReject409Client()
+    loop = AgentLoop(client, FakeDispatcher(), "SYS",
+                     grounding=GroundingPolicy.OBSERVE,
+                     retry_kwargs={"sleep": lambda *_: None})
+    res = loop.run_turn("hello")
+    assert "hi there" in res.text          # answered despite the tools 400
+    assert client.saw_tools and client.saw_no_tools
+    assert loop._tools_unsupported is True
+    warn = capsys.readouterr().err
+    assert "conversational mode" in warn and "tool-calling" in warn
+
+    # A second turn never sends tools again (no repeat 400 / no second warning).
+    client.saw_tools = False
+    res2 = loop.run_turn("again")
+    assert "hi there" in res2.text
+    assert client.saw_tools is False
+
+
 def test_multi_step_tool_loop():
     from oracle_agent.agentloop.verbtools import ToolOutcome
     script = [
