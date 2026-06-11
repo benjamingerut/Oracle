@@ -574,19 +574,309 @@ def run(instance: str | None = None) -> Report:
                     "— an API key would be sent in cleartext",
                     "set an https:// embeddings base_url")
 
-    # gateway
-    tg = ((cfg.get("gateway") or {}).get("telegram") or {})
-    if tg.get("enabled"):
-        if not config.resolve_secret(tg.get("token_env") or ""):
-            rep.add(FAIL, "telegram enabled but token unresolved",
-                    f"add {tg.get('token_env')} to .env")
-        elif not (tg.get("allowlist") or {}):
-            rep.add(WARN, "telegram enabled but allowlist empty (no one can use it)",
-                    "add user IDs to gateway.telegram.allowlist in config.json")
-        else:
-            rep.add(OK, f"telegram enabled, {len(tg['allowlist'])} allowed user(s)")
+    # gateway surfaces (Phase 4 / P4-T7): per-surface doctor matrix. Each
+    # ENABLED surface is validated against the pinned checks; HTTP's identity is
+    # the token, so the "allowlist non-empty" check does NOT apply to it
+    # (P4S-20). Read-only: these rows replicate the adapters' own startup gates
+    # (email.py's authserv/dmarc cap, http.py's validate_bind) without mutating.
+    _check_gateway_surfaces(rep, cfg)
+
+    # briefing delivery targets (Phase 4 / P4-T8): every configured target must
+    # resolve to an allowlisted private identity on its surface, else refused
+    # (P4S-15). Read-only config-level check (the sibling's briefer resolver is
+    # preferred when present; otherwise validated locally from CONFIG alone).
+    _check_briefings(rep, cfg)
 
     return rep
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4 (P4-T7): per-surface gateway doctor matrix.
+# --------------------------------------------------------------------------- #
+def _websocket_lib_present() -> bool:
+    """True iff the optional Slack Socket Mode websocket library is importable.
+
+    Uses ``importlib.util.find_spec`` so doctor never module-imports the
+    optional dep (matching the adapter's dep-absent graceful-disable discipline,
+    P4S-14)."""
+    import importlib.util
+    return importlib.util.find_spec("websockets") is not None
+
+
+def _check_gateway_surfaces(rep: "Report", cfg: dict) -> None:
+    gw = cfg.get("gateway") or {}
+    _check_telegram_surface(rep, gw.get("telegram") or {})
+    _check_slack_surface(rep, gw.get("slack") or {})
+    _check_email_surface(rep, gw.get("email") or {})
+    _check_http_surface(rep, gw.get("http") or {})
+
+
+def _check_telegram_surface(rep: "Report", tg: dict) -> None:
+    """telegram: token resolvable; allowlist non-empty."""
+    if not tg.get("enabled"):
+        return
+    if not config.resolve_secret(tg.get("token_env") or ""):
+        rep.add(FAIL, "telegram enabled but token unresolved",
+                f"add {tg.get('token_env')} to .env")
+    elif not (tg.get("allowlist") or {}):
+        rep.add(WARN, "telegram enabled but allowlist empty (no one can use it)",
+                "add user IDs to gateway.telegram.allowlist in config.json")
+    else:
+        rep.add(OK, f"telegram enabled, {len(tg['allowlist'])} allowed user(s)")
+
+
+def _check_slack_surface(rep: "Report", sl: dict) -> None:
+    """slack: token resolvable; allowlist non-empty; optional websocket dep
+    present (else a WARN that Slack is disabled until the dep is installed)."""
+    if not sl.get("enabled"):
+        return
+    if not config.resolve_secret(sl.get("token_env") or ""):
+        rep.add(FAIL, "slack enabled but token unresolved",
+                f"add {sl.get('token_env')} to .env")
+        return
+    if not (sl.get("allowlist") or {}):
+        rep.add(WARN, "slack enabled but allowlist empty (no one can use it)",
+                "add U… member ids to gateway.slack.allowlist in config.json")
+        return
+    if not _websocket_lib_present():
+        rep.add(WARN, "slack configured but websocket lib absent — disabled",
+                "install the optional Socket Mode websocket library, or set "
+                "gateway.slack.enabled=false")
+        return
+    rep.add(OK, f"slack enabled, {len(sl['allowlist'])} allowed user(s)")
+
+
+def _check_email_surface(rep: "Report", em: dict) -> None:
+    """email: creds resolvable; allowlist non-empty; dedicated-mailbox ack;
+    authserv_id unset => public-cap WARN; TLS hosts set.
+
+    Replicates email.py's layered fail-closed identity gate read-only: with no
+    ``authserv_id`` the surface is hard-capped at ``public`` no matter what
+    ``max_sensitivity`` config names (P4S-10)."""
+    if not em.get("enabled"):
+        return
+    user_ok = bool(config.resolve_secret(em.get("user_env") or ""))
+    pass_ok = bool(config.resolve_secret(em.get("pass_env") or ""))
+    if not (user_ok and pass_ok):
+        missing = []
+        if not user_ok:
+            missing.append(em.get("user_env") or "user_env")
+        if not pass_ok:
+            missing.append(em.get("pass_env") or "pass_env")
+        rep.add(FAIL, "email enabled but credentials unresolved "
+                      f"({', '.join(missing)})",
+                f"add {' and '.join(missing)} to .env")
+        return
+    if not (em.get("allowlist") or {}):
+        rep.add(WARN, "email enabled but allowlist empty (no one can use it)",
+                "add lowercased addresses to gateway.email.allowlist in config.json")
+        return
+    # TLS hosts (IMAP4_SSL / SMTP STARTTLS are mandatory; an empty host means
+    # the adapter cannot connect at all).
+    imap_host = (em.get("imap_host") or "").strip()
+    smtp_host = (em.get("smtp_host") or "").strip()
+    if not imap_host or not smtp_host:
+        missing = []
+        if not imap_host:
+            missing.append("imap_host")
+        if not smtp_host:
+            missing.append("smtp_host")
+        rep.add(FAIL, f"email enabled but TLS host(s) unset ({', '.join(missing)})",
+                "set gateway.email.imap_host and gateway.email.smtp_host "
+                "(IMAP4_SSL / SMTP STARTTLS are mandatory)")
+        return
+    # Dedicated-mailbox acknowledgement (P4S-12): a shared human mailbox races
+    # \Seen with the human's client. We cannot probe IMAP read-only here, so we
+    # require an explicit operator ack flag in config.
+    if not em.get("dedicated_mailbox_ack"):
+        rep.add(WARN, "email enabled but dedicated-mailbox not acknowledged "
+                      "(a shared human mailbox races \\Seen with the human's client)",
+                "use a DEDICATED mailbox for the oracle, then set "
+                "gateway.email.dedicated_mailbox_ack=true in config.json")
+    # authserv_id unset => the surface is public-capped regardless of config
+    # max_sensitivity (P4S-10). This is a WARN, not a FAIL: public is a valid,
+    # safe operating ceiling.
+    if not em.get("authserv_id"):
+        rep.add(WARN, "email capped at public (no authserv_id configured — "
+                      "From is forgeable and DKIM is unverifiable in stdlib over "
+                      "IMAP, so internal+ is locked until verified DMARC)",
+                "configure a trusted gateway.email.authserv_id (the host id of an "
+                "Authentication-Results header you trust) to unlock internal")
+    else:
+        rep.add(OK, f"email enabled, {len(em['allowlist'])} allowed sender(s), "
+                    "authserv_id set (internal unlockable via verified DMARC)")
+
+
+def _check_http_surface(rep: "Report", ht: dict) -> None:
+    """http: token resolvable (FAIL if not); bind parses as a literal loopback
+    IP; port sane. NB: "allowlist non-empty" does NOT apply to HTTP — its
+    identity is the token (P4S-20)."""
+    if not ht.get("enabled"):
+        return
+    # Fail-closed startup (P4S-7): no token => the adapter refuses to start.
+    if not config.resolve_secret(ht.get("token_env") or ""):
+        rep.add(FAIL, "http enabled but token unresolved (the adapter refuses to "
+                      "start — there is no unauthenticated mode)",
+                f"add {ht.get('token_env')} to .env")
+        return
+    # Bind must parse as a literal loopback IP (P4S-7). Replicate http.py's
+    # validate_bind read-only so doctor flags the same startup refusal.
+    bind = ht.get("bind", "127.0.0.1")
+    try:
+        from .gateway.http import validate_bind
+        validate_bind(bind)
+    except ValueError as exc:
+        rep.add(FAIL, f"http bind {bind!r} is not a literal loopback IP — "
+                      "the adapter refuses to start",
+                f"set gateway.http.bind to 127.0.0.1 or ::1 ({exc})")
+        return
+    except Exception:
+        # validate_bind import unexpectedly failed: do the check inline so the
+        # doctor row is still honest about the literal-loopback discipline.
+        try:
+            addr = ipaddress.ip_address(bind)
+            ok = addr.is_loopback
+        except ValueError:
+            ok = False
+        if not ok:
+            rep.add(FAIL, f"http bind {bind!r} is not a literal loopback IP — "
+                          "the adapter refuses to start",
+                    "set gateway.http.bind to 127.0.0.1 or ::1")
+            return
+    # Port sanity.
+    try:
+        port = int(ht.get("port", 8765))
+    except (TypeError, ValueError):
+        port = -1
+    if not (1 <= port <= 65535):
+        rep.add(FAIL, f"http port {ht.get('port')!r} is out of range",
+                "set gateway.http.port to a value in 1..65535")
+        return
+    rep.add(OK, f"http enabled on {bind}:{port}, token resolvable "
+                f"(principal: {ht.get('principal', 'http-operator')})")
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4 (P4-T8): briefing delivery-target doctor check (P4S-15).
+# --------------------------------------------------------------------------- #
+def _briefing_target_resolves(cfg: dict, target: dict) -> tuple[bool, str]:
+    """Return (ok, reason) for one briefing target.
+
+    A push has no inbound message to assert ``is_private``, so each target must
+    resolve to an ALREADY-allowlisted private identity on its surface (P4S-15):
+
+      * telegram: a ``user_id`` that is a key in gateway.telegram.allowlist
+        (a chat_id equal to an allowlisted user_id is the only private form);
+      * email: an ``address`` (lowercased) that is a key in
+        gateway.email.allowlist.
+
+    Anything else — a group id, an unlisted chat, a list address, an unknown
+    surface — is refused (deny-by-default). Prefer the sibling briefer's
+    resolver when present; otherwise validate from CONFIG alone (this comment
+    is the local fallback the spec permits).
+    """
+    if not isinstance(target, dict):
+        return False, "target is not an object"
+    surface = target.get("surface")
+    gw = cfg.get("gateway") or {}
+    if surface == "telegram":
+        uid = target.get("user_id")
+        if not uid:
+            return False, "telegram target missing user_id"
+        allow = (gw.get("telegram") or {}).get("allowlist") or {}
+        if str(uid) not in {str(k) for k in allow}:
+            return False, (f"telegram user_id {uid!r} is not in "
+                           "gateway.telegram.allowlist (group/unlisted chats refused)")
+        return True, ""
+    if surface == "email":
+        addr = (target.get("address") or "").strip().lower()
+        if not addr:
+            return False, "email target missing address"
+        allow = (gw.get("email") or {}).get("allowlist") or {}
+        if addr not in {str(k).strip().lower() for k in allow}:
+            return False, (f"email address {addr!r} is not in "
+                           "gateway.email.allowlist (list addresses refused)")
+        return True, ""
+    return False, f"unsupported briefing surface {surface!r} (telegram/email only)"
+
+
+def _check_briefings(rep: "Report", cfg: dict) -> None:
+    """Validate every configured briefing delivery target + the state file.
+
+    Deny-by-default: no configured target => no delivery (nothing to report).
+    Each target must resolve to an allowlisted private identity (P4S-15); an
+    unresolvable target is a FAIL (config load AND doctor both refuse it). The
+    persisted delivery-state file must be readable (corruption => no send +
+    doctor flag, fail closed)."""
+    briefings = cfg.get("briefings") or {}
+    if not briefings:
+        return  # deny-by-default; nothing configured -> nothing to check
+    # Prefer the sibling's resolver if its module has landed by now.
+    resolver = None
+    try:
+        from .service import briefer as _briefer  # type: ignore
+        resolver = getattr(_briefer, "target_is_allowlisted_private", None)
+    except Exception:
+        resolver = None
+    for inst, block in briefings.items():
+        targets = (block or {}).get("targets") or []
+        if not targets:
+            rep.add(WARN, f"briefings[{inst}] has no delivery targets "
+                          "(deny-by-default: no brief will be delivered)",
+                    "add a {surface,user_id|address} target that resolves to an "
+                    "allowlisted private identity")
+            continue
+        for target in targets:
+            if resolver is not None:
+                try:
+                    ok = bool(resolver(cfg, target))
+                    reason = "" if ok else "target is not an allowlisted private identity"
+                except Exception as exc:  # resolver blew up -> fall back locally
+                    ok, reason = _briefing_target_resolves(cfg, target)
+                    if not ok:
+                        reason += f" (briefer resolver error: {type(exc).__name__})"
+            else:
+                ok, reason = _briefing_target_resolves(cfg, target)
+            if ok:
+                desc = target.get("user_id") or target.get("address") or "?"
+                rep.add(OK, f"briefings[{inst}]: target "
+                            f"{target.get('surface')}:{desc} resolves to an "
+                            "allowlisted private identity")
+            else:
+                rep.add(FAIL, f"briefings[{inst}]: target refused — {reason}",
+                        "a briefing push must target an ALREADY-allowlisted "
+                        "private identity (group ids / unlisted chats / list "
+                        "addresses are refused; delivery is an export)")
+    # State file readability (fail closed: corruption => no send + doctor flag).
+    _check_briefing_state(rep)
+
+
+def _check_briefing_state(rep: "Report") -> None:
+    """Flag a corrupt/unreadable briefing delivery-state file (P4S-15).
+
+    The state is keyed ``(instance, surface, drop_id)`` and lives in the profile
+    dir (atomic write, P4S-20 naming). A missing file is normal (nothing
+    delivered yet); an unreadable/corrupt one is a FAIL because the briefer
+    fails closed (no send) on corruption."""
+    try:
+        state_path = config.profile_dir() / "briefing_delivery_state.json"
+    except Exception:
+        return
+    if not state_path.exists():
+        return  # nothing delivered yet -> not an error
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        rep.add(FAIL, f"briefing delivery-state file is unreadable/corrupt "
+                      f"({type(exc).__name__}) — the briefer fails closed (no "
+                      "send) until it is repaired",
+                f"inspect or delete {state_path} (a missed brief beats a "
+                "mis-sent one)")
+        return
+    if not isinstance(data, dict):
+        rep.add(FAIL, "briefing delivery-state file is not a JSON object — the "
+                      "briefer fails closed (no send) until it is repaired",
+                f"inspect or delete {state_path}")
 
 
 def _check_rc(root: Path) -> int:

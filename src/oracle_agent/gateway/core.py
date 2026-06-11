@@ -120,7 +120,8 @@ class GatewayCore:
         self._repair_times: dict[str, list[float]] = {}
 
     # -- public API --------------------------------------------------------- #
-    def handle(self, msg: InboundMessage) -> OutboundReply | None:
+    def handle(self, msg: InboundMessage,
+               *, on_authorized=None) -> OutboundReply | None:
         """Authorize, run, ledger one inbound message.
 
         Returns an :class:`OutboundReply` (the adapter sends it) or ``None``
@@ -128,6 +129,16 @@ class GatewayCore:
         exception isolation is the driver's job around the batch; the core's
         own turn-failure path returns a best-effort error reply rather than
         raising. Authorization failures are silent (no reply, no LLM call).
+
+        ``on_authorized`` (P4-T6 / P4S-19) is an OPTIONAL zero-arg callback the
+        core invokes EXACTLY ONCE, AFTER the message has cleared allowlist +
+        privacy (and is not an access-change request), and immediately BEFORE
+        the potentially-slow model turn. It is the seam for a per-adapter
+        "typing"/"thinking" affordance: because the core fires it only on an
+        authorized message, a denied update never triggers an indicator -- the
+        silent-deny discipline (SH-017) is never turned into a presence oracle.
+        Any exception it raises is swallowed (the affordance is best-effort and
+        must never break a turn). Default ``None`` => zero behavior change.
         """
         user_id = str(msg.user_id)
 
@@ -158,6 +169,17 @@ class GatewayCore:
 
         if any(kw in msg.text.lower() for kw in _ACCESS_RE):
             return OutboundReply(msg.channel_id, _ACCESS_REFUSAL)
+
+        # Authorized: allowlist + privacy cleared, not an access-change request.
+        # Signal the adapter (typing/thinking affordance, P4S-19) before the
+        # potentially-slow turn. Best-effort: never let it break the turn.
+        if on_authorized is not None:
+            try:
+                on_authorized()
+            except Exception as exc:
+                self.logger(
+                    f"gateway[{self.surface}]: on_authorized hook raised "
+                    f"{type(exc).__name__} (ignored)")
 
         loop = self._loop_for(user_id, instance, root, msg.is_private)
 

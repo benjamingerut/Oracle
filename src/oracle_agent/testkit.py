@@ -470,6 +470,7 @@ class _FakeAPI:
     updates: list = field(default_factory=list)
     sent: list = field(default_factory=list)
     fail: bool = False
+    actions: list = field(default_factory=list)  # (chat_id, action) for typing
 
     def get_updates(self, offset, timeout=25):
         if self.fail:
@@ -478,6 +479,101 @@ class _FakeAPI:
 
     def send_message(self, chat_id, text):
         self.sent.append((chat_id, text))
+
+    def send_chat_action(self, chat_id, action="typing"):
+        self.actions.append((chat_id, action))
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 adapter fakes (P4S-6 amendment): slack / email / http
+# ---------------------------------------------------------------------------
+@dataclass
+class FakeSlackTransport:
+    """Injectable fake Socket Mode transport (P4S-14): records every egress.
+
+    Replays ``envelopes`` from :meth:`events`, and records ``acked`` envelope
+    ids, ``sent`` ``(channel, text)`` messages, and ``typing`` ``channel``
+    affordances. Every Slack security guarantee is enforced over this fake --
+    no live websocket dep is ever needed (the whole point of the injectable
+    transport, P4S-14).
+    """
+
+    envelopes: list = field(default_factory=list)
+    acked: list = field(default_factory=list)
+    sent: list = field(default_factory=list)
+    typing: list = field(default_factory=list)
+    fail: bool = False
+
+    def events(self):
+        if self.fail:
+            raise OSError("simulated socket error")
+        batch = list(self.envelopes)
+        self.envelopes = []  # consume; redelivery is the platform's job
+        return batch
+
+    def ack(self, envelope_id):
+        self.acked.append(envelope_id)
+
+    def post_message(self, channel, text):
+        self.sent.append((channel, text))
+
+    def post_typing(self, channel):
+        self.typing.append(channel)
+
+
+@dataclass
+class FakeIMAP:
+    """Injectable fake IMAP client matching gateway.email.IMAPClient's surface.
+
+    ``messages`` maps UID -> RFC822 bytes; ``uidvalidity``/``uidnext`` model the
+    mailbox. Mirrors ``select`` / ``search_uids_since`` / ``fetch_rfc822`` so the
+    email adapter's identity/cursor logic is exercised with no network.
+    """
+
+    uidvalidity: int = 100
+    uidnext: int = 1
+    messages: dict = field(default_factory=dict)
+    logged_out: bool = False
+
+    def select(self):
+        return {"uidvalidity": self.uidvalidity, "uidnext": self.uidnext}
+
+    def search_uids_since(self, last_uid):
+        return sorted(u for u in self.messages if u > last_uid)
+
+    def fetch_rfc822(self, uid):
+        return self.messages.get(uid, b"")
+
+    def logout(self):
+        self.logged_out = True
+
+
+@dataclass
+class FakeSMTP:
+    """Injectable fake SMTP client: records every sent EmailMessage."""
+
+    sent: list = field(default_factory=list)
+
+    def send(self, msg):
+        self.sent.append(msg)
+
+
+class FakeNonblockLock:
+    """A reusable nb-lock factory for HTTP-adapter tests.
+
+    Construct with ``busy=True`` to make every acquire raise ``BlockingIOError``
+    (simulating root contention -> 503, P4S-9); ``busy=False`` is a no-op lock.
+    """
+
+    def __init__(self, *, busy: bool = False):
+        self.busy = busy
+
+    def __call__(self, instance):
+        import contextlib
+
+        if self.busy:
+            raise BlockingIOError("simulated root contention")
+        return contextlib.nullcontext()
 
 
 # ---------------------------------------------------------------------------

@@ -856,6 +856,126 @@ GUARANTEES: list[Guarantee] = [
     ),
 
     # ------------------------------------------------------------------
+    # P4-T3/T4/T8 -- per-surface security guarantees the phase promises
+    # (SECURITY.md + doctor matrix, P4-T7). Each below is wired to a REAL
+    # landed enforcer test from the adapter / config batches; the
+    # briefing-target refusal is doctor-checkable and wired to this batch's
+    # own doctor-surface test.
+    # ------------------------------------------------------------------
+    Guarantee(
+        id="SH-078",
+        statement=(
+            "The HTTP surface fails closed at startup: an unresolved or empty "
+            "token_env makes the adapter refuse to construct (RuntimeError) -- "
+            "there is no unauthenticated mode, ever. The bearer token is required "
+            "on ALL routes including the MCP endpoint and is compared with "
+            "hmac.compare_digest. The token IS the principal (loopback is "
+            "reachable by every local UID), as stated in SECURITY.md."
+        ),
+        enforcer=(
+            "tests/shell/test_gateway_http.py::test_empty_token_refuses_to_start"
+        ),
+        kind="test",
+        source="P4S-7",
+    ),
+    Guarantee(
+        id="SH-079",
+        statement=(
+            "The HTTP MCP endpoint routes EVERY tools/call through "
+            "Dispatcher.dispatch -- no parallel verb table, no raw kernel "
+            "passthrough -- so a dropped verb (oracle_brief / oracle_ingest / "
+            "oracle_checkpoint / oracle_loops_due) called via MCP is denied "
+            "fail-closed, exactly as on every other surface (P4S-8, SH-003/004 "
+            "style). tools/list is EXACTLY tool_schemas(surface='gateway')."
+        ),
+        enforcer=(
+            "tests/shell/test_gateway_http.py::test_mcp_dropped_verb_denied_fail_closed"
+        ),
+        kind="test",
+        source="P4S-8",
+    ),
+    Guarantee(
+        id="SH-080",
+        statement=(
+            "No endpoint on the HTTP adapter mutates allowlists, config, pairing, "
+            "or instances: the handler structurally serves ONLY POST /ask and "
+            "POST /mcp, so the control-plane-from-chat hole refused in v1 "
+            "(D7/SH-005) stays refused on HTTP (a structural, SH-005-style test)."
+        ),
+        enforcer=(
+            "tests/shell/test_gateway_http.py::test_no_control_plane_endpoints"
+        ),
+        kind="test",
+        source="P4S-8",
+    ),
+    Guarantee(
+        id="SH-081",
+        statement=(
+            "The email surface is hard-capped at public by default: with no "
+            "authserv_id configured every message is non-private (is_private=False), "
+            "so GatewayCore's non-private public-cap holds no matter what "
+            "max_sensitivity config names. Inbound From is attacker-writable and "
+            "DKIM is unverifiable in stdlib over IMAP, so email provenance is "
+            "low-assurance (documented in SECURITY.md, P4S-10)."
+        ),
+        enforcer=(
+            "tests/shell/test_gateway_email.py::test_no_authserv_id_forces_non_private"
+        ),
+        kind="test",
+        source="P4S-10",
+    ),
+    Guarantee(
+        id="SH-082",
+        statement=(
+            "Raising the email surface above public requires BOTH a configured "
+            "authserv_id AND an Authentication-Results header from exactly that "
+            "authserv-id carrying dmarc=pass (or spf=pass where DMARC is absent) "
+            "on THIS message; no header, the wrong authserv-id, or a fail verdict "
+            "serves the message at public at most (P4S-10)."
+        ),
+        enforcer=(
+            "tests/shell/test_gateway_email.py::"
+            "test_authserv_id_plus_dmarc_pass_unlocks_private"
+        ),
+        kind="test",
+        source="P4S-10",
+    ),
+    Guarantee(
+        id="SH-083",
+        statement=(
+            "CONFIG_VERSION 3's no-op structural migration makes the SECURITY_KEYS "
+            "preservation check bite on every new per-surface key (slack/email/http "
+            "enabled/allowlist/max_sensitivity/token_env, the email authserv_id and "
+            "IMAP/SMTP hosts, the HTTP bind/port, and the briefings delivery block) "
+            "plus the corrected singular provider.api_key_env wildcard: a migration "
+            "that drops or repoints any of them is refused at load (P4S-16)."
+        ),
+        enforcer=(
+            "tests/shell/test_config.py::test_new_security_keys_registered"
+        ),
+        kind="test",
+        source="P4S-16",
+    ),
+    Guarantee(
+        id="SH-084",
+        statement=(
+            "A scheduled briefing delivery target must resolve to an "
+            "already-allowlisted private identity on its surface (telegram: a "
+            "user_id in gateway.telegram.allowlist; email: an address in "
+            "gateway.email.allowlist). A group id, an unlisted chat, a list "
+            "address, or an unknown surface is refused by doctor (and at config "
+            "load); deny-by-default -- no configured target means no delivery "
+            "(P4S-15)."
+        ),
+        enforcer=(
+            "tests/shell/test_doctor_surfaces.py::"
+            "test_briefing_target_not_allowlisted_is_refused"
+        ),
+        kind="test",
+        source="P4S-15",
+    ),
+
+    # ------------------------------------------------------------------
     # P8 -- retrieval quality (Phase 8). An embedding request IS content
     # egress: the policy bridge's environment x sensitivity ceiling, INCLUDING
     # the egress veto, applies to embedding requests exactly as to chat

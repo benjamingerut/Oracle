@@ -106,6 +106,13 @@ class TelegramAPI:
             with _OPENER.open(req, timeout=self.timeout):
                 pass
 
+    def send_chat_action(self, chat_id: int, action: str = "typing") -> None:
+        """Emit a "typing" affordance (P4-T6). Best-effort; the caller swallows."""
+        data = urllib.parse.urlencode({"chat_id": chat_id, "action": action}).encode()
+        req = urllib.request.Request(self._url("sendChatAction"), data=data, method="POST")
+        with _OPENER.open(req, timeout=self.timeout):
+            pass
+
 
 # --------------------------------------------------------------------------- #
 # TelegramAdapter -- wire parsing, identity, is_private assertion, chunking,
@@ -122,11 +129,13 @@ class TelegramAdapter:
 
     surface = "telegram"
 
-    def __init__(self, api, *, clock=time.time, logger=None, profile_dir=None):
+    def __init__(self, api, *, clock=time.time, logger=None, profile_dir=None,
+                 typing: bool = True):
         self.api = api
         self.clock = clock
         self.logger = logger or (lambda *a: None)
         self._profile_dir = profile_dir
+        self.typing = typing
         self._offset = 0
         self._offset_file: Path | None = None
         self._offset_loaded = False
@@ -266,6 +275,25 @@ class TelegramAdapter:
             self._offset = new
             self._offset_dirty = True
 
+    def typing_cb(self, channel_id):
+        """Return a callback the CORE invokes AFTER authorizing the message.
+
+        The "typing" affordance (P4-T6) is emitted only when the core calls this
+        back, i.e. after allowlist + privacy pass (P4S-19). A denied update never
+        authorizes, so no ``sendChatAction`` is emitted -- the silent-deny
+        discipline (SH-017) stays a silent deny, not a presence oracle.
+        Best-effort: absence/failure never blocks the reply.
+        """
+        def _emit():
+            if not self.typing:
+                return
+            try:
+                self.api.send_chat_action(int(channel_id), "typing")
+            except Exception as exc:
+                self.logger(f"gateway: typing failed (ignored): "
+                            f"{type(exc).__name__}")
+        return _emit
+
     def send(self, reply: OutboundReply) -> None:
         """Send a reply (adapter owns chunking; Telegram 4000)."""
         try:
@@ -374,7 +402,8 @@ class TelegramGateway:
                 msg = self.adapter.parse(upd)
                 if msg is None:
                     continue
-                reply = self.core.handle(msg)
+                reply = self.core.handle(
+                    msg, on_authorized=self.adapter.typing_cb(msg.channel_id))
                 if reply is not None:
                     self.adapter.send(reply)
                     handled += 1
