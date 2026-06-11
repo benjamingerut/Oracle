@@ -36,11 +36,22 @@ v1. Enforced in code at dispatch, not requested in a prompt.
 
 ## Install
 
+One line — installs and drops you straight into the ~1-minute setup wizard:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/benjamingerut/Oracle/main/installer/install.sh | sh
+```
+
+Or install from a local checkout:
+
 ```sh
 sh installer/install.sh --from-dir /path/to/this/repo   # or --git-url URL
-oracle setup        # wizard: spawn an oracle, pick a provider, store keys
-oracle doctor       # verify everything
+oracle setup        # quick wizard (~1 min): name, provider, API key — then chat
+oracle doctor       # full health report
 ```
+
+`oracle setup` is the short, plain-language flow. For connectors, Telegram, and
+scheduling, run `oracle setup --advanced`.
 
 Layout: source + venv under `~/.oracle/`, command symlinked into
 `~/.local/bin`, secrets in `~/.oracle/.env` (0600), settings in

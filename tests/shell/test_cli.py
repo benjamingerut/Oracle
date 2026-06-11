@@ -403,7 +403,8 @@ def test_doctor_upgrade_suggestion_has_from_kernel(profile, spawned_root, monkey
 
 
 # --------------------------------------------------------------------------- #
-# S3.2 — wizard ingest_roots + telegram ID validation
+# S3.2 — advanced-wizard ingest_roots + telegram ID validation
+# (these drive wizard.run(advanced=True): the quick flow asks none of these)
 # --------------------------------------------------------------------------- #
 def _wizard_input(*lines):
     """Return a StringIO with newline-terminated lines for wizard stream_in."""
@@ -424,7 +425,7 @@ def test_wizard_ingest_roots_valid(profile, spawned_root, tmp_path):
         "N",               # no telegram
     )
     out = io.StringIO()
-    wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
+    wizard.run(advanced=True, stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
     cfg = config.load_config()
     assert str(d) in cfg.get("ingest_roots", [])
 
@@ -441,7 +442,7 @@ def test_wizard_ingest_roots_non_absolute_skipped(profile, spawned_root, tmp_pat
         "N",
     )
     out = io.StringIO()
-    wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
+    wizard.run(advanced=True, stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
     cfg = config.load_config()
     assert cfg.get("ingest_roots") == []
     assert "not an absolute path" in out.getvalue() or "skipped" in out.getvalue()
@@ -459,7 +460,7 @@ def test_wizard_ingest_roots_nonexistent_skipped(profile, spawned_root, tmp_path
         "N",
     )
     out = io.StringIO()
-    wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
+    wizard.run(advanced=True, stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
     cfg = config.load_config()
     assert cfg.get("ingest_roots") == []
 
@@ -478,7 +479,7 @@ def test_wizard_telegram_id_non_numeric_skipped(profile, spawned_root):
         "notanumber",    # invalid UID
     )
     out = io.StringIO()
-    wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
+    wizard.run(advanced=True, stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
     cfg = config.load_config()
     allowlist = cfg.get("gateway", {}).get("telegram", {}).get("allowlist", {})
     assert "notanumber" not in allowlist
@@ -499,7 +500,7 @@ def test_wizard_telegram_id_numeric_saved(profile, spawned_root):
         "123456789",     # valid numeric UID
     )
     out = io.StringIO()
-    wizard.run(stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
+    wizard.run(advanced=True, stream_in=inp, stream_out=out, getpass_fn=lambda _: "")
     cfg = config.load_config()
     allowlist = cfg.get("gateway", {}).get("telegram", {}).get("allowlist", {})
     assert "123456789" in allowlist

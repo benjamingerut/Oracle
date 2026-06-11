@@ -1,9 +1,18 @@
 """wizard.py -- interactive first-run setup (SPEC S8.1).
 
-Walks the operator through: instance + root, spawn (or adopt), provider preset,
-model, API key (stored to .env, never echoed), optional Telegram, and an
-optional "Connect knowledge sources?" connector step (P7-T8/T11). Idempotent:
-re-running updates rather than duplicates. Every prompt is skippable.
+Two flows. The DEFAULT quick flow (``run_quick``, reached via ``run()``) is a
+short, layperson-friendly path: company -> admin name -> provider menu -> API
+key -> success banner. The instance is fixed (``default_instance`` or
+``main``), the root is defaulted (``~/oracles/<instance>``), and the full
+doctor report is printed ONLY when a check fails -- otherwise a one-line
+ready-to-chat banner. The ADVANCED flow (``run_advanced``, reached via
+``run(advanced=True)`` / ``oracle setup --advanced``) is the full wizard below.
+
+Advanced flow walks the operator through: instance + root, spawn (or adopt),
+provider preset, model, API key (stored to .env, never echoed), ingest roots,
+optional Telegram, and an optional "Connect knowledge sources?" connector step
+(P7-T8/T11) plus the dream-actuator step. Idempotent: re-running updates rather
+than duplicates. Every prompt is skippable.
 
 Connector step (P7-T8): pick a connector type, render its manifest from the
 shipped template into the instance root's Connectors/<id>/, prompt EXPLICIT scope
@@ -601,7 +610,161 @@ def _count_ingested(text: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-def run(*, stream_in=None, stream_out=None, getpass_fn=getpass.getpass) -> int:
+# --------------------------------------------------------------------------- #
+# provider menu (quick flow). Numbered, layperson-friendly; maps to PRESETS.
+# --------------------------------------------------------------------------- #
+_PROVIDER_MENU = [
+    ("anthropic", "Claude by Anthropic (recommended)"),
+    ("openai", "OpenAI"),
+    ("openrouter", "OpenRouter"),
+    ("ollama", "Ollama — runs on this computer, private, no account needed"),
+    ("custom", "Other (OpenAI-compatible endpoint)"),
+]
+
+# Where to get an API key, by preset (printed before the hidden key prompt).
+_KEY_URLS = {
+    "anthropic": "https://console.anthropic.com/settings/keys",
+    "openai": "https://platform.openai.com/api-keys",
+    "openrouter": "https://openrouter.ai/keys",
+}
+
+
+def _read_secret(*, stream_in, out, getpass_fn) -> str:
+    """Read a hidden secret using the same getpass/stream pattern as the full
+    flow: a real tty uses getpass (no echo); a scripted stream reads a line."""
+    try:
+        if sys.stdin.isatty():
+            return getpass_fn("")
+        return stream_in.readline().strip() if stream_in else ""
+    except Exception:
+        return ""
+
+
+def run(advanced: bool = False, *, stream_in=None, stream_out=None,
+        getpass_fn=getpass.getpass) -> int:
+    """Dispatch to the quick flow (default) or the full advanced flow."""
+    if advanced:
+        return run_advanced(stream_in=stream_in, stream_out=stream_out,
+                            getpass_fn=getpass_fn)
+    return run_quick(stream_in=stream_in, stream_out=stream_out,
+                     getpass_fn=getpass_fn)
+
+
+def run_quick(*, stream_in=None, stream_out=None,
+              getpass_fn=getpass.getpass) -> int:
+    """Short, layperson-friendly setup (the new default, SPEC S8.1).
+
+    company -> admin name -> provider menu -> API key -> success banner. No
+    instance/root/ingest/Telegram/connector/dream questions: the instance is
+    fixed (``default_instance`` or ``main``), the root is defaulted, and the
+    full doctor report is printed ONLY when something actually fails. Fully
+    scriptable via ``stream_in`` (a newline-only stream completes with all
+    defaults and no key).
+    """
+    out = stream_out or sys.stdout
+    out.write("Oracle setup (about a minute)\n"
+              "-----------------------------\n")
+    cfg = config.load_config()
+
+    company = _ask("What company or team is this oracle for?", "My Company",
+                   stream_in=stream_in, stream_out=stream_out)
+    admin_default = (getpass.getuser() or "Admin")
+    admin_default = admin_default[:1].upper() + admin_default[1:]
+    admin = _ask("Your name (the oracle's admin)", admin_default,
+                 stream_in=stream_in, stream_out=stream_out)
+
+    # Instance fixed; root = the registered root for that instance if present,
+    # else ~/oracles/<instance>. No questions asked.
+    name = cfg.get("default_instance") or "main"
+    existing = (cfg.get("instances") or {}).get(name, {}).get("root")
+    root = (Path(existing).expanduser().resolve() if existing
+            else (Path.home() / "oracles" / name).resolve())
+
+    if (root / "oracle.yml").exists():
+        out.write(f"Adopting existing oracle at {root}\n")
+    else:
+        out.write(f"Setting up your oracle at {root} ... ")
+        out.flush()
+        # Quick mode hides the spawn machinery (kernel stamping, loop records,
+        # audit/lint chatter) from the operator; it is shown only on failure,
+        # where it carries the diagnosis.
+        import contextlib
+        import io
+        spawn_log = io.StringIO()
+        with contextlib.redirect_stdout(spawn_log), contextlib.redirect_stderr(spawn_log):
+            rc = spawn.main(["--root", str(root), "--company-name", company,
+                             "--admin-name", admin])
+        if rc != 0:
+            out.write("failed.\n\n")
+            out.write(spawn_log.getvalue())
+            out.write("\nSetup could not create the oracle; aborting.\n")
+            return rc
+        out.write("done.\n")
+    cfg = config.register_instance(cfg, name, root)
+
+    # Provider — numbered menu (number OR preset name accepted; default "1").
+    out.write("\nWhich AI provider should power your oracle?\n")
+    for i, (_pid, label) in enumerate(_PROVIDER_MENU, 1):
+        out.write(f"  {i}. {label}\n")
+    pick = _ask("Pick one (number or name)", "1",
+                stream_in=stream_in, stream_out=stream_out).strip()
+    preset = "anthropic"
+    if pick.isdigit() and 1 <= int(pick) <= len(_PROVIDER_MENU):
+        preset = _PROVIDER_MENU[int(pick) - 1][0]
+    elif pick in PRESETS:
+        preset = pick
+    base, model, key_env = PRESETS.get(preset, PRESETS["custom"])
+
+    # "custom" has no defaults: ask base URL + model id (only here).
+    if preset == "custom" or not base:
+        base = _ask("Base URL (…/v1)", base or "",
+                    stream_in=stream_in, stream_out=stream_out)
+        model = _ask("Model id", model or "",
+                     stream_in=stream_in, stream_out=stream_out)
+
+    cfg["provider"].update({"name": preset, "base_url": base, "model": model,
+                            "api_key_env": key_env})
+
+    if key_env:
+        url = _KEY_URLS.get(preset)
+        if url:
+            out.write(f"\nGet an API key here: {url}\n")
+        out.write("Paste your API key (hidden; press Enter to add it later): ")
+        out.flush()
+        secret = _read_secret(stream_in=stream_in, out=out, getpass_fn=getpass_fn)
+        if secret:
+            config.set_env_secret(key_env, secret)
+            out.write("  key saved.\n")
+        else:
+            out.write("  (no key yet — add one later with `oracle model set`)\n")
+    elif preset == "ollama":
+        out.write("\nOllama runs locally — no API key needed.\n"
+                  "  Install it from https://ollama.com and pull a model, e.g.:\n"
+                  "    ollama pull llama3.1\n")
+
+    config.save_config(cfg)
+
+    # Finish: run doctor, but DO NOT dump the full report unless something fails.
+    rep = doctor.run(name)
+    if rep.worst_is_fail():
+        out.write("\nSetup finished, but the health check found problems:\n\n")
+        out.write(rep.render() + "\n")
+        return 1
+    n_warn = sum(1 for level, _, _ in rep.rows if level == doctor.WARN)
+    out.write(
+        f"\n✓ Your oracle is ready at {root}\n"
+        "\n"
+        "  Try:   oracle chat              talk with your oracle\n"
+        "         oracle ingest <file>     teach it from your documents\n"
+        "\n"
+        "  Later: oracle setup --advanced  connectors, Telegram, scheduling\n"
+        f"         oracle doctor            full health report "
+        f"({n_warn} optional item{'s' if n_warn != 1 else ''} pending)\n"
+    )
+    return 0
+
+
+def run_advanced(*, stream_in=None, stream_out=None, getpass_fn=getpass.getpass) -> int:
     out = stream_out or sys.stdout
     out.write("Oracle setup\n============\n")
     cfg = config.load_config()

@@ -78,6 +78,30 @@ def test_truncated_source_fails_integrity_check(tmp_path):
     assert "missing kernel file" in proc.stderr
 
 
+def test_copy_only_without_from_dir_fails_cleanly(tmp_path):
+    """`sh install.sh --copy-only` with no --from-dir (and the default GIT_URL
+    now set) must FAIL cleanly -- copy-only stages a local source, it never
+    clones (so it never reaches the network)."""
+    home = tmp_path / "oracle-home"
+    proc = subprocess.run(
+        ["sh", str(_INSTALL_SH), "--copy-only"],
+        env={"ORACLE_HOME": str(home), "HOME": str(tmp_path),
+             "PATH": "/usr/bin:/bin"},
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "--copy-only requires --from-dir" in proc.stderr
+    # It never attempted a clone (no app dir staged).
+    assert not (home / "app").exists()
+
+
+def test_installer_syntax_is_posix_sh(tmp_path):
+    """`sh -n install.sh` parses clean (no bashisms)."""
+    proc = subprocess.run(["sh", "-n", str(_INSTALL_SH)],
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+
+
 def test_spawn_preflight_rejects_truncated_kernel(tmp_path, monkeypatch):
     """spawn.main fails BEFORE writing anything when the template is truncated."""
     from oracle_agent import spawn

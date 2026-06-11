@@ -307,7 +307,7 @@ class TelegramGateway:
 
 | Command | Behavior |
 |---|---|
-| `oracle setup` | wizard (S8.1) |
+| `oracle setup [--advanced]` | quick wizard (S8.1); `--advanced` = full wizard |
 | `oracle spawn --root P --company-name N --admin-name A [--codename C]` | wraps `oracle_agent.spawn.main` + registers instance |
 | `oracle instances [list\|add NAME ROOT\|remove NAME\|default NAME]` | registry ops |
 | `oracle chat [NAME] [-m MSG] [--max-sensitivity S]` | REPL / one-shot; `--max-sensitivity` may only LOWER the ceiling |
@@ -320,11 +320,42 @@ class TelegramGateway:
 Instance resolution: explicit NAME > cwd inside a registered root >
 `default_instance` > sole instance > error with guidance.
 
-**S8.1 wizard** (stdin, skippable, idempotent): instance name → root path →
-company/admin name → spawn (or adopt existing root) → provider preset
+**S8.1 wizard.** Two flows, both stdin-scriptable, skippable, idempotent.
+
+*Quick flow* (the DEFAULT, `wizard.run_quick` via `wizard.run()`): company/team
+name → admin (your) name → provider as a NUMBERED menu
+(1 Claude/anthropic · 2 OpenAI · 3 OpenRouter · 4 Ollama-local · 5 custom;
+accepts the number OR the preset name, default 1) → API key (preset key URL
+printed first; via `set_env_secret`, `getpass` no-echo on tty; blank = add
+later; Ollama = no key, install-from-ollama.com note) → success banner.
+NO instance-name/root/ingest/Telegram/connector/dream questions: the instance
+is fixed (`default_instance` or `main`), the root is the registered root for
+that instance else `~/oracles/<instance>` (adopt if `oracle.yml` exists, else
+spawn). The **full doctor report is printed ONLY when `worst_is_fail()`** (and
+returns 1); otherwise a one-line ready-to-chat banner names the pending warn
+count and points at `oracle chat`, `oracle ingest`, `oracle setup --advanced`,
+`oracle doctor` (rc 0). Enforcers: `test_quick_defaults_only_spawns_and_registers`,
+`test_quick_provider_menu_number_maps_ollama`,
+`test_quick_provider_menu_name_maps_openai`, `test_quick_key_lands_in_profile_env`,
+`test_quick_banner_no_full_report_on_warn_only`, `test_quick_prints_report_on_fail`.
+
+*Advanced flow* (`wizard.run_advanced` via `oracle setup --advanced`, contract
+unchanged from the old S8.1): instance name → root path → company/admin name →
+spawn (or adopt existing root) → provider preset
 (anthropic/openai/openrouter/ollama/custom) → model id → API key (via
-`set_env_secret`, `getpass` no-echo on tty) → optional Telegram (token env +
-allowlist seed) → final `doctor`.
+`set_env_secret`, `getpass` no-echo on tty) → ingest roots → optional Telegram
+(token env + allowlist seed) → connector step → dream-actuator step → final
+`doctor` (full report). Enforcer: `test_advanced_walks_old_prompts` (the
+advanced-only "Instance name" prompt appears; the quick flow's output never
+contains it).
+
+*First-run tty rescue* (`cli.resolve_instance`): when no instance is specified
+and none resolves AND both stdin/stdout are ttys, the cli prints "No oracle is
+set up yet — let's fix that." and runs the quick wizard, then retries
+resolution once (precedence unchanged: explicit NAME > cwd > `default_instance`
+> sole instance). When not a tty it raises the guidance `SystemExit` with a
+"(takes about a minute)" tail. Enforcers: `test_cli_setup_advanced_routes_to_advanced`,
+`test_cli_setup_default_routes_to_quick`, `test_cli_non_tty_no_instance_error`.
 
 **S8.2 doctor** (`[ok]/[warn]/[fail]` + one-line fix): python ≥3.10; profile
 perms (`~/.oracle` 0700, `.env` 0600); config parses + secret-guard passes;
@@ -339,10 +370,40 @@ gateway: token resolvable + allowlist non-empty when enabled. Exit 0 iff no
 
 ## S9. Installer (`installer/install.sh`)
 
-POSIX sh, no sudo, nothing system-wide. Detect `python3` ≥3.10 → obtain source
-(`git clone` or `--from-dir`) into `~/.oracle/app` → venv `~/.oracle/venv` →
-`pip install ~/.oracle/app` → symlink `oracle` into `~/.local/bin` (PATH hint)
-→ `oracle doctor`. Idempotent re-run = update.
+POSIX sh (`sh -n` clean, no bashisms), no sudo, nothing system-wide. Detect
+`python3` ≥3.10 → obtain source into `~/.oracle/app` → venv `~/.oracle/venv` →
+`pip install ~/.oracle/app` → symlink `oracle` into `~/.local/bin`. Idempotent
+re-run = update.
+
+- **Default git URL.** `GIT_URL` defaults to
+  `${ORACLE_GIT_URL:-https://github.com/benjamingerut/Oracle.git}` so a bare
+  `sh install.sh` (and `curl … | sh`) works with zero args; `--from-dir PATH`
+  installs from a local checkout instead.
+- **Source integrity.** The copied app must carry a complete kernel template
+  (sentinels `oracle.yml`, `tmp.nosync/_CONTEXT.md`, `_tools/setup_audit.py`);
+  a missing one FAILs the install loudly (else every spawn fails its post-spawn
+  audit). The `--from-dir` copy prunes the repo's top-level `tmp.nosync` scratch
+  dir (anchored, AFTER copy) but preserves the kernel template's own
+  `tmp.nosync/`.
+- **`--copy-only`** stages source + runs the integrity check then exits (CI
+  path); it REQUIRES `--from-dir` (it never clones, so a bare
+  `--copy-only` fails cleanly rc 2 instead of reaching the network).
+- **PATH persistence.** After symlinking, if `BIN_DIR` is not already on PATH,
+  append an idempotent guarded block (marker `# added by oracle installer`,
+  skipped if already present; rc file created if absent) to the user's shell rc
+  (`$ZDOTDIR/.zshrc` else `$HOME/.zshrc` for a zsh login shell, else
+  `$HOME/.bashrc`) and print the NOTE naming the rc file.
+- **Completion + auto-setup handoff.** Replace the old `oracle doctor` run with
+  a short completion line (version + location) and one next step
+  (`oracle setup`). If `/dev/tty` is readable AND `ORACLE_NO_AUTOSETUP` is
+  unset, ask on `/dev/tty` "Set up your oracle now? [Y/n]"; on empty/y/Y
+  `exec oracle setup </dev/tty` (so `curl | sh` lands in the wizard). Everything
+  is `/dev/tty`-guarded so headless/CI installs never block.
+
+Installer enforcers: `test_copy_only_without_from_dir_fails_cleanly`,
+`test_installer_syntax_is_posix_sh`, and the existing kernel-integrity tests
+(`test_copy_preserves_kernel_tmp_nosync`, `test_copy_prunes_repo_scratch_dir`,
+`test_truncated_source_fails_integrity_check`).
 
 ## S10. Test plan (tests/shell/)
 

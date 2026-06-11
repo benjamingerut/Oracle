@@ -13,7 +13,7 @@ ORACLE_HOME="${ORACLE_HOME:-$HOME/.oracle}"
 APP_DIR="$ORACLE_HOME/app"
 VENV_DIR="$ORACLE_HOME/venv"
 BIN_DIR="${ORACLE_BIN:-$HOME/.local/bin}"
-GIT_URL="${ORACLE_GIT_URL:-}"
+GIT_URL="${ORACLE_GIT_URL:-https://github.com/benjamingerut/Oracle.git}"
 FROM_DIR=""
 
 COPY_ONLY=0
@@ -26,6 +26,15 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+# --copy-only stages a LOCAL source tree (the CI integrity path); it never
+# clones. Require --from-dir so a bare `sh install.sh --copy-only` fails cleanly
+# instead of reaching for the network via the default GIT_URL.
+if [ "$COPY_ONLY" = "1" ] && [ -z "$FROM_DIR" ]; then
+  echo "FATAL: --copy-only requires --from-dir PATH (it stages a local source," >&2
+  echo "       it never clones)." >&2
+  exit 2
+fi
 
 # 1. python3 >= 3.10. Plain `python3` on a stock Mac is often Apple's 3.9,
 #    while a newer versioned interpreter sits unlinked on PATH — so probe the
@@ -104,14 +113,53 @@ fi
 # 5. expose the command
 mkdir -p "$BIN_DIR"
 ln -sf "$VENV_DIR/bin/oracle" "$BIN_DIR/oracle"
+
+# 5a. PATH persistence: if BIN_DIR is not already on PATH, append an idempotent
+#     guarded block to the user's shell rc so `oracle` works in new shells. The
+#     guard marker keeps a re-run from appending twice. Detect the rc file from
+#     the login shell ($SHELL) -- zsh honors $ZDOTDIR.
+PATH_NOTE=""
 case ":$PATH:" in
-  *":$BIN_DIR:"*) ;;
-  *) echo "NOTE: add $BIN_DIR to your PATH to use 'oracle' directly." ;;
+  *":$BIN_DIR:"*) ;;   # already on PATH -- nothing to persist
+  *)
+    case "${SHELL:-}" in
+      *zsh) RC_FILE="${ZDOTDIR:-$HOME}/.zshrc" ;;
+      *)    RC_FILE="$HOME/.bashrc" ;;
+    esac
+    MARKER="# added by oracle installer"
+    if [ -f "$RC_FILE" ] && grep -qF "$MARKER" "$RC_FILE" 2>/dev/null; then
+      : # guard present -- do not append again
+    else
+      [ -f "$RC_FILE" ] || : > "$RC_FILE"
+      {
+        echo ""
+        echo "$MARKER"
+        echo "export PATH=\"$BIN_DIR:\$PATH\""
+      } >> "$RC_FILE"
+    fi
+    PATH_NOTE="$RC_FILE"
+    ;;
 esac
+if [ -n "$PATH_NOTE" ]; then
+  echo "NOTE: $BIN_DIR added to your PATH (added to $PATH_NOTE — restart your"
+  echo "      terminal or run: export PATH=\"$BIN_DIR:\$PATH\")."
+fi
 
-# 6. doctor
-echo "==> oracle doctor"
-"$VENV_DIR/bin/oracle" doctor || true
-
+# 6. completion message + one next step.
+VERSION="$("$VENV_DIR/bin/oracle" version 2>/dev/null | head -n1 || true)"
 echo ""
-echo "Installed. Next: oracle setup"
+echo "Installed ${VERSION:-oracle} at $BIN_DIR/oracle"
+echo "Next: oracle setup"
+
+# 7. optional auto-setup handoff. If a controlling terminal is readable (so we
+#    can prompt + drive the wizard) AND the operator has not opted out, offer to
+#    run setup right now -- so `curl … | sh` lands the user in the wizard. All
+#    guarded on /dev/tty so headless / CI installs (no tty) never block.
+if [ -z "${ORACLE_NO_AUTOSETUP:-}" ] && [ -r /dev/tty ]; then
+  printf "Set up your oracle now? [Y/n] " > /dev/tty
+  read ans < /dev/tty || ans=""
+  case "$ans" in
+    ""|y|Y) exec "$VENV_DIR/bin/oracle" setup < /dev/tty ;;
+    *) ;;
+  esac
+fi

@@ -1,6 +1,6 @@
 """cli.py -- the global ``oracle`` command (SPEC S8).
 
-    oracle setup                         first-run wizard
+    oracle setup [--advanced]            first-run wizard (quick; --advanced = full)
     oracle spawn --root P --company-name N --admin-name A [--codename C]
     oracle instances [list|add NAME ROOT|remove NAME|default NAME]
     oracle chat [NAME] [-m MSG] [--max-sensitivity S]
@@ -56,7 +56,8 @@ def main(argv: list[str] | None = None) -> int:
 # --------------------------------------------------------------------------- #
 # instance resolution
 # --------------------------------------------------------------------------- #
-def resolve_instance(cfg: dict, name: str | None) -> tuple[str, Path]:
+def resolve_instance(cfg: dict, name: str | None,
+                     *, _allow_rescue: bool = True) -> tuple[str, Path]:
     roots = config.instance_roots(cfg)
     if name:
         if name not in roots:
@@ -77,15 +78,26 @@ def resolve_instance(cfg: dict, name: str | None) -> tuple[str, Path]:
     if len(roots) == 1:
         n = next(iter(roots))
         return n, roots[n]
+    # No instance specified and none resolvable. On an interactive terminal,
+    # rescue the first run: walk the quick wizard, then retry resolution once
+    # (the resolution precedence above is unchanged -- this branch only fires
+    # when nothing resolved). When not a tty, keep the guidance SystemExit.
+    if _allow_rescue and sys.stdin.isatty() and sys.stdout.isatty():
+        print("No oracle is set up yet — let's fix that.")
+        wizard.run()
+        cfg = config.load_config()
+        return resolve_instance(cfg, name, _allow_rescue=False)
     raise SystemExit("oracle: no instance specified and none resolvable; "
-                     "run `oracle setup` or `oracle instances add NAME ROOT`")
+                     "run `oracle setup` (takes about a minute) or "
+                     "`oracle instances add NAME ROOT`")
 
 
 # --------------------------------------------------------------------------- #
 # commands
 # --------------------------------------------------------------------------- #
 def _cmd_setup(rest: list[str]) -> int:
-    return wizard.run()
+    advanced = "--advanced" in rest
+    return wizard.run(advanced=advanced)
 
 
 def _cmd_spawn(rest: list[str]) -> int:
